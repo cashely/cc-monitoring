@@ -30,7 +30,7 @@ export default [
   {
     url: '/api/login',
     method: 'post',
-    response: ({ body }) => {
+    response: ({ body }: { body: { username: string; password: string } }) => {
       const { username, password } = body;
 
       // Mock validation
@@ -70,7 +70,7 @@ export default [
   {
     url: '/api/user/info',
     method: 'get',
-    response: ({ headers }) => {
+    response: ({ headers }: { headers: { authorization?: string } }) => {
       const authHeader = headers.authorization;
       if (!authHeader || !authHeader.startsWith('Bearer ')) {
         return {
@@ -94,7 +94,7 @@ export default [
   {
     url: '/api/user/list',
     method: 'get',
-    response: ({ query }) => {
+    response: ({ query }: { query: { page?: string; pageSize?: string } }) => {
       const page = Number(query.page) || 1;
       const pageSize = Number(query.pageSize) || 10;
       const start = (page - 1) * pageSize;

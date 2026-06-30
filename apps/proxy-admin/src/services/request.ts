@@ -1,14 +1,36 @@
-import axios from 'axios';
+import axios, { AxiosRequestConfig } from 'axios';
 import { message } from 'antd';
 
 // Create axios instance
-const request = axios.create({
+const instance = axios.create({
   baseURL: import.meta.env.VITE_API_PREFIX || '/api',
   timeout: 10000,
 });
 
+// Wrapper to return response.data directly with correct type
+const request = <T = any>(config: AxiosRequestConfig): Promise<T> => {
+  return instance(config) as unknown as Promise<T>;
+};
+
+// Add get/post/put/delete shortcut methods
+request.get = <T = any>(url: string, config?: AxiosRequestConfig): Promise<T> => {
+  return request({ ...config, method: 'GET', url });
+};
+
+request.post = <T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<T> => {
+  return request({ ...config, method: 'POST', url, data });
+};
+
+request.put = <T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<T> => {
+  return request({ ...config, method: 'PUT', url, data });
+};
+
+request.delete = <T = any>(url: string, config?: AxiosRequestConfig): Promise<T> => {
+  return request({ ...config, method: 'DELETE', url });
+};
+
 // Request interceptor - add auth token
-request.interceptors.request.use(
+instance.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('token');
     if (token) {
@@ -22,7 +44,7 @@ request.interceptors.request.use(
 );
 
 // Response interceptor - handle 401 and errors
-request.interceptors.response.use(
+instance.interceptors.response.use(
   (response) => {
     return response.data;
   },

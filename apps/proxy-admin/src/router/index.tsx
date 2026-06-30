@@ -1,4 +1,4 @@
-import { createBrowserRouter, RouterProvider, Outlet } from 'react-router-dom';
+import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import { authLoader, publicLoader } from './guard';
 import MainLayout from '../layouts/MainLayout';
 import Login from '../pages/Login';

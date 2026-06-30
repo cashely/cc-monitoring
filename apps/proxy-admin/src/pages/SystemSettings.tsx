@@ -1,7 +1,8 @@
-import { Card, Form, Input, InputNumber, Switch, Button, message, Space } from 'antd';
+import { Card, Form, Input, InputNumber, Switch, Button, message } from 'antd';
 import { SaveOutlined } from '@ant-design/icons';
 import { useState, useEffect } from 'react';
-import { getSystemSettings, saveSystemSettings, SystemSettings } from '../services/api';
+import { getSystemSettings, saveSystemSettings } from '../services/api';
+import type { SystemSettings } from '../services/api';
 
 const SystemSettings = () => {
   const [form] = Form.useForm();

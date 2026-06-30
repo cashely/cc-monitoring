@@ -26,7 +26,7 @@ export default [
   {
     url: '/api/system/settings',
     method: 'post',
-    response: ({ body }) => {
+    response: ({ body }: { body: Partial<SystemSettings> }) => {
       Object.assign(mockSettings, body);
       return {
         code: 0,

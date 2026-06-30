@@ -1,4 +1,4 @@
-import { Layout, Menu, Dropdown, Avatar, Button, Space } from 'antd';
+import { Layout, Menu, Dropdown, Avatar, Space } from 'antd';
 import {
   DashboardOutlined,
   UserOutlined,

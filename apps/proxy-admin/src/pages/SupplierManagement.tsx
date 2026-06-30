@@ -49,7 +49,7 @@ const SupplierManagement = () => {
       title: '操作',
       key: 'action',
       width: 200,
-      render: (_, record) => (
+      render: () => (
         <Space size="small">
           <Button type="link" icon={<EditOutlined />} size="small">
             编辑

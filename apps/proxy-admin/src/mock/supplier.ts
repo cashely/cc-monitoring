@@ -44,7 +44,7 @@ export default [
   {
     url: '/api/supplier/list',
     method: 'get',
-    response: ({ query }) => {
+    response: ({ query }: { query: { page?: string; pageSize?: string } }) => {
       const page = Number(query.page) || 1;
       const pageSize = Number(query.pageSize) || 10;
       const start = (page - 1) * pageSize;
@@ -65,7 +65,7 @@ export default [
   {
     url: '/api/supplier',
     method: 'post',
-    response: ({ body }) => {
+    response: ({ body }: { body: Omit<Supplier, 'id' | 'createdAt'> }) => {
       const newSupplier: Supplier = {
         id: mockSuppliers.length + 1,
         ...body,

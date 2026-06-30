@@ -1,25 +1,31 @@
 import request from './request';
 import { UserInfo, LoginParams } from '../types/auth';
 
+export interface ApiResponse<T = any> {
+  code: number;
+  message: string;
+  data: T;
+}
+
 // Auth APIs
-export const login = (params: LoginParams) => {
-  return request.post<{ token: string; user: UserInfo }>('/login', params);
+export const login = (params: LoginParams): Promise<ApiResponse<{ token: string; user: UserInfo }>> => {
+  return request.post('/login', params);
 };
 
-export const logout = () => {
+export const logout = (): Promise<ApiResponse<{ success: boolean }>> => {
   return request.post('/logout');
 };
 
-export const getUserInfo = () => {
-  return request.get<{ user: UserInfo }>('/user/info');
+export const getUserInfo = (): Promise<ApiResponse<{ user: UserInfo }>> => {
+  return request.get('/user/info');
 };
 
 // User management APIs
-export const getUserList = (params?: { page?: number; pageSize?: number }) => {
-  return request.get<{ list: UserInfo[]; total: number }>('/user/list', { params });
+export const getUserList = (params?: { page?: number; pageSize?: number }): Promise<ApiResponse<{ list: UserInfo[]; total: number }>> => {
+  return request.get('/user/list', { params });
 };
 
-export const createUser = (params: Omit<UserInfo, 'id'>) => {
+export const createUser = (params: Omit<UserInfo, 'id'>): Promise<ApiResponse<UserInfo>> => {
   return request.post('/user', params);
 };
 
@@ -33,11 +39,11 @@ export interface Supplier {
   createdAt: string;
 }
 
-export const getSupplierList = (params?: { page?: number; pageSize?: number }) => {
-  return request.get<{ list: Supplier[]; total: number }>('/supplier/list', { params });
+export const getSupplierList = (params?: { page?: number; pageSize?: number }): Promise<ApiResponse<{ list: Supplier[]; total: number }>> => {
+  return request.get('/supplier/list', { params });
 };
 
-export const createSupplier = (params: Omit<Supplier, 'id' | 'createdAt'>) => {
+export const createSupplier = (params: Omit<Supplier, 'id' | 'createdAt'>): Promise<ApiResponse<Supplier>> => {
   return request.post('/supplier', params);
 };
 
@@ -49,10 +55,10 @@ export interface SystemSettings {
   enableRegistration: boolean;
 }
 
-export const getSystemSettings = () => {
-  return request.get<SystemSettings>('/system/settings');
+export const getSystemSettings = (): Promise<ApiResponse<SystemSettings>> => {
+  return request.get('/system/settings');
 };
 
-export const saveSystemSettings = (params: SystemSettings) => {
+export const saveSystemSettings = (params: SystemSettings): Promise<ApiResponse<{ success: boolean }>> => {
   return request.post('/system/settings', params);
 };

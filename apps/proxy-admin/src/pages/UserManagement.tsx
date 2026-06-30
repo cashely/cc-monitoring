@@ -1,7 +1,8 @@
 import { Table, Button, Space, Card, Modal, Form, Input, message } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import { useState, useEffect } from 'react';
-import { getUserList, createUser, UserInfo } from '../services/api';
+import { getUserList, createUser } from '../services/api';
+import { UserInfo } from '../types/auth';
 import { ColumnType } from 'antd/es/table';
 
 const UserManagement = () => {
@@ -36,7 +37,7 @@ const UserManagement = () => {
       title: '操作',
       key: 'action',
       width: 200,
-      render: (_, record) => (
+      render: () => (
         <Space size="small">
           <Button type="link" icon={<EditOutlined />} size="small">
             编辑
