@@ -1,0 +1,19 @@
+{
+  "name": "cc-monitoring",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:proxy-admin": "pnpm -F proxy-admin dev",
+    "build:proxy-admin": "pnpm -F proxy-admin build",
+    "preview:proxy-admin": "pnpm -F proxy-admin preview"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  }
+}
