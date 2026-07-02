@@ -2,12 +2,16 @@ import Fastify from 'fastify'
 import type { FastifyInstance, FastifyBaseLogger } from 'fastify'
 import { loadConfig } from '../config/index.js'
 import { createLogger } from '../logger/index.js'
+import { configureDbPath } from '../utils/db.js'
 import { setupProxy } from './proxy.js'
 import { setupUiRoutes } from './ui-route.js'
 import { requestIdMiddleware } from './middleware/request-id.js'
 
 export async function createServer(): Promise<FastifyInstance> {
   const config = await loadConfig()
+  if (config.storage?.path) {
+    configureDbPath(config.storage.path)
+  }
   const logger = createLogger(config.logging)
 
   const fastify = Fastify({

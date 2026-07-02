@@ -110,8 +110,12 @@ describe('loadConfig', () => {
     await expect(loadConfig(configPath)).rejects.toThrow(ConfigError)
   })
 
-  it('throws for non-existent file', async () => {
-    await expect(loadConfig(path.join(tmpDir, 'nonexistent.json'))).rejects.toThrow()
+  it('auto-initializes default config for non-existent file', async () => {
+    const newPath = path.join(tmpDir, 'auto-init.json')
+    const config = await loadConfig(newPath)
+    expect(config.server.port).toBe(3000)
+    const content = await fs.readFile(newPath, 'utf-8')
+    expect(JSON.parse(content).server.port).toBe(3000)
   })
 })
 
@@ -156,7 +160,7 @@ describe('resetConfig', () => {
     const parsed = JSON.parse(content)
     expect(parsed.server.port).toBe(3000)
     expect(parsed.server.host).toBe('localhost')
-    expect(parsed.proxy.target).toBe('https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic')
+    expect(parsed.proxy.target).toBe('https://ark.cn-beijing.volces.com/api/coding')
     expect(parsed.proxy.changeOrigin).toBe(true)
     expect(parsed.logging.level).toBe('info')
     expect(parsed.logging.file).toBe('logs/proxy.log')

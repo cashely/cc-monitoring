@@ -1,22 +1,30 @@
 import Database from 'better-sqlite3'
 import path from 'path'
 import fs from 'fs'
+import { logsDir } from './paths.js'
 
-const DB_PATH = 'logs/proxy.db'
+// DB 绝对路径：由 server 启动时按 config.storage.path 设置，未设置则回退到数据目录
+let dbPath: string | null = null
+
+export function configureDbPath(absPath: string): void {
+  dbPath = absPath
+}
 
 let db: Database.Database | null = null
 
 export function initDatabase(): Database.Database {
   if (db) return db
 
-  // Ensure logs directory exists
-  const logsDir = path.dirname(DB_PATH)
-  if (!fs.existsSync(logsDir)) {
-    fs.mkdirSync(logsDir, { recursive: true })
+  const resolvedPath = dbPath || path.join(logsDir, 'proxy.db')
+
+  // Ensure database directory exists
+  const dbDir = path.dirname(resolvedPath)
+  if (!fs.existsSync(dbDir)) {
+    fs.mkdirSync(dbDir, { recursive: true })
   }
 
   // Initialize SQLite database
-  db = new Database(DB_PATH)
+  db = new Database(resolvedPath)
 
   // Enable WAL mode for better concurrency & durability
   db.pragma('journal_mode = WAL')
