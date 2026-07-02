@@ -1,4 +1,6 @@
 import { Command } from 'commander'
+import path from 'path'
+import { setConfigPathOverride } from '../utils/paths.js'
 import { startCommand } from './commands/start.js'
 import { stopCommand } from './commands/stop.js'
 import { statusCommand } from './commands/status.js'
@@ -14,6 +16,13 @@ program
   .name('proxy')
   .description('Claude Code Proxy Helper - Forward requests to Aliyun')
   .version('1.0.0')
+  .option('-c, --config <path>', 'Path to config file')
+  .hook('preAction', () => {
+    const opts = program.opts()
+    if (opts.config) {
+      setConfigPathOverride(path.resolve(opts.config))
+    }
+  })
 
 program.command('start')
   .description('Start proxy server')
@@ -55,7 +64,13 @@ program.command('clean-requests')
   .description('清理旧的请求日志（SQLite）')
   .option('--days <days>', '保留最近N天的数据', '7')
   .action(async (options) => {
+    const { loadConfig } = await import('../config/index.js')
+    const { configureDbPath } = await import('../utils/db.js')
     const { cleanOldRequestsDB } = await import('../utils/request-writer.js')
+    const config = await loadConfig()
+    if (config.storage?.path) {
+      configureDbPath(config.storage.path)
+    }
     const days = parseInt(options.days)
     console.log(`正在清理，保留最近 ${days} 天的数据...`)
     await cleanOldRequestsDB(days)

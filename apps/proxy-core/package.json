@@ -6,6 +6,10 @@
     "proxy": "./dist/cli/index.js"
   },
   "main": "./dist/server/index.js",
+  "files": [
+    "dist",
+    "ecosystem.config.cjs"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/server/index.ts",

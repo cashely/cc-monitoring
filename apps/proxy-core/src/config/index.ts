@@ -1,10 +1,16 @@
 import fs from 'fs/promises'
+import fsSync from 'fs'
 import path from 'path'
 import { AppConfig, validateConfig } from './schema.js'
+import { getConfigPath, ensureDataDirs } from '../utils/paths.js'
 
-const DEFAULT_CONFIG_PATH = process.env.CONFIG_PATH || path.join(process.cwd(), 'config.json')
+export async function loadConfig(configPath: string = getConfigPath()): Promise<AppConfig> {
+  // 首次运行：config 不存在则用默认值自动初始化（写入数据目录）
+  if (!fsSync.existsSync(configPath)) {
+    ensureDataDirs()
+    await resetConfig(configPath)
+  }
 
-export async function loadConfig(configPath: string = DEFAULT_CONFIG_PATH): Promise<AppConfig> {
   const content = await fs.readFile(configPath, 'utf-8')
   const raw = JSON.parse(content)
   const result = validateConfig(raw)
@@ -13,17 +19,20 @@ export async function loadConfig(configPath: string = DEFAULT_CONFIG_PATH): Prom
     throw new ConfigError(`Invalid config: ${result.errors?.map(e => e.message).join(', ')}`)
   }
 
-  // Resolve relative log path to absolute path based on config file directory
+  // Resolve relative log/db paths to absolute paths based on config file directory
   const configDir = path.dirname(configPath)
   const config = result.data!
   if (config.logging.file && !path.isAbsolute(config.logging.file)) {
     config.logging.file = path.resolve(configDir, config.logging.file)
   }
+  if (config.storage?.path && !path.isAbsolute(config.storage.path)) {
+    config.storage.path = path.resolve(configDir, config.storage.path)
+  }
 
   return config
 }
 
-export async function saveConfig(config: AppConfig, configPath: string = DEFAULT_CONFIG_PATH): Promise<void> {
+export async function saveConfig(config: AppConfig, configPath: string = getConfigPath()): Promise<void> {
   const result = validateConfig(config)
   if (!result.valid) {
     throw new ConfigError('Invalid config')
@@ -31,11 +40,11 @@ export async function saveConfig(config: AppConfig, configPath: string = DEFAULT
   await fs.writeFile(configPath, JSON.stringify(config, null, 2))
 }
 
-export async function resetConfig(configPath: string = DEFAULT_CONFIG_PATH): Promise<void> {
+export async function resetConfig(configPath: string = getConfigPath()): Promise<void> {
   const defaultConfig: AppConfig = {
     server: { port: 3000, host: 'localhost' },
     proxy: {
-      target: 'https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic',
+      target: 'https://ark.cn-beijing.volces.com/api/coding',
       changeOrigin: true
     },
     logging: {
