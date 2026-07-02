@@ -1,0 +1,32 @@
+{
+  "heading": "Manage Providers",
+  "label": {
+    "name": "Name",
+    "baseUrl": "Base URL",
+    "apiKey": "API Key",
+    "model": "Model",
+    "haikuModel": "Haiku",
+    "sonnetModel": "Sonnet",
+    "opusModel": "Opus",
+    "subagentModel": "Subagent",
+    "provider": "Provider",
+    "action": "Action"
+  },
+  "action": {
+    "add": "Add",
+    "activate": "Activate",
+    "activated": "Activated",
+    "close": "Close",
+    "delete": "Delete",
+    "save": "Save",
+    "saving": "Saving..."
+  },
+  "message": {
+    "savedSuccess": "Saved successfully",
+    "networkError": "Network error"
+  },
+  "error": {
+    "fieldMessage": "Row {{row}}: {{field}} {{message}}"
+  },
+  "confirmDelete": "Are you sure you want to delete this provider?"
+}

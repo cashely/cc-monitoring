@@ -1,0 +1,30 @@
+{
+  "title": "CC Monitoring",
+  "connection": {
+    "disconnected": "WebSocket 连接断开,请刷新页面重新连接"
+  },
+  "requests": {
+    "title": "请求历史",
+    "empty": "暂无请求",
+    "loading": "加载中...",
+    "compare": "对比",
+    "compareTitle": "请求对比",
+    "compareSelectTwo": "请选择两个请求进行对比",
+    "compareLoadFailed": "加载失败",
+    "compareRetry": "重试",
+    "compareClose": "关闭",
+    "compareLeft": "左侧",
+    "compareRight": "右侧"
+  },
+  "tokenStats": "Token 统计",
+  "hourly": "时",
+  "daily": "天",
+  "inputTokens": "输入",
+  "outputTokens": "输出",
+  "cacheTokens": "缓存",
+  "lastUpdated": "最后更新",
+  "versions": {
+    "claudeCode": "Claude Code",
+    "project": "项目"
+  }
+}

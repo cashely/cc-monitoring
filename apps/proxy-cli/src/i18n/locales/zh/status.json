@@ -1,0 +1,15 @@
+{
+  "heading": "服务器状态",
+  "proxyStatus": "Proxy状态",
+  "cpuChart": "CPU 使用率趋势",
+  "memoryChart": "内存使用趋势",
+  "start": "启动",
+  "stop": "关闭",
+  "restart": "重启",
+  "status": {
+    "online": "运行中",
+    "stopped": "已停止",
+    "errored": "错误",
+    "launching": "启动中"
+  }
+}

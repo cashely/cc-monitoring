@@ -1,0 +1,28 @@
+{
+  "level": {
+    "debug": "调试",
+    "info": "信息",
+    "warn": "警告",
+    "error": "错误"
+  },
+  "action": {
+    "save": "保存",
+    "saving": "保存中...",
+    "clear": "清除",
+    "pause": "暂停",
+    "resume": "继续",
+    "resetDefault": "重置默认"
+  },
+  "label": {
+    "host": "主机",
+    "port": "端口",
+    "target": "目标地址",
+    "changeOrigin": "更改来源",
+    "level": "级别",
+    "status": "状态",
+    "cpu": "CPU",
+    "memory": "内存",
+    "uptime": "运行时间",
+    "restarts": "重启次数"
+  }
+}

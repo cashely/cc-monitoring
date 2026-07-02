@@ -6,7 +6,25 @@
   "scripts": {
     "dev:proxy-admin": "pnpm -F proxy-admin dev",
     "build:proxy-admin": "pnpm -F proxy-admin build",
-    "preview:proxy-admin": "pnpm -F proxy-admin preview"
+    "preview:proxy-admin": "pnpm -F proxy-admin preview",
+    "dev:proxy-core": "pnpm -F @cc-monitoring/cli-core dev",
+    "build:proxy-core": "pnpm -F @cc-monitoring/cli-core build",
+    "dev:proxy-cli": "pnpm -F @cc-monitoring/cli dev",
+    "build:proxy-cli": "pnpm -F @cc-monitoring/cli build",
+    "preview:proxy-cli": "pnpm -F @cc-monitoring/cli preview",
+    "build": "pnpm -r build",
+    "dev": "pnpm --filter @cc-monitoring/cli-core dev",
+    "dev:ui": "pnpm --filter @cc-monitoring/cli dev",
+    "test": "pnpm -r test",
+    "start": "node apps/proxy-core/dist/cli/index.js start",
+    "stop": "node apps/proxy-core/dist/cli/index.js stop",
+    "status": "node apps/proxy-core/dist/cli/index.js status",
+    "logs": "node apps/proxy-core/dist/cli/index.js logs",
+    "config": "node apps/proxy-core/dist/cli/index.js config show",
+    "reload": "node apps/proxy-core/dist/cli/index.js reload",
+    "test-connection": "node apps/proxy-core/dist/cli/index.js test",
+    "ui": "node apps/proxy-core/dist/cli/index.js ui",
+    "cli": "node apps/proxy-core/dist/cli/index.js"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

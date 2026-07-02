@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+/* 科技蓝配色方案（Tailwind v4 @theme） */
+@theme {
+  /* 基础色 */
+  --color-bg-primary: #0F172A;    /* 主背景 */
+  --color-bg-secondary: #111827;  /* 次背景 */
+  --color-bg-card: #1E293B;       /* 卡片背景 */
+  --color-bg-hover: #334155;      /* Hover */
+  --color-border: #475569;        /* 边框 */
+
+  /* 字体色 */
+  --color-text-primary: #F8FAFC;    /* 一级文字 */
+  --color-text-secondary: #CBD5E1;  /* 二级文字 */
+  --color-text-muted: #94A3B8;      /* 三级文字 */
+  --color-text-disabled: #64748B;   /* Disabled */
+
+  /* 品牌色 */
+  --color-primary: #3B82F6;       /* Primary */
+  --color-primary-hover: #2563EB; /* Hover */
+  --color-primary-active: #1D4ED8;/* Active */
+
+  /* 状态色 */
+  --color-success: #10B981;  /* Success */
+  --color-warning: #F59E0B;  /* Warning */
+  --color-error: #EF4444;    /* Error */
+  --color-info: #06B6D4;     /* Info */
+}
+
+/* Custom utility classes for calc heights */
+.max-h-main {
+  max-height: calc(100vh - 80px);
+}
+.max-h-panel {
+  max-height: calc(100vh - 360px);
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+}

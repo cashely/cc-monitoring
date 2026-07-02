@@ -1,0 +1,28 @@
+{
+  "level": {
+    "debug": "Debug",
+    "info": "Info",
+    "warn": "Warn",
+    "error": "Error"
+  },
+  "action": {
+    "save": "Save",
+    "saving": "Saving...",
+    "clear": "Clear",
+    "pause": "Pause",
+    "resume": "Resume",
+    "resetDefault": "Reset Default"
+  },
+  "label": {
+    "host": "Host",
+    "port": "Port",
+    "target": "Target",
+    "changeOrigin": "Change Origin",
+    "level": "Level",
+    "status": "Status",
+    "cpu": "CPU",
+    "memory": "Memory",
+    "uptime": "Uptime",
+    "restarts": "Restarts"
+  }
+}

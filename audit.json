@@ -1,0 +1,26 @@
+{
+    "keepSettings": {
+        "type": 2,
+        "amount": 10
+    },
+    "auditFilename": "audit.json",
+    "hashType": "md5",
+    "extension": "",
+    "files": [
+        {
+            "date": 1782919206121,
+            "name": "/Users/cashely.shi/Documents/projects/cc-monitoring/logs/proxy-2026-07-01.log.0",
+            "hash": "131b87d8b2a8f6cd9ad677874d3b12c9"
+        },
+        {
+            "date": 1782919248683,
+            "name": "/Users/cashely.shi/Documents/projects/cc-monitoring/logs/proxy-2026-07-01.log.2026",
+            "hash": "6e2f0d375d20c180cb469f35f23f299c"
+        },
+        {
+            "date": 1782999463954,
+            "name": "/Users/cashely.shi/Documents/projects/cc-monitoring/logs/proxy-2026-07-02.log.0",
+            "hash": "cae7f84a6e8a67829331d6aa4c4bae39"
+        }
+    ]
+}
