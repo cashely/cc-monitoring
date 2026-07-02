@@ -40,3 +40,14 @@ export function getCallerDirname(relativePath: string): string {
  * Direct export of this module's __dirname for simple relative path derivation.
  */
 export { thisDirname as utilsDirname }
+
+/**
+ * ESM-compatible accessor for the entry module's URL.
+ *
+ * Wraps import.meta.url so callers don't reference import.meta syntax directly
+ * (which fails to parse under ts-jest's CJS compilation). The __mocks__ version
+ * overrides this in the Jest environment.
+ */
+export function getCurrentModuleUrl(): string {
+  return import.meta.url
+}

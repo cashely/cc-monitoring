@@ -15,4 +15,9 @@ export function getCallerDirname(relativePath: string): string {
   return path.resolve(utilsDirname, relativePath)
 }
 
+export function getCurrentModuleUrl(): string {
+  // CJS test env has no import.meta; return a stable file URL for this mock.
+  return `file://${__filename}`
+}
+
 export { utilsDirname }

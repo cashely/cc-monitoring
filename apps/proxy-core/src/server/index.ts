@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyBaseLogger } from 'fastify'
 import { loadConfig } from '../config/index.js'
 import { createLogger } from '../logger/index.js'
 import { configureDbPath } from '../utils/db.js'
+import { getCurrentModuleUrl } from '../utils/esm-dirname.js'
 import { setupProxy } from './proxy.js'
 import { setupUiRoutes } from './ui-route.js'
 import { requestIdMiddleware } from './middleware/request-id.js'
@@ -42,7 +43,7 @@ export async function startServer(): Promise<void> {
 // PM2 compatibility: PM2 fork mode sets process.argv[1] to ProcessContainerFork.js wrapper,
 // not the user script. Check PM2-specific env vars instead.
 const _isPm2 = process.env.pm_id !== undefined || process.env.NODE_APP_INSTANCE !== undefined
-const _currentModuleUrl = import.meta.url
+const _currentModuleUrl = getCurrentModuleUrl()
 
 // For PM2: always start if PM2 env detected and this module is the configured script
 // For direct execution: check if this module is the main module

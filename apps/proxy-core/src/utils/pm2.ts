@@ -1,9 +1,18 @@
 import { createRequire } from 'module'
 import type { Pm2ProcessStatus } from '../types/pm2.js'
+import { getCurrentModuleUrl } from './esm-dirname.js'
 
-// PM2 is a CJS package, use createRequire for ESM compatibility
-const require = createRequire(import.meta.url)
-const pm2 = require('pm2') as any
+// PM2 is a CJS package, use createRequire for ESM compatibility.
+// getCurrentModuleUrl() wraps import.meta.url so this file has no bare
+// import.meta syntax (which fails to parse under ts-jest's CJS compilation).
+const requireCjs: NodeRequire = (() => {
+  try {
+    return createRequire(getCurrentModuleUrl())
+  } catch {
+    return require
+  }
+})()
+const pm2 = requireCjs('pm2') as any
 
 async function pm2Connect(): Promise<void> {
   return new Promise((resolve, reject) => {

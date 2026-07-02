@@ -68,7 +68,9 @@ describe('validateConfig', () => {
   it('returns valid result for correct config', () => {
     const result = validateConfig(VALID_CONFIG)
     expect(result.valid).toBe(true)
-    expect(result.data).toEqual(VALID_CONFIG)
+    // schema injects defaults (logging.maxSize/interval/compress, storage block),
+    // so match the provided fields rather than strict equality
+    expect(result.data).toMatchObject(VALID_CONFIG)
   })
 
   it('returns invalid result with errors for bad config', () => {
@@ -102,7 +104,12 @@ describe('loadConfig', () => {
 
   it('loads a valid config file', async () => {
     const config = await loadConfig(configPath)
-    expect(config).toEqual(VALID_CONFIG)
+    expect(config.server).toEqual(VALID_CONFIG.server)
+    expect(config.proxy).toMatchObject(VALID_CONFIG.proxy)
+    expect(config.logging.level).toBe('info')
+    // logging.file is resolved to an absolute path based on config dir
+    expect(path.isAbsolute(config.logging.file)).toBe(true)
+    expect(config.logging.file.endsWith(path.join('logs', 'proxy.log'))).toBe(true)
   })
 
   it('throws ConfigError for invalid config file', async () => {
