@@ -42,7 +42,7 @@ export async function saveConfig(config: AppConfig, configPath: string = getConf
 
 export async function resetConfig(configPath: string = getConfigPath()): Promise<void> {
   const defaultConfig: AppConfig = {
-    server: { port: 3000, host: 'localhost' },
+    server: { port: 9527, host: 'localhost' },
     proxy: {
       target: 'https://ark.cn-beijing.volces.com/api/coding',
       changeOrigin: true

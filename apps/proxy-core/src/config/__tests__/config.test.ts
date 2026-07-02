@@ -120,9 +120,9 @@ describe('loadConfig', () => {
   it('auto-initializes default config for non-existent file', async () => {
     const newPath = path.join(tmpDir, 'auto-init.json')
     const config = await loadConfig(newPath)
-    expect(config.server.port).toBe(3000)
+    expect(config.server.port).toBe(9527)
     const content = await fs.readFile(newPath, 'utf-8')
-    expect(JSON.parse(content).server.port).toBe(3000)
+    expect(JSON.parse(content).server.port).toBe(9527)
   })
 })
 
@@ -165,7 +165,7 @@ describe('resetConfig', () => {
     await resetConfig(configPath)
     const content = await fs.readFile(configPath, 'utf-8')
     const parsed = JSON.parse(content)
-    expect(parsed.server.port).toBe(3000)
+    expect(parsed.server.port).toBe(9527)
     expect(parsed.server.host).toBe('localhost')
     expect(parsed.proxy.target).toBe('https://ark.cn-beijing.volces.com/api/coding')
     expect(parsed.proxy.changeOrigin).toBe(true)
