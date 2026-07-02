@@ -1,7 +1,7 @@
 import pino from 'pino'
 import fs from 'fs'
 import path from 'path'
-import rotator from 'file-stream-rotator'
+import * as rotator from 'file-stream-rotator'
 import type { LogConfig } from '../types/config.js'
 
 const LEVEL_MAP: Record<string, number> = {

@@ -22,7 +22,7 @@ module.exports = {
   roots: ['<rootDir>/src'],
   testMatch: ['**/__tests__/**/*.test.ts'],
   moduleNameMapper: {
-    '^(.*/utils/esm-dirname)(\\.js)?$': '<rootDir>/src/utils/__mocks__/esm-dirname.ts',
+    '^(.*/)?esm-dirname(\\.js)?$': '<rootDir>/src/utils/__mocks__/esm-dirname.ts',
     '^(\\.{1,2}/.*)\\.js$': '$1',
     '^@config/(.*)$': '<rootDir>/src/config/$1',
     '^@logger/(.*)$': '<rootDir>/src/logger/$1',
