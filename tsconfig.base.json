@@ -19,7 +19,14 @@
     "paths": {
       "@/*": ["apps/proxy-admin/src/*"],
       "@cc/utils": ["packages/utils/src/index.ts"]
-    }
+    },
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
   },
   "include": ["src"]
 }

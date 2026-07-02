@@ -1,0 +1,22 @@
+{
+  "server": {
+    "port": 9527,
+    "host": "localhost"
+  },
+  "proxy": {
+    "target": "https://ark.cn-beijing.volces.com/api/coding",
+    "changeOrigin": true
+  },
+  "logging": {
+    "level": "info",
+    "file": "logs/proxy.log",
+    "maxSize": "10m",
+    "interval": "1d",
+    "compress": true
+  },
+  "storage": {
+    "type": "sqlite",
+    "path": "logs/proxy.db",
+    "maxDays": 7
+  }
+}

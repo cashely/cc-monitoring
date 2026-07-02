@@ -1,0 +1,15 @@
+{
+  "server": {
+    "port": 9527,
+    "host": "localhost"
+  },
+  "proxy": {
+    "target": "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+    "changeOrigin": true,
+    "rewritePrefix": ""
+  },
+  "logging": {
+    "level": "info",
+    "file": "logs/proxy.log"
+  }
+}

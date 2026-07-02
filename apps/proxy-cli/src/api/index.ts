@@ -1,0 +1,50 @@
+import { StatusApiResponse, StatusHistoryResponse, AppConfig, ValidationError, VersionInfo } from '../types'
+import { RequestSummary } from '../types/request'
+import { StatsData } from '../types/stats'
+
+const API_BASE = '/ui/api'
+
+export async function fetchStatus(): Promise<StatusApiResponse> {
+  const res = await fetch(`${API_BASE}/status`)
+  return res.json()
+}
+
+export async function fetchStatusHistory(durationMs: number = 3600000): Promise<StatusHistoryResponse> {
+  const res = await fetch(`${API_BASE}/status/history?duration=${durationMs}`)
+  return res.json()
+}
+
+export async function fetchConfig(): Promise<{ config: AppConfig; versions: VersionInfo }> {
+  const res = await fetch(`${API_BASE}/config`)
+  return res.json()
+}
+
+export async function saveConfig(config: AppConfig, reload: boolean = false): Promise<{ success: boolean; errors?: ValidationError[]; reloaded?: boolean; reloadError?: string; restartingIn?: number }> {
+  const res = await fetch(`${API_BASE}/config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...config, reload })
+  })
+  return res.json()
+}
+
+export async function fetchRequests(): Promise<{ requests: RequestSummary[] }> {
+  const res = await fetch(`${API_BASE}/requests`)
+  return res.json()
+}
+
+export async function controlProcess(action: 'start' | 'stop' | 'restart'): Promise<{ success: boolean; error?: string }> {
+  const res = await fetch(`${API_BASE}/control`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action })
+  })
+  return res.json()
+}
+
+export async function fetchStats(): Promise<StatsData> {
+  const res = await fetch(`${API_BASE}/stats`)
+  return res.json()
+}
+
+export { fetchProviders, saveProviders } from './providers'

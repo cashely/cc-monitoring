@@ -1,0 +1,32 @@
+{
+  "heading": "供应商管理",
+  "label": {
+    "name": "名称",
+    "baseUrl": "Base URL",
+    "apiKey": "API Key",
+    "model": "模型",
+    "haikuModel": "Haiku",
+    "sonnetModel": "Sonnet",
+    "opusModel": "Opus",
+    "subagentModel": "Subagent",
+    "provider": "供应商",
+    "action": "操作"
+  },
+  "action": {
+    "add": "添加",
+    "activate": "激活",
+    "activated": "已激活",
+    "close": "关闭",
+    "delete": "删除",
+    "save": "保存",
+    "saving": "保存中..."
+  },
+  "message": {
+    "savedSuccess": "保存成功",
+    "networkError": "网络错误"
+  },
+  "error": {
+    "fieldMessage": "第{{row}}行: {{field}} {{message}}"
+  },
+  "confirmDelete": "确认删除此供应商？"
+}

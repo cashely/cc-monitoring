@@ -1,0 +1,30 @@
+{
+  "title": "CC Monitoring",
+  "connection": {
+    "disconnected": "WebSocket disconnected. Please refresh the page to reconnect."
+  },
+  "requests": {
+    "title": "Request History",
+    "empty": "No requests yet",
+    "loading": "Loading...",
+    "compare": "Compare",
+    "compareTitle": "Request Compare",
+    "compareSelectTwo": "Select two requests to compare",
+    "compareLoadFailed": "Load failed",
+    "compareRetry": "Retry",
+    "compareClose": "Close",
+    "compareLeft": "Left",
+    "compareRight": "Right"
+  },
+  "tokenStats": "Token Statistics",
+  "hourly": "H",
+  "daily": "D",
+  "inputTokens": "Input",
+  "outputTokens": "Output",
+  "cacheTokens": "Cache",
+  "lastUpdated": "Last updated",
+  "versions": {
+    "claudeCode": "Claude Code",
+    "project": "Project"
+  }
+}

@@ -1,28 +1,18 @@
 import { redirect } from 'react-router-dom';
-import { getUserInfo } from '../services/api';
 
 // Auth loader for protected routes
 export const authLoader = async () => {
   const token = localStorage.getItem('token');
+  const user = localStorage.getItem('user');
 
-  // No token, redirect to login
-  if (!token) {
+  // No token or user, redirect to login
+  if (!token || !user) {
     return redirect('/login');
   }
 
-  try {
-    // Verify token by getting user info
-    const response = await getUserInfo();
-    if (response.code !== 0) {
-      return redirect('/login');
-    }
-
-    // Return user info for route use
-    return { user: response.data.user };
-  } catch (error) {
-    // Token invalid, redirect to login
-    return redirect('/login');
-  }
+  // Return user info from localStorage for route use
+  // Token validation handled automatically by axios interceptor on API calls
+  return { user: JSON.parse(user) };
 };
 
 // Public route loader (already logged in, redirect to dashboard)

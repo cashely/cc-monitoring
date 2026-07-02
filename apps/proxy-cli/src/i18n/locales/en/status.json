@@ -1,0 +1,15 @@
+{
+  "heading": "Server Status",
+  "proxyStatus": "Proxy Status",
+  "cpuChart": "CPU Usage Trend",
+  "memoryChart": "Memory Usage Trend",
+  "start": "Start",
+  "stop": "Stop",
+  "restart": "Restart",
+  "status": {
+    "online": "Running",
+    "stopped": "Stopped",
+    "errored": "Error",
+    "launching": "Launching"
+  }
+}

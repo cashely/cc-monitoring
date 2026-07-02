@@ -1,0 +1,239 @@
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
+import { fetchProviders, saveProviders } from '../api/providers'
+import type { Provider, ProviderInput, ProviderValidationError } from '../types/providers'
+
+interface ProviderManagerModalProps {
+  isOpen: boolean
+  onClose: () => void
+}
+
+const EMPTY_ROW: ProviderInput = {
+  name: '',
+  base_url: '',
+  api_key: '',
+  model: '',
+  haiku_model: '',
+  sonnet_model: '',
+  opus_model: '',
+  subagent_model: '',
+  provider: '',
+  default: false
+}
+
+const FIELDS: Array<{ key: keyof ProviderInput; i18nKey: string }> = [
+  { key: 'name', i18nKey: 'providers:label.name' },
+  { key: 'base_url', i18nKey: 'providers:label.baseUrl' },
+  { key: 'api_key', i18nKey: 'providers:label.apiKey' },
+  { key: 'model', i18nKey: 'providers:label.model' },
+  { key: 'haiku_model', i18nKey: 'providers:label.haikuModel' },
+  { key: 'sonnet_model', i18nKey: 'providers:label.sonnetModel' },
+  { key: 'opus_model', i18nKey: 'providers:label.opusModel' },
+  { key: 'subagent_model', i18nKey: 'providers:label.subagentModel' },
+  { key: 'provider', i18nKey: 'providers:label.provider' }
+]
+
+function providerToInput(p: Provider): ProviderInput {
+  return {
+    name: p.name,
+    base_url: p.base_url,
+    api_key: p.api_key,
+    model: p.model,
+    haiku_model: p.haiku_model ?? '',
+    sonnet_model: p.sonnet_model ?? '',
+    opus_model: p.opus_model ?? '',
+    subagent_model: p.subagent_model ?? '',
+    provider: p.provider,
+    default: p.default
+  }
+}
+
+function formatErrors(errors: ProviderValidationError[], t: (key: string, opts?: Record<string, unknown>) => string): string[] {
+  return errors.map(e => t('providers:error.fieldMessage', { row: e.index + 1, field: e.field, message: e.message }))
+}
+
+export function ProviderManagerModal({ isOpen, onClose }: ProviderManagerModalProps): JSX.Element | null {
+  const { t } = useTranslation()
+  const [rows, setRows] = useState<ProviderInput[]>([])
+  const [isSaving, setIsSaving] = useState(false)
+  const [message, setMessage] = useState<string | null>(null)
+  const [messageType, setMessageType] = useState<'success' | 'error'>('success')
+  const [validationErrors, setValidationErrors] = useState<string[]>([])
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
+
+  useEffect(() => {
+    if (!message || messageType !== 'success') return
+    const timer = setTimeout(() => {
+      if (mountedRef.current) setMessage(null)
+    }, 3000)
+    return () => clearTimeout(timer)
+  }, [message, messageType])
+
+  const loadProviders = useCallback(async () => {
+    try {
+      const data = await fetchProviders()
+      setRows(data.providers.map(providerToInput))
+    } catch {
+      // Keep empty state
+    }
+  }, [])
+
+  useEffect(() => {
+    if (isOpen) {
+      setMessage(null)
+      setValidationErrors([])
+      loadProviders()
+    }
+  }, [isOpen, loadProviders])
+
+  if (!isOpen) return null
+
+  const handleAddRow = () => {
+    setRows([...rows, { ...EMPTY_ROW }])
+  }
+
+  const handleDeleteRow = (index: number) => {
+    if (!window.confirm(t('providers:confirmDelete'))) return
+    setRows(rows.filter((_, i) => i !== index))
+  }
+
+  const handleActivate = (index: number) => {
+    setRows(rows.map((row, i) => ({ ...row, default: i === index })))
+  }
+
+  const handleFieldChange = (index: number, field: keyof ProviderInput, value: string) => {
+    setRows(rows.map((row, i) => i === index ? { ...row, [field]: value } : row))
+  }
+
+  const handleSave = async () => {
+    setIsSaving(true)
+    setMessage(null)
+    setValidationErrors([])
+
+    try {
+      const result = await saveProviders(rows)
+      if (result.success) {
+        setMessage(t('providers:message.savedSuccess'))
+        setMessageType('success')
+      } else if (result.errors) {
+        setValidationErrors(formatErrors(result.errors, t))
+      } else if (result.error) {
+        setMessage(result.error)
+        setMessageType('error')
+      }
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : t('providers:message.networkError'))
+      setMessageType('error')
+    }
+
+    setIsSaving(false)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="bg-bg-primary rounded-lg shadow-xl w-full max-w-6xl max-h-[90vh] overflow-auto p-6">
+        <div className="flex items-center justify-between mb-4 pb-2 border-b border-border">
+          <h3 className="text-lg font-medium">{t('providers:heading')}</h3>
+          <button
+            onClick={onClose}
+            className="text-text-muted hover:text-text-primary transition-colors"
+          >
+            {t('providers:action.close')}
+          </button>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border">
+                {FIELDS.map(f => (
+                  <th key={f.key} className="px-2 py-2 text-left text-text-muted whitespace-nowrap">{t(f.i18nKey)}</th>
+                ))}
+                <th className="px-2 py-2 text-left text-text-muted">{t('providers:label.action')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, rowIndex) => (
+                <tr key={rowIndex} className="border-b border-border/50">
+                  {FIELDS.map(f => (
+                    <td key={f.key} className="px-1 py-1">
+                      <input
+                        type="text"
+                        value={row[f.key]}
+                        onChange={(e) => handleFieldChange(rowIndex, f.key, e.target.value)}
+                        className="w-full px-2 py-1 rounded border border-border bg-bg-secondary text-text-primary focus:border-primary focus:outline-none transition-colors text-sm"
+                      />
+                    </td>
+                  ))}
+                  <td className="px-1 py-1 whitespace-nowrap">
+                    <button
+                      onClick={() => handleActivate(rowIndex)}
+                      disabled={row.default}
+                      className={`px-2 py-1 rounded text-sm transition-colors ${
+                        row.default
+                          ? 'opacity-50 cursor-not-allowed text-text-muted'
+                          : 'text-success hover:bg-success/10'
+                      }`}
+                    >
+                      {row.default ? t('providers:action.activated') : t('providers:action.activate')}
+                    </button>
+                    <button
+                      onClick={() => handleDeleteRow(rowIndex)}
+                      className="ml-2 px-2 py-1 rounded text-error hover:bg-error/10 transition-colors text-sm"
+                    >
+                      {t('providers:action.delete')}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="flex items-center gap-2 mt-4">
+          <button
+            onClick={handleAddRow}
+            className="px-4 py-2 rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-hover transition-colors"
+          >
+            {t('providers:action.add')}
+          </button>
+        </div>
+
+        {validationErrors.length > 0 && (
+          <div className="bg-error/10 p-2 mt-4 rounded">
+            {validationErrors.map((err, i) => (
+              <div key={i} className="text-error text-sm">{err}</div>
+            ))}
+          </div>
+        )}
+
+        {message && (
+          <div className={`p-2 mt-4 rounded ${messageType === 'success' ? 'bg-success/10 text-success' : 'bg-error/10 text-error'}`}>
+            {message}
+          </div>
+        )}
+
+        <div className="flex gap-2 mt-4 pt-2 border-t border-border">
+          <button
+            onClick={handleSave}
+            disabled={isSaving}
+            className="px-4 py-2 rounded bg-primary text-white hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isSaving ? t('providers:action.saving') : t('providers:action.save')}
+          </button>
+          <button
+            onClick={onClose}
+            className="px-4 py-2 rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-hover transition-colors"
+          >
+            {t('providers:action.close')}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}

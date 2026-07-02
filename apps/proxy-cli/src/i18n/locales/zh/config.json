@@ -1,0 +1,24 @@
+{
+  "heading": "配置",
+  "section": {
+    "server": "服务器",
+    "proxy": "代理",
+    "logging": "日志"
+  },
+  "message": {
+    "savedSuccess": "配置保存成功",
+    "savedAndReloaded": "配置保存成功，服务器正在重载...",
+    "savedButReloadFailed": "配置保存成功，但服务器重载失败: {{error}}",
+    "restarting": "服务正在重启...",
+    "restartTimeout": "重启超时，请检查服务状态"
+  },
+  "label": {
+    "autoReload": "保存后自动重载服务器"
+  },
+  "action": {
+    "manageProviders": "管理供应商"
+  },
+  "error": {
+    "fieldMessage": "{{field}}: {{message}}"
+  }
+}
