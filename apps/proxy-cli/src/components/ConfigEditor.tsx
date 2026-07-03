@@ -101,7 +101,7 @@ export function ConfigEditor(): JSX.Element {
 
   return (
     <div>
-      <h3 className="flex justify-between items-center text-lg font-medium mb-4 pb-1 border-b border-border">
+      <h3 className="flex justify-between items-center text-base font-medium mb-4 pb-1 border-b border-border">
         {t('heading')}
         <button
           onClick={() => setIsProviderModalOpen(true)}
