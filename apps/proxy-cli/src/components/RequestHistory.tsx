@@ -3,6 +3,7 @@ import { RequestSummary } from '../types/request'
 import { RequestCard } from './RequestCard'
 import { RequestCompareModal } from './RequestCompareModal'
 import { useTranslation } from 'react-i18next'
+import { GitCompareArrows } from 'lucide-react'
 
 interface RequestHistoryProps {
   requests: RequestSummary[]
@@ -64,9 +65,10 @@ export function RequestHistory({ requests, loading }: RequestHistoryProps): JSX.
         <button
           onClick={handleCompareClick}
           disabled={selectedIds.length !== 2}
-          className="px-3 py-1 text-sm rounded bg-primary text-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-primary/90 transition-colors"
+          title={t('requests.compare')}
+          className="flex items-center p-1.5 rounded bg-primary text-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-primary/90 transition-colors"
         >
-          {t('requests.compare')}
+          <GitCompareArrows size={16} />
         </button>
       </div>
 

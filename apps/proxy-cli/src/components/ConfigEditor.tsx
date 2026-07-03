@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { fetchConfig, saveConfig, fetchStatus } from '../api'
 import { AppConfig } from '../types/config'
 import { ProviderManagerModal } from './ProviderManagerModal'
+import { DatabaseZap } from 'lucide-react'
 
 const DEFAULT_CONFIG: AppConfig = {
   server: { port: 3000, host: 'localhost' },
@@ -105,9 +106,10 @@ export function ConfigEditor(): JSX.Element {
         {t('heading')}
         <button
           onClick={() => setIsProviderModalOpen(true)}
-          className="px-3 py-1 rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-hover transition-colors text-sm"
+          title={t('action.manageProviders')}
+          className="flex items-center p-1.5 rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-hover transition-colors"
         >
-          {t('action.manageProviders')}
+          <DatabaseZap size={16} />
         </button>
       </h3>
 
