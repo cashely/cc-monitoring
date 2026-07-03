@@ -35,6 +35,37 @@ jest.mock('@logger/index', () => ({
 
 jest.mock('open', () => jest.fn().mockResolvedValue(undefined))
 
+// ora/chalk 是纯 ESM，ts-jest CJS 环境无法解析，mock 掉
+jest.mock('ora', () => {
+  const spinner = {
+    start: jest.fn(function (this: any) { return this }),
+    succeed: jest.fn(function (this: any) { return this }),
+    fail: jest.fn(function (this: any) { return this }),
+    text: ''
+  }
+  return { __esModule: true, default: jest.fn(() => spinner) }
+})
+
+jest.mock('chalk', () => {
+  const identity = (s: string) => s
+  const proxy: any = new Proxy(identity, {
+    get: () => proxy,
+    apply: (_t, _this, args) => args[0]
+  })
+  return { __esModule: true, default: proxy }
+})
+
+// 隔离真实端口探测，直接返回 true
+jest.mock('@utils/net', () => ({
+  waitForPort: jest.fn().mockResolvedValue(true)
+}))
+
+// waitForOnline 依赖 pm2 读取 ecosystem 解析进程名，mock pm2 无法还原，直接返回 true
+jest.mock('@utils/pm2', () => {
+  const actual = jest.requireActual('@utils/pm2')
+  return { ...actual, waitForOnline: jest.fn().mockResolvedValue(true) }
+})
+
 jest.mock('child_process', () => ({
   execSync: jest.fn()
 }))
@@ -73,11 +104,11 @@ afterAll(() => {
 })
 
 describe('startCommand', () => {
-  it('starts the proxy server and logs success', async () => {
+  it('starts the proxy server and verifies the port', async () => {
+    const { waitForPort } = require('@utils/net')
     await startCommand({})
     expect(mockProcesses.length).toBe(1)
-    expect(console.log).toHaveBeenCalledWith('Starting proxy server...')
-    expect(console.log).toHaveBeenCalledWith('Server started successfully')
+    expect(waitForPort).toHaveBeenCalled()
   })
 
   it('updates port in config when port option provided', async () => {
@@ -88,9 +119,8 @@ describe('startCommand', () => {
     expect(savedConfig.server.port).toBe(8080)
   })
 
-  it('does not modify config when no port option', async () => {
+  it('does not save config when no port option', async () => {
     await startCommand({})
-    expect(loadConfig).not.toHaveBeenCalled()
     expect(saveConfig).not.toHaveBeenCalled()
   })
 })
@@ -224,15 +254,15 @@ describe('configCommand', () => {
 })
 
 describe('reloadCommand', () => {
-  it('reloads the proxy server and logs', async () => {
+  it('reloads the proxy server and verifies the port', async () => {
+    const { waitForPort } = require('@utils/net')
     addMockProcess({
       name: 'cc-monitoring',
       pm2_env: { status: 'online', pm_uptime: Date.now(), restart_time: 0 },
       monit: { memory: 1024, cpu: 5 }
     })
     await reloadCommand()
-    expect(console.log).toHaveBeenCalledWith('Reloading server...')
-    expect(console.log).toHaveBeenCalledWith('Server reloaded')
+    expect(waitForPort).toHaveBeenCalled()
     const proc = mockProcesses.find(p => p.name === 'cc-monitoring')
     expect(proc?.pm2_env?.status).toBe('online')
   })
