@@ -8,6 +8,7 @@ import { cleanOldRequestsDB } from '../utils/request-writer.js'
 import { pushNewRequest } from './data-push.js'
 import { initDatabase, closeDatabase, getDatabase } from '../utils/db.js'
 import { aggregateStats } from '../utils/stats-aggregator.js'
+import { writeTextAsSSE, shouldMock } from '../utils/sse-writer.js'
 
 interface ProxyError extends Error {
   code?: string
@@ -201,6 +202,25 @@ export async function setupProxy(
       await cleanOldRequestsDB(maxDays)
 
       request.log.info(`request logged: ${request.id} ${request.method} ${request.url}`)
+
+      // [PoC] 魔法词拦截：最新 user message 含 __MOCK__ 时，不转发上游，
+      // 直接构造合成 SSE 流返回，验证客户端能否将其识别为正常回答。
+      if (shouldMock(request.body)) {
+        reply.hijack()
+        reply.raw.writeHead(200, {
+          'content-type': 'text/event-stream',
+          'cache-control': 'no-cache',
+          'connection': 'keep-alive'
+        })
+        writeTextAsSSE(
+          reply.raw,
+          '[PoC] 这是 proxy 构造的合成响应，未经过真实大模型。',
+          `msg_poc_${request.id}`
+        )
+        reply.raw.end()
+        request.log.info(`[PoC] mock intercepted: ${request.id}`)
+        return
+      }
 
       // Build target URL correctly
       // request.url = '/v1/messages' -> should become '/apps/anthropic/v1/messages'
