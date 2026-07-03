@@ -2,14 +2,18 @@ import { execSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
+import { getCallerDirname } from './esm-dirname.js'
 
 /**
- * 获取项目版本（从根目录 package.json）
+ * 获取项目版本（从 proxy-core 自身 package.json）
+ *
+ * 基于模块自身位置定位，而非 cwd：本文件位于 src/utils（编译后 dist/utils），
+ * 向上两级即包根。全局安装 / PM2 守护进程下 cwd 不确定，故不能用 path.resolve('package.json')。
  */
 export function getProjectVersion(): string {
   try {
-    const projectPkgPath = path.resolve('package.json')
-    const projectPkg = JSON.parse(fs.readFileSync(projectPkgPath, 'utf-8'))
+    const pkgPath = path.join(getCallerDirname('../..'), 'package.json')
+    const projectPkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'))
     return projectPkg.version || 'unknown'
   } catch {
     return 'unknown'
