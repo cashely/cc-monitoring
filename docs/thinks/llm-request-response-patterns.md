@@ -201,7 +201,9 @@ function writeTextAsSSE(raw: ServerResponse, text: string, messageId: string) {
 第二部分提到 `system` 带 `cache_control: ephemeral`。「只动 tools、不碰 system」是对的，但**「只动 tools」本身仍可能击穿 system 缓存**：
 
 - Anthropic prompt cache 按 **`tools → system → messages` 顺序**计算前缀哈希。`tools` 排在最前，往其中间/前面插入元素会改变 tools 段序列化结果，**连带击穿后面 system 的缓存**，抬高 `cache_read_input_tokens`、增加费用甚至缓存失效。
-- **对策**：注入的 tool **追加到 `tools` 数组末尾**，把前缀扰动降到最小。落地时需**对比注入前后的 `cache_read_input_tokens`** 验证。
+- **对策**：注入的 tool **追加到 `tools` 数组末尾**，把前缀扰动降到最小。
+- **✅ 已验证（PoC 实测）**：追加到 tools 末尾**不击穿 cache**。同一 session 内注入开关全程开启的普通请求，`cache_read_tokens` 持续正常递增（如 137779 → 139027 → 140176 → 141242），零掉落。判断成立。
+- **⚠️ 方法论教训**：验证 cache 必须**在同一 `session_id` 内部纵向对比**。多终端并发时相邻 id 可能来自不同会话，跨 session 横向对比 cache 无意义（不同前缀本就不互相命中），会得出「cache 被击穿」的假结论。
 
 ### 6.3 响应层拦截约束（呼应第四部分）
 
@@ -216,11 +218,48 @@ function writeTextAsSSE(raw: ServerResponse, text: string, messageId: string) {
 
 ---
 
+## 八、PoC 验证结果（已完成）
+
+分三步实现并端到端验证，核心机制全部跑通。
+
+### 实现落点
+
+| 步骤 | 模块 | 触发方式 |
+|------|------|----------|
+| SSE 构造器 + 魔法词 mock | `sse-writer.ts` | user 消息含 `__MOCK__` → 直接合成回写（不转发上游） |
+| tool 注入 | `tool-injector.ts` | env `INJECT_PROBE=1` → 向 tools 末尾注入 `__inject_probe` |
+| 条件缓冲 + 内部循环 | `inject-loop.ts` + `proxy.ts` | 注入生效且 SSE → 收全流检测命中 → 内部循环 / 原样回放 |
+
+### 验证结论
+
+- ✅ **SSE 协议**：proxy 自建的合成 SSE 流能被 Claude Code 识别为正常回答。**关键坑**：Anthropic SSE 是**双行格式** `event: <type>\ndata: <json>\n\n`，只写 `data:` 行会被判为 empty/malformed（HTTP 200）。
+- ✅ **注入生效**：命中请求 tools=28，`__inject_probe` 在末尾（index 27）；response 里 `tool_use=__inject_probe`、`stop_reason=tool_use`。
+- ✅ **内部循环闭环**：日志 `injected → probe hit, entering loop → loop done (1 iter, limit=false)`，模型续调后 end_turn 收尾，未撞死循环护栏。
+- ✅ **客户端无感知**：注入 tool 在 proxy 内部消化，客户端只看到合成 text，无「未知工具」报错。
+- ✅ **cache 不击穿**：见 6.2（同 session 干净样本证实）。
+- ⚠️ **内部循环续调请求无 cache**：命中 probe 后续调 body 追加了 `assistant(tool_use)+user(tool_result)`，是全新前缀，`cache_read=0`。这是 **agentic loop 固有特性**（改对话即新前缀），非注入缺陷。
+
+### 关键教训
+
+- **回复内容不能作为验证依据**：模型看到 `__PROBE__` 会顺语境「提到」它，看起来像触发，实为巧合。**唯一裁判是日志 + DB**（tools 是否含注入、response stop_reason、inject 日志三行）。
+- **运行时数据在 `~/.cc-monitoring/`**，非项目目录的 `logs/`。
+- **PM2 env 传递**：`reload` 复用缓存 env 快照，命令行临时 `INJECT_PROBE=1` 传不进去；需写进 ecosystem `env` 块 + `pm2 kill` 重启，或 `restart --update-env`。
+- **cache 对比必须同 session 纵向**（见 6.2 方法论教训）。
+
+### 待办（后续 PR）
+
+- 中间状态回写（循环期间推送「正在执行…」占位，保持连接、避免超时）
+- 拦截时机：当前是「注入即缓冲（C 条件缓冲）」，仅测试态生效；正式化需评估对正常请求流式体验的影响
+- 真实 tool 逻辑替换 mock（`mockProbeExecute`）
+
+---
+
 ## 附录：相关代码位置
 
-- `apps/proxy-core/src/server/proxy.ts`：Proxy 转发核心（注入层 + 响应拦截要改这里，现状 285-331 行为纯透传）
+- `apps/proxy-core/src/server/proxy.ts`：Proxy 转发核心（注入层 + 条件缓冲 + 内部循环分支）
+- `apps/proxy-core/src/utils/sse-writer.ts`：SSE **构造器** + 魔法词检测（`writeTextAsSSE` / `shouldMock`）
+- `apps/proxy-core/src/utils/tool-injector.ts`：tool 注入（`injectProbeTool`，追加末尾、幂等）
+- `apps/proxy-core/src/utils/inject-loop.ts`：SSE 解析 + tool_use 检测 + 内部循环（`runInjectLoop`）
 - `apps/proxy-core/src/utils/sse-accumulator.ts`：SSE 事件**解析器**（Transform 流，存 DB 用）
-- `apps/proxy-core/src/utils/request-writer.ts`：请求写入 DB
 - `apps/proxy-cli/src/utils/parse-events.ts`：前端**解析器**（events→结构化对象，面板展示用；**非** SSE 构造器，回写不可复用）
-- `apps/proxy-core/src/utils/sse-writer.ts`：SSE **构造器**（**待新建**，见 6.1）
-- `logs/proxy.db` → `requests` 表：`request_body` / `response_events` 字段
+- `~/.cc-monitoring/logs/proxy.db` → `requests` 表：`request_body` / `response_events` 字段（运行时真实路径）
