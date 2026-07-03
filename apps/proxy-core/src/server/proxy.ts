@@ -9,6 +9,7 @@ import { pushNewRequest } from './data-push.js'
 import { initDatabase, closeDatabase, getDatabase } from '../utils/db.js'
 import { aggregateStats } from '../utils/stats-aggregator.js'
 import { writeTextAsSSE, shouldMock } from '../utils/sse-writer.js'
+import { injectProbeTool } from '../utils/tool-injector.js'
 
 interface ProxyError extends Error {
   code?: string
@@ -225,6 +226,13 @@ export async function setupProxy(
       // Build target URL correctly
       // request.url = '/v1/messages' -> should become '/apps/anthropic/v1/messages'
       const targetUrlStr = `${resolved.baseUrl}${resolved.targetPath}${request.url}`
+
+      // [第1步] tool 注入：INJECT_PROBE=1 时向主对话请求的 tools 末尾注入占位 tool，
+      // 验证模型能否看到并调用、以及是否击穿 cache（对比 DB cache_read_tokens）。
+      if (process.env.INJECT_PROBE === '1') {
+        const injected = injectProbeTool(request.body)
+        if (injected) request.log.info(`[inject] probe tool injected: ${request.id}`)
+      }
 
       request.log.info(`forwarding to: ${targetUrlStr}`)
 
