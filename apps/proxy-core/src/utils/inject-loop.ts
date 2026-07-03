@@ -1,10 +1,10 @@
-import { PROBE_TOOL_NAME } from './tool-injector.js'
+import { findEnabledTool } from '../tools/index.js'
 
 /**
  * 内部循环（后端）——命中注入 tool 后，proxy 代行「执行 tool -> 追加对话 -> 再调上游」，
  * 直到模型给出 end_turn 的最终文本，再由调用方合成 SSE 回写给客户端。
  *
- * 第 2/3 步（PoC）：tool 逻辑写死 mock 结果，只验证闭环成立。
+ * 命中检测与执行都面向注册表：任意已启用 tool 被模型调用即命中，执行其 exec。
  */
 
 export interface ParsedBlock {
@@ -86,15 +86,11 @@ export function parseUpstreamEvents(events: any[]): ParsedUpstream {
   return { blocks: ordered, stopReason, usage }
 }
 
-/** 找出命中的 probe tool_use 块 */
-export function findProbeCall(parsed: ParsedUpstream): ParsedBlock | undefined {
-  return parsed.blocks.find((b) => b.type === 'tool_use' && b.name === PROBE_TOOL_NAME)
-}
-
-/** PoC：占位 tool 的执行逻辑（写死结果，验证闭环）。引导模型收尾避免反复调用。 */
-export function mockProbeExecute(input: any): string {
-  const echo = input?.echo ?? '(no echo)'
-  return `Probe executed. Received echo: "${echo}". Now answer the user's actual question directly; do NOT call ${PROBE_TOOL_NAME} again.`
+/** 找出命中的、已启用的注入 tool 调用块 */
+export function findInjectedCall(parsed: ParsedUpstream): ParsedBlock | undefined {
+  return parsed.blocks.find(
+    (b) => b.type === 'tool_use' && !!b.name && !!findEnabledTool(b.name)
+  )
 }
 
 /** 把有序块转成 API assistant content（仅 text + tool_use，跳过 thinking 避免 signature 问题） */
@@ -121,12 +117,12 @@ export interface InjectLoopResult {
 }
 
 /**
- * 内部循环：命中 probe -> 执行 -> 追加对话 -> 再调上游 -> 直到 end_turn。
+ * 内部循环：命中已启用 tool -> 执行 exec -> 追加对话 -> 再调上游 -> 直到 end_turn。
  * opts.body 会被原地追加 messages。
  *
- * @param opts.events 首次上游响应事件（已确认命中 probe）
+ * @param opts.events 首次上游响应事件（已确认命中注入 tool）
  * @param opts.callUpstream 用给定 body 再次调上游，返回事件数组
- * @param opts.maxIterations 死循环护栏（probe 描述会诱导模型反复调用）
+ * @param opts.maxIterations 死循环护栏（tool 描述可能诱导模型反复调用）
  */
 export async function runInjectLoop(opts: {
   events: any[]
@@ -139,16 +135,17 @@ export async function runInjectLoop(opts: {
   let iterations = 0
 
   while (iterations < maxIterations) {
-    const probe = findProbeCall(parsed)
-    if (!probe || parsed.stopReason !== 'tool_use') {
+    const call = findInjectedCall(parsed)
+    if (!call || parsed.stopReason !== 'tool_use') {
       return { text: collectText(parsed), iterations, stoppedByLimit: false }
     }
 
-    const result = mockProbeExecute(probe.input)
+    const tool = findEnabledTool(call.name!)! // findInjectedCall 已保证存在
+    const result = await tool.exec(call.input)
     opts.body.messages.push({ role: 'assistant', content: blocksToAssistantContent(parsed.blocks) })
     opts.body.messages.push({
       role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: probe.id, content: result }]
+      content: [{ type: 'tool_result', tool_use_id: call.id, content: result }]
     })
 
     const nextEvents = await opts.callUpstream(opts.body)

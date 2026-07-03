@@ -9,8 +9,9 @@ import { pushNewRequest } from './data-push.js'
 import { initDatabase, closeDatabase, getDatabase } from '../utils/db.js'
 import { aggregateStats } from '../utils/stats-aggregator.js'
 import { writeTextAsSSE, shouldMock } from '../utils/sse-writer.js'
-import { injectProbeTool } from '../utils/tool-injector.js'
-import { parseSSEText, parseUpstreamEvents, findProbeCall, runInjectLoop } from '../utils/inject-loop.js'
+import { injectTools } from '../utils/tool-injector.js'
+import { parseSSEText, parseUpstreamEvents, findInjectedCall, runInjectLoop } from '../utils/inject-loop.js'
+import { hasEnabledTools } from '../tools/index.js'
 
 interface ProxyError extends Error {
   code?: string
@@ -228,13 +229,16 @@ export async function setupProxy(
       // request.url = '/v1/messages' -> should become '/apps/anthropic/v1/messages'
       const targetUrlStr = `${resolved.baseUrl}${resolved.targetPath}${request.url}`
 
-      // [第1步] tool 注入：INJECT_PROBE=1 时向主对话请求的 tools 末尾注入占位 tool，
-      // 验证模型能否看到并调用、以及是否击穿 cache（对比 DB cache_read_tokens）。
-      let injected = false
-      if (process.env.INJECT_PROBE === '1') {
-        injected = injectProbeTool(request.body)
-        if (injected) request.log.info(`[inject] probe tool injected: ${request.id}`)
+      // Tool 注入：存在启用 tool 时，向主对话请求的 tools 末尾注入自定义 tool。
+      // 无启用 tool 时完全不进此分支，走下方原 pipe 路径（零影响）。
+      let injectedNames: string[] = []
+      if (hasEnabledTools()) {
+        injectedNames = injectTools(request.body)
+        if (injectedNames.length) {
+          request.log.info(`[inject] tools injected: ${injectedNames.join(',')} (${request.id})`)
+        }
       }
+      const injected = injectedNames.length > 0
 
       request.log.info(`forwarding to: ${targetUrlStr}`)
 
@@ -299,7 +303,7 @@ export async function setupProxy(
         return
       }
 
-      // [第2/3步] 条件缓冲：注入生效且为 SSE 时，收完整流检测是否命中 probe。
+      // 条件缓冲：注入生效且为 SSE 时，收完整流检测是否命中已启用 tool。
       // 命中 -> 内部循环 -> 合成 SSE 回写；未命中 -> 原样回放缓冲字节。
       // 未注入时完全不进此分支，走下方原有 pipe 路径（零影响）。
       if (injected && isSSE && response.body) {
@@ -308,17 +312,17 @@ export async function setupProxy(
         requestData.response!.events = events
 
         const parsed = parseUpstreamEvents(events)
-        const hitProbe = findProbeCall(parsed) && parsed.stopReason === 'tool_use'
+        const hitInjected = findInjectedCall(parsed) && parsed.stopReason === 'tool_use'
 
         reply.hijack()
 
-        if (!hitProbe) {
+        if (!hitInjected) {
           // 未命中：原样回放上游缓冲字节，客户端无感知
           reply.raw.writeHead(response.status, Object.fromEntries(response.headers))
           reply.raw.end(fullText)
         } else {
-          // 命中：进入内部循环，代行「执行 probe -> 追加对话 -> 再调上游」
-          request.log.info(`[inject] probe hit, entering loop: ${cloudRequestId}`)
+          // 命中：进入内部循环，代行「执行 tool -> 追加对话 -> 再调上游」
+          request.log.info(`[inject] tool hit, entering loop: ${cloudRequestId}`)
           const loop = await runInjectLoop({
             events,
             body: request.body,
