@@ -89,6 +89,23 @@ export async function reloadProcess(name: string): Promise<void> {
   await pm2Disconnect()
 }
 
+// 轮询 pm2 list，直到目标进程状态为 online 或超时
+export async function waitForOnline(name: string, timeoutMs = 8000, intervalMs = 300): Promise<boolean> {
+  await pm2Connect()
+  try {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const list = await pm2List()
+      const proc = list.find(p => p.name === name)
+      if (proc?.pm2_env?.status === 'online') return true
+      await new Promise((resolve) => setTimeout(resolve, intervalMs))
+    }
+    return false
+  } finally {
+    await pm2Disconnect()
+  }
+}
+
 export async function getProcessStatus(name: string): Promise<Pm2ProcessStatus | null> {
   await pm2Connect()
   const list = await pm2List()
