@@ -10,6 +10,7 @@ import { initDatabase, closeDatabase, getDatabase } from '../utils/db.js'
 import { aggregateStats } from '../utils/stats-aggregator.js'
 import { writeTextAsSSE, shouldMock } from '../utils/sse-writer.js'
 import { injectProbeTool } from '../utils/tool-injector.js'
+import { parseSSEText, parseUpstreamEvents, findProbeCall, runInjectLoop } from '../utils/inject-loop.js'
 
 interface ProxyError extends Error {
   code?: string
@@ -229,8 +230,9 @@ export async function setupProxy(
 
       // [第1步] tool 注入：INJECT_PROBE=1 时向主对话请求的 tools 末尾注入占位 tool，
       // 验证模型能否看到并调用、以及是否击穿 cache（对比 DB cache_read_tokens）。
+      let injected = false
       if (process.env.INJECT_PROBE === '1') {
-        const injected = injectProbeTool(request.body)
+        injected = injectProbeTool(request.body)
         if (injected) request.log.info(`[inject] probe tool injected: ${request.id}`)
       }
 
@@ -294,6 +296,66 @@ export async function setupProxy(
         reply.code(response.status)
         reply.headers(Object.fromEntries(response.headers))
         reply.send(responseBody)
+        return
+      }
+
+      // [第2/3步] 条件缓冲：注入生效且为 SSE 时，收完整流检测是否命中 probe。
+      // 命中 -> 内部循环 -> 合成 SSE 回写；未命中 -> 原样回放缓冲字节。
+      // 未注入时完全不进此分支，走下方原有 pipe 路径（零影响）。
+      if (injected && isSSE && response.body) {
+        const fullText = await response.text()
+        const events = parseSSEText(fullText)
+        requestData.response!.events = events
+
+        const parsed = parseUpstreamEvents(events)
+        const hitProbe = findProbeCall(parsed) && parsed.stopReason === 'tool_use'
+
+        reply.hijack()
+
+        if (!hitProbe) {
+          // 未命中：原样回放上游缓冲字节，客户端无感知
+          reply.raw.writeHead(response.status, Object.fromEntries(response.headers))
+          reply.raw.end(fullText)
+        } else {
+          // 命中：进入内部循环，代行「执行 probe -> 追加对话 -> 再调上游」
+          request.log.info(`[inject] probe hit, entering loop: ${cloudRequestId}`)
+          const loop = await runInjectLoop({
+            events,
+            body: request.body,
+            callUpstream: async (b) => {
+              const r = await fetch(targetUrlStr, {
+                method: request.method,
+                headers: forwardHeaders,
+                body: JSON.stringify(b)
+              })
+              return parseSSEText(await r.text())
+            }
+          })
+          reply.raw.writeHead(200, {
+            'content-type': 'text/event-stream',
+            'cache-control': 'no-cache',
+            'connection': 'keep-alive'
+          })
+          writeTextAsSSE(reply.raw, loop.text, `msg_inject_${cloudRequestId}`)
+          reply.raw.end()
+          request.log.info(`[inject] loop done: ${cloudRequestId} (${loop.iterations} iter, limit=${loop.stoppedByLimit})`)
+        }
+
+        requestData.response!.completedAt = new Date().toISOString()
+        await saveRequestDB(sessionId, cloudRequestId, requestData)
+
+        const usage = extractTokenUsage(requestData.response!.events)
+        pushNewRequest({
+          requestId: cloudRequestId,
+          sessionId,
+          compositeId: `${sessionId}:${cloudRequestId}`,
+          method: request.method,
+          path: request.url,
+          timestamp: requestData.timestamp,
+          statusCode: response.status,
+          responseTime: Date.now() - startTime,
+          usage
+        })
         return
       }
 
