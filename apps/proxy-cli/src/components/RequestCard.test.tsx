@@ -38,12 +38,12 @@ describe('RequestCard', () => {
     expect(screen.getByRole('button', { name: /expand/i })).toBeDefined()
   })
 
-  it('displays model tag after status text', () => {
+  it('displays model tag after duration text', () => {
     render(<RequestCard summary={mockSummary} />)
 
-    // Find status text
-    const statusText = screen.getByText(/200 OK \(45ms\)/)
-    expect(statusText).toBeInTheDocument()
+    // 响应耗时以秒显示（45ms → 0.0s），状态码文字已移除
+    const durationText = screen.getByText('0.0s')
+    expect(durationText).toBeInTheDocument()
 
     // Find model tag
     const modelTag = screen.getByText('claude-3-5-sonnet')

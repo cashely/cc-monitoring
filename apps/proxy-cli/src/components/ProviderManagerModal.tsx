@@ -138,7 +138,7 @@ export function ProviderManagerModal({ isOpen, onClose }: ProviderManagerModalPr
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
       <div className="bg-bg-primary rounded-lg shadow-xl w-full max-w-6xl max-h-[90vh] overflow-auto p-6">
         <div className="flex items-center justify-between mb-4 pb-2 border-b border-border">
-          <h3 className="text-lg font-medium">{t('providers:heading')}</h3>
+          <h3 className="text-base font-medium">{t('providers:heading')}</h3>
           <button
             onClick={onClose}
             className="text-text-muted hover:text-text-primary transition-colors"

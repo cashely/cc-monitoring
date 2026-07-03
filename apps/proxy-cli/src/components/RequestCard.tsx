@@ -18,23 +18,6 @@ interface Props {
   onToggleSelect?: (id: string) => void
 }
 
-const STATUS_LABELS: Record<number, string> = {
-  200: 'OK',
-  201: 'Created',
-  204: 'No Content',
-  400: 'Bad Request',
-  401: 'Unauthorized',
-  403: 'Forbidden',
-  404: 'Not Found',
-  500: 'Internal Server Error',
-  502: 'Bad Gateway',
-  503: 'Service Unavailable',
-}
-
-function getStatusText(code: number): string {
-  return STATUS_LABELS[code] ?? 'Unknown'
-}
-
 export function RequestCard({
   summary,
   isExpanded = false,
@@ -85,6 +68,9 @@ export function RequestCard({
     })
   }
 
+  // 响应耗时以秒为单位，保留 1 位小数（如 1.2s、0.1s）
+  const formatDuration = (ms: number): string => `${(ms / 1000).toFixed(1)}s`
+
   return (
     <div data-testid="request-card" className="border border-border rounded-lg bg-bg-primary">
       <div
@@ -92,7 +78,7 @@ export function RequestCard({
         onClick={handleExpand}
       >
         <div className="flex justify-between items-center gap-2">
-          <span className="font-medium flex-1 flex items-center gap-2">
+          <span className="font-medium flex-1 flex items-center gap-2 text-sm">
             {onToggleSelect && (
               <input
                 type="checkbox"
@@ -104,7 +90,7 @@ export function RequestCard({
               />
             )}
             <span className="text-text-muted">[{formatTime(summary.timestamp)}]</span>
-            <MethodTag method={summary.method} />
+            <MethodTag method={summary.method} statusCode={summary.statusCode} />
             <span>{summary.path}</span>
           </span>
 
@@ -113,10 +99,8 @@ export function RequestCard({
             <TokenBarChart usage={(summary.usage ?? details?.response?.usage)!} />
           )}
 
-          <span className="text-sm text-text-muted ml-4 flex items-center gap-2">
-            <span>
-              {summary.statusCode} {getStatusText(summary.statusCode)} ({summary.responseTime}ms)
-            </span>
+          <span className="text-xs text-text-muted ml-4 flex items-center gap-2">
+            <span>{formatDuration(summary.responseTime)}</span>
             {summary.model && <ModelTag model={summary.model} />}
           </span>
           <button

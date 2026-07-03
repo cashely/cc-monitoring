@@ -96,7 +96,7 @@ export function RequestCompareModal({ leftId, rightId, onClose }: Props): JSX.El
         onClick={(e) => e.stopPropagation()}
       >
         <header className="flex justify-between items-center p-3 border-b border-border">
-          <h2 className="text-lg font-semibold">{t('requests.compareTitle')}</h2>
+          <h2 className="text-base font-semibold">{t('requests.compareTitle')}</h2>
           <button
             aria-label={t('requests.compareClose')}
             onClick={onClose}

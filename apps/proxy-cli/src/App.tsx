@@ -18,7 +18,7 @@ export function App(): JSX.Element {
 
       <header className="bg-bg-secondary px-6 py-4 flex justify-between items-center border-b border-border">
         <div className="flex items-center gap-4">
-          <h1 className="text-xl font-semibold">{t('title')}</h1>
+          <h1 className="text-base font-semibold">{t('title')}</h1>
           <LanguageSwitcher />
         </div>
         {versions && (

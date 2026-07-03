@@ -1,5 +1,7 @@
 interface Props {
   method: string
+  /** HTTP 状态码：传入时按成败着色（2xx 绿、非 2xx 红），覆盖方法默认色 */
+  statusCode?: number
 }
 
 const METHOD_COLORS: Record<string, string> = {
@@ -12,8 +14,16 @@ const METHOD_COLORS: Record<string, string> = {
   OPTIONS: 'bg-gray-500/20 text-gray-600 border-gray-500/30',
 }
 
-export function MethodTag({ method }: Props): JSX.Element {
-  const colorClass = METHOD_COLORS[method.toUpperCase()] ?? METHOD_COLORS.HEAD
+const SUCCESS_COLOR = 'bg-emerald-500/20 text-emerald-600 border-emerald-500/30'
+const ERROR_COLOR = 'bg-red-500/20 text-red-600 border-red-500/30'
+
+export function MethodTag({ method, statusCode }: Props): JSX.Element {
+  const colorClass =
+    statusCode !== undefined
+      ? statusCode >= 200 && statusCode < 300
+        ? SUCCESS_COLOR
+        : ERROR_COLOR
+      : METHOD_COLORS[method.toUpperCase()] ?? METHOD_COLORS.HEAD
 
   return (
     <span
