@@ -14,6 +14,15 @@ export interface ParsedResponse {
   stopReason: string
 }
 
+function parseToolInput(content: string): Record<string, any> {
+  if (!content) return {}
+  try {
+    return JSON.parse(content)
+  } catch {
+    return { _raw: content }
+  }
+}
+
 export function parseEvents(events: any[]): ParsedResponse {
   const blocks = new Map<number, any>()
   let usage = { inputTokens: 0, outputTokens: 0 }
@@ -41,11 +50,7 @@ export function parseEvents(events: any[]): ParsedResponse {
         block.content += event.delta.thinking
       }
       if (event.delta.type === 'input_json_delta' && event.delta.partial_json) {
-        try {
-          block.content = JSON.parse(event.delta.partial_json)
-        } catch {
-          block.content = event.delta.partial_json
-        }
+        block.content += event.delta.partial_json
       }
       if (event.delta.type === 'text_delta') {
         block.content += event.delta.text
@@ -64,7 +69,7 @@ export function parseEvents(events: any[]): ParsedResponse {
     text: Array.from(blocks.values()).find(b => b.type === 'text')?.content,
     toolCalls: Array.from(blocks.values())
       .filter(b => b.type === 'tool_use')
-      .map(b => ({ name: b.name, id: b.id, input: b.content })),
+      .map(b => ({ name: b.name, id: b.id, input: parseToolInput(b.content) })),
     usage,
     stopReason
   }
