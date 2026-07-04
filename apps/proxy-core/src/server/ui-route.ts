@@ -126,9 +126,10 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
   })
 
   // REST endpoint for listing all saved requests (summary)
-  fastify.get('/ui/api/requests', async (request, reply) => {
+  fastify.get<{ Querystring: { limit?: string } }>('/ui/api/requests', async (request, reply) => {
     try {
-      const summaries = await listRequestDB()
+      const limit = request.query.limit ? Number(request.query.limit) : 1000
+      const summaries = await listRequestDB(limit)
       return { requests: summaries }
     } catch (err: any) {
       request.log.error({ err }, 'Failed to list request files')

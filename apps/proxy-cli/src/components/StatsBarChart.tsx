@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { StatsData, TodayStats } from '../types/stats'
 import { TodayStatsCards } from './TodayStatsCards'
 import { formatTime } from '../utils/format-time'
+import { formatCompactNumber } from '../utils/format-number'
 
 type ViewMode = 'hour' | 'day'
 
@@ -105,7 +106,7 @@ export function StatsBarChart({ stats, todayStats }: StatsBarChartProps): JSX.El
         <BarChart data={data} margin={{ top: 10, right: 20, bottom: 5, left: 40 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#4a5568" />
           <XAxis dataKey="time" stroke="#718096" />
-          <YAxis stroke="#718096" />
+          <YAxis stroke="#718096" tickFormatter={formatCompactNumber} />
           <Tooltip
             contentStyle={{ backgroundColor: '#2d3748', border: '1px solid #4a5568' }}
             labelStyle={{ color: '#e2e8f0' }}

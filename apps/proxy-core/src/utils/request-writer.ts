@@ -149,7 +149,7 @@ export async function loadRequestDB(compositeId: string): Promise<RequestData> {
 }
 
 // List all requests (summary, sorted by timestamp desc)
-export async function listRequestDB(): Promise<RequestSummary[]> {
+export async function listRequestDB(limit: number = 1000): Promise<RequestSummary[]> {
   const db = initDatabase()
 
   const rows = db.prepare(`
@@ -159,8 +159,8 @@ export async function listRequestDB(): Promise<RequestSummary[]> {
       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
     FROM requests
     ORDER BY timestamp DESC
-    LIMIT 1000
-  `).all() as any[]
+    LIMIT ?
+  `).all(limit) as any[]
 
   return rows.map(row => ({
     requestId: row.request_id,

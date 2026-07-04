@@ -28,8 +28,8 @@ export async function saveConfig(config: AppConfig, reload: boolean = false): Pr
   return res.json()
 }
 
-export async function fetchRequests(): Promise<{ requests: RequestSummary[] }> {
-  const res = await fetch(`${API_BASE}/requests`)
+export async function fetchRequests(limit: number = 1000): Promise<{ requests: RequestSummary[] }> {
+  const res = await fetch(`${API_BASE}/requests?limit=${limit}`)
   return res.json()
 }
 

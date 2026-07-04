@@ -1,0 +1,30 @@
+[
+  {
+    "file": "apps/proxy-core/src/utils/db.ts",
+    "line": 101,
+    "summary": "applySchemaV4 condition check always true - it checks if columns exist (which they always do from v2+), not if they have NOT NULL constraints",
+    "failure_scenario": "Every time schema v4 migration runs, it will rebuild the table even if constraints were already removed; or, if migrating from v2/v3 with NOT NULL columns, the migration may fail to run entirely",
+    "verdict": "CONFIRMED"
+  },
+  {
+    "file": "apps/proxy-core/src/server/proxy.ts",
+    "line": 48,
+    "summary": "resolveProxyTarget parses config target URL outside try block; old code had try around entire resolution including config parsing",
+    "failure_scenario": "If proxyConfig.target is malformed URL, throws uncaught exception before reaching DB fallback logic",
+    "verdict": "CONFIRMED"
+  },
+  {
+    "file": "apps/proxy-core/src/utils/providers-db.ts",
+    "line": 109,
+    "summary": "\"At least one field\" validation error doesn't show index in batch validation",
+    "failure_scenario": "When multiple providers saved and one has all empty optional fields, error points to base_url with no index, making it hard to identify which provider is invalid",
+    "verdict": "REFUTED"
+  },
+  {
+    "file": "apps/proxy-core/src/server/proxy.ts",
+    "line": 470,
+    "summary": "Error path logs request.body?.model instead of originalModel",
+    "failure_scenario": "If provider model replacement is active and request fails, error log will show the replaced model instead of the original one the client sent",
+    "verdict": "CONFIRMED"
+  }
+]
