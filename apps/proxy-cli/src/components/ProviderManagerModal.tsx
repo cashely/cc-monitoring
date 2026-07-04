@@ -36,9 +36,9 @@ const FIELDS: Array<{ key: keyof ProviderInput; i18nKey: string }> = [
 function providerToInput(p: Provider): ProviderInput {
   return {
     name: p.name,
-    base_url: p.base_url,
-    api_key: p.api_key,
-    model: p.model,
+    base_url: p.base_url ?? '',
+    api_key: p.api_key ?? '',
+    model: p.model ?? '',
     haiku_model: p.haiku_model ?? '',
     sonnet_model: p.sonnet_model ?? '',
     opus_model: p.opus_model ?? '',
