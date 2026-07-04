@@ -11,11 +11,15 @@
     "clear": "清除",
     "pause": "暂停",
     "resume": "继续",
-    "resetDefault": "重置默认"
+    "resetDefault": "重置默认",
+    "restart": "重启",
+    "restarting": "重启中..."
   },
   "label": {
     "host": "主机",
     "port": "端口",
+    "address": "服务地址",
+    "configPath": "配置路径",
     "target": "目标地址",
     "changeOrigin": "更改来源",
     "level": "级别",

@@ -6,6 +6,7 @@ import { WebSocketServer, WebSocket } from 'ws'
 import { loadConfig, saveConfig } from '../config/index.js'
 import { getProcessStatus, startProcess, stopProcess, reloadProcess } from '../utils/pm2.js'
 import { getCallerDirname } from '../utils/esm-dirname.js'
+import { getConfigPath } from '../utils/paths.js'
 import { loadRequestDB, listRequestDB, type RequestSummary } from '../utils/request-writer.js'
 import { statusHistory } from '../utils/status-history.js'
 import { addDataClient, removeDataClient, pushStatsNotify } from './data-push.js'
@@ -60,7 +61,7 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get('/ui/api/config', async (request, reply) => {
     const cfg = await loadConfig()
     const versions = getVersionInfo()
-    return { config: cfg, versions }
+    return { config: cfg, versions, configPath: getConfigPath() }
   })
 
   fastify.post<{ Body: { reload?: boolean } }>('/ui/api/config', async (request, reply) => {
@@ -191,7 +192,15 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
       } else if (action === 'stop') {
         await stopProcess('cc-monitoring')
       } else if (action === 'restart') {
-        await reloadProcess('cc-monitoring')
+        // 先返回响应，延迟1秒后再执行重启，让接口有时间返回
+        setTimeout(async () => {
+          try {
+            await reloadProcess('cc-monitoring')
+          } catch (err: any) {
+            request.log.error({ err }, 'Delayed restart failed')
+          }
+        }, 1000)
+        return { success: true, restartingIn: 1000 }
       } else {
         return reply.code(400).send({ success: false, error: 'Invalid action' })
       }

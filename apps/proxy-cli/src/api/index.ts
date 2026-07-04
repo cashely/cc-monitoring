@@ -14,7 +14,7 @@ export async function fetchStatusHistory(durationMs: number = 3600000): Promise<
   return res.json()
 }
 
-export async function fetchConfig(): Promise<{ config: AppConfig; versions: VersionInfo }> {
+export async function fetchConfig(): Promise<{ config: AppConfig; versions: VersionInfo; configPath?: string }> {
   const res = await fetch(`${API_BASE}/config`)
   return res.json()
 }
