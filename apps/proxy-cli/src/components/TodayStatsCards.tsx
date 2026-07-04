@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next'
 import { ArrowDownToLine, ArrowUpFromLine, DatabaseZap, Activity, Boxes } from 'lucide-react'
+import CountUp from 'react-countup'
 import { TodayStats } from '../types/stats'
 import { TOKEN_COLORS } from './chart-theme'
 import { GlowCard } from './GlowCard'
@@ -9,11 +10,6 @@ interface Props {
 }
 
 const MODEL_COLOR = '#A855F7'
-
-// 大数字千分位格式化
-function formatNumber(n: number): string {
-  return n.toLocaleString('en-US')
-}
 
 export function TodayStatsCards({ today }: Props): JSX.Element {
   const { t } = useTranslation('app')
@@ -36,8 +32,16 @@ export function TodayStatsCards({ today }: Props): JSX.Element {
             <span className="text-xs text-text-muted">{card.label}</span>
             <card.Icon size={14} style={{ color: card.color }} />
           </div>
-          <div className="text-lg font-semibold text-center" style={{ color: card.color }}>
-            {formatNumber(card.value)}
+          <div className="text-lg font-semibold text-center">
+            <CountUp
+              start={0}
+              end={card.value}
+              duration={1.5}
+              separator=","
+              enableReinitialize={true}
+              preserveValue={true}
+              style={{ color: card.color }}
+            />
           </div>
         </GlowCard>
       ))}
