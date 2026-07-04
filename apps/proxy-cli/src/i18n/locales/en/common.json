@@ -11,11 +11,15 @@
     "clear": "Clear",
     "pause": "Pause",
     "resume": "Resume",
-    "resetDefault": "Reset Default"
+    "resetDefault": "Reset Default",
+    "restart": "Restart",
+    "restarting": "Restarting..."
   },
   "label": {
     "host": "Host",
     "port": "Port",
+    "address": "Server Address",
+    "configPath": "Config Path",
     "target": "Target",
     "changeOrigin": "Change Origin",
     "level": "Level",

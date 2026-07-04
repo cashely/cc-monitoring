@@ -1,204 +1,120 @@
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { fetchConfig, saveConfig, fetchStatus } from '../api'
-import { AppConfig } from '../types/config'
+import { fetchConfig, fetchStatus, controlProcess } from '../api'
 import { ProviderManagerModal } from './ProviderManagerModal'
-import { DatabaseZap } from 'lucide-react'
-
-const DEFAULT_CONFIG: AppConfig = {
-  server: { port: 3000, host: 'localhost' },
-  proxy: { target: 'https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic', changeOrigin: true },
-  logging: { level: 'info', file: 'logs/proxy.log' }
-}
+import { DatabaseZap, RefreshCw } from 'lucide-react'
+import { GlowCard } from './GlowCard'
+import { TOKEN_COLORS } from './chart-theme'
 
 export function ConfigEditor(): JSX.Element {
   const { t } = useTranslation('config')
-  const [config, setConfig] = useState<AppConfig>(DEFAULT_CONFIG)
-  const [errors, setErrors] = useState<Array<{ field: string; message: string }>>([])
   const [message, setMessage] = useState<string | null>(null)
   const [messageType, setMessageType] = useState<'success' | 'error' | 'restarting'>('success')
-  const [autoReload, setAutoReload] = useState(true)
-  const [isSaving, setIsSaving] = useState(false)
   const [isRestarting, setIsRestarting] = useState(false)
   const [isProviderModalOpen, setIsProviderModalOpen] = useState(false)
+  const [configPath, setConfigPath] = useState<string | null>(null)
 
   useEffect(() => {
-    loadConfig()
+    fetchConfig().then(data => {
+      if ('configPath' in data) {
+        setConfigPath(data.configPath as string)
+      }
+    }).catch(() => {
+      // 忽略获取配置路径失败
+    })
   }, [])
 
-  const loadConfig = async () => {
+  const handleRestart = async () => {
+    setIsRestarting(true)
+    setMessage(t('message.restarting'))
+    setMessageType('restarting')
+
     try {
-      const data = await fetchConfig()
-      setConfig(data.config)
+      await controlProcess('restart')
     } catch {
-      // Ignore errors - keep default config
+      // 请求可能失败（连接被拒绝），但服务可能正在重启
+      // 继续轮询即可
     }
-  }
 
-  const handleSave = async () => {
-    setIsSaving(true)
-    setMessage(null)
+    // UI端延迟2秒再开始轮询，配合服务端延迟1秒重启
+    await new Promise(resolve => setTimeout(resolve, 2000))
 
-    const result = await saveConfig(config, autoReload)
-    if (result.success) {
-      if (result.reloaded) {
-        // 显示重启中状态
-        setMessage(t('message.restarting'))
-        setMessageType('restarting')
-        setIsRestarting(true)
-        setErrors([])
+    const startTime = Date.now()
+    const minWaitTime = 3000 // 至少再等待3秒
 
-        // 高频轮询状态，直到恢复
-        const pollInterval = setInterval(async () => {
-          try {
-            const status = await fetchStatus()
-            if (status.status === 'online') {
-              clearInterval(pollInterval)
-              setIsRestarting(false)
-              setMessage(t('message.savedAndReloaded'))
-              setMessageType('success')
-              // 3秒后自动清除消息
-              setTimeout(() => setMessage(null), 3000)
-            }
-          } catch {
-            // 重启过程中请求可能失败，忽略
-          }
-        }, 1000)
-
-        // 30秒超时保护
-        setTimeout(() => {
+    // 高频轮询状态，直到恢复
+    const pollInterval = setInterval(async () => {
+      const elapsed = Date.now() - startTime
+      try {
+        const status = await fetchStatus()
+        // 等待至少 minWaitTime 后，只要看到 online 就认为成功
+        if (elapsed >= minWaitTime && status.status === 'online') {
           clearInterval(pollInterval)
-          setIsRestarting(current => {
-            if (current) {
-              setMessage(t('message.restartTimeout'))
-              setMessageType('error')
-            }
-            return false
-          })
-        }, 30000)
-      } else if (result.reloadError) {
-        setMessage(t('message.savedButReloadFailed', { error: result.reloadError }))
-        setMessageType('error')
-      } else {
-        setMessage(t('message.savedSuccess'))
-        setMessageType('success')
-        // 3秒后自动清除消息
-        setTimeout(() => setMessage(null), 3000)
+          setIsRestarting(false)
+          setMessage(t('message.savedAndReloaded'))
+          setMessageType('success')
+          // 3秒后自动清除消息
+          setTimeout(() => setMessage(null), 3000)
+        }
+      } catch {
+        // 重启过程中请求可能失败，继续轮询
       }
-      setErrors([])
-    } else {
-      setErrors(result.errors || [])
-      setMessage(null)
-    }
+    }, 800)
 
-    setIsSaving(false)
-  }
-
-  const handleReset = () => {
-    setConfig(DEFAULT_CONFIG)
-    setErrors([])
-    setMessage(null)
+    // 45秒超时保护
+    setTimeout(() => {
+      clearInterval(pollInterval)
+      setIsRestarting(current => {
+        if (current) {
+          setMessage(t('message.restartTimeout'))
+          setMessageType('error')
+        }
+        return false
+      })
+    }, 45000)
   }
 
   return (
     <div>
       <h3 className="flex justify-between items-center text-base font-medium mb-4 pb-1 border-b border-border">
         {t('heading')}
-        <button
-          onClick={() => setIsProviderModalOpen(true)}
-          title={t('action.manageProviders')}
-          className="flex items-center p-1.5 rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-hover transition-colors"
-        >
-          <DatabaseZap size={16} />
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={handleRestart}
+            disabled={isRestarting}
+            title={t('action.restartServer')}
+            className="flex items-center gap-1 px-3 py-1.5 rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-50"
+          >
+            <RefreshCw size={16} className={isRestarting ? 'animate-spin' : ''} />
+            <span className="text-sm">{isRestarting ? t('common:action.restarting') : t('common:action.restart')}</span>
+          </button>
+          <button
+            onClick={() => setIsProviderModalOpen(true)}
+            title={t('action.manageProviders')}
+            className="flex items-center p-1.5 rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-hover transition-colors"
+          >
+            <DatabaseZap size={16} />
+          </button>
+        </div>
       </h3>
 
       <div className="mb-4">
         <h4 className="text-sm font-medium mb-2 text-text-muted">{t('section.server')}</h4>
         <div className="space-y-2">
-          <label className="block">
-            <span className="text-sm">{t('common:label.host')}:</span>
-            <input
-              type="text"
-              value={config.server.host}
-              onChange={(e) => setConfig({ ...config, server: { ...config.server, host: e.target.value } })}
-              className="w-full mt-1 px-2 py-1 rounded border border-border bg-bg-secondary text-text-primary focus:border-primary focus:outline-none transition-colors"
-            />
-          </label>
-          <label className="block">
-            <span className="text-sm">{t('common:label.port')}:</span>
-            <input
-              type="number"
-              value={config.server.port}
-              onChange={(e) => setConfig({ ...config, server: { ...config.server, port: parseInt(e.target.value) } })}
-              className="w-full mt-1 px-2 py-1 rounded border border-border bg-bg-secondary text-text-primary focus:border-primary focus:outline-none transition-colors"
-            />
-          </label>
-        </div>
-      </div>
-
-      <div className="mb-4">
-        <h4 className="text-sm font-medium mb-2 text-text-muted">{t('section.proxy')}</h4>
-        <div className="space-y-2">
-          <label className="block">
-            <span className="text-sm">{t('common:label.target')}:</span>
-            <input
-              type="text"
-              value={config.proxy.target}
-              onChange={(e) => setConfig({ ...config, proxy: { ...config.proxy, target: e.target.value } })}
-              className="w-full mt-1 px-2 py-1 rounded border border-border bg-bg-secondary text-text-primary focus:border-primary focus:outline-none transition-colors"
-            />
-          </label>
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={config.proxy.changeOrigin}
-              onChange={(e) => setConfig({ ...config, proxy: { ...config.proxy, changeOrigin: e.target.checked } })}
-              className="w-4 h-4 rounded border-border bg-bg-secondary accent-primary"
-            />
-            <span className="text-sm">{t('common:label.changeOrigin')}</span>
-          </label>
-        </div>
-      </div>
-
-      <div className="mb-4">
-        <h4 className="text-sm font-medium mb-2 text-text-muted">{t('section.logging')}</h4>
-        <label className="block">
-          <span className="text-sm">{t('common:label.level')}:</span>
-          <select
-            value={config.logging.level}
-            onChange={(e) => setConfig({ ...config, logging: { ...config.logging, level: e.target.value as any } })}
-            className="w-full mt-1 px-2 py-1 rounded border border-border bg-bg-secondary text-text-primary focus:border-primary focus:outline-none transition-colors"
-          >
-            <option value="debug">{t('common:level.debug')}</option>
-            <option value="info">{t('common:level.info')}</option>
-            <option value="warn">{t('common:level.warn')}</option>
-            <option value="error">{t('common:level.error')}</option>
-          </select>
-        </label>
-      </div>
-
-      <div className="mb-4">
-        <label className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={autoReload}
-            onChange={(e) => setAutoReload(e.target.checked)}
-            className="w-4 h-4 rounded border-border bg-bg-secondary accent-primary"
-          />
-          <span className="text-sm">{t('label.autoReload')}</span>
-        </label>
-      </div>
-
-      {errors.length > 0 && (
-        <div className="bg-error/10 p-2 mb-2 rounded">
-          {errors.map((err, i) => (
-            <div key={i} className="text-error text-sm">
-              {t('error.fieldMessage', { field: err.field, message: err.message })}
+          <GlowCard color={TOKEN_COLORS.input}>
+            <div className="text-sm font-medium text-text-muted mb-1">{t('common:label.address')}</div>
+            <div className="text-text-primary font-mono">
+              http://localhost:9527
             </div>
-          ))}
+          </GlowCard>
+          <GlowCard color={TOKEN_COLORS.output}>
+            <div className="text-sm font-medium text-text-muted mb-1">{t('common:label.configPath')}</div>
+            <div className="text-text-primary font-mono text-sm break-all">
+              {configPath ? configPath.replace(/\/config\.json$/, '') : '~/.cc-monitoring'}
+            </div>
+          </GlowCard>
         </div>
-      )}
+      </div>
 
       {message && (
         <div className={`p-2 mb-2 rounded ${
@@ -209,23 +125,6 @@ export function ConfigEditor(): JSX.Element {
           {message}
         </div>
       )}
-
-      <div className="flex gap-2">
-        <button
-          onClick={handleSave}
-          disabled={isSaving || isRestarting}
-          className="px-4 py-2 rounded bg-primary text-white hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {isSaving || isRestarting ? t('common:action.saving') : t('common:action.save')}
-        </button>
-        <button
-          onClick={handleReset}
-          disabled={isSaving || isRestarting}
-          className="px-4 py-2 rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {t('common:action.resetDefault')}
-        </button>
-      </div>
 
       <ProviderManagerModal
         isOpen={isProviderModalOpen}
