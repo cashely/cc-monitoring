@@ -186,6 +186,10 @@ export async function setupProxy(
       if (resolved.model && request.body && typeof request.body === 'object') {
         request.body.model = resolved.model
       }
+      const forwardedModel = request.body?.model
+      if (originalModel !== forwardedModel) {
+        request.log.info(`model rewrite: ${originalModel} -> ${forwardedModel} (${request.id})`)
+      }
 
       // Prepare headers for forwarding (replace API key if configured)
       const forwardHeaders = filterForwardHeaders(
@@ -213,7 +217,7 @@ export async function setupProxy(
         apiKey,
         proxyApiKey,
         baseUrl: resolved.baseUrl,
-        model: originalModel,
+        model: forwardedModel,
         request: {
           method: request.method,
           path: request.url,
@@ -314,7 +318,7 @@ export async function setupProxy(
           timestamp: requestData.timestamp,
           statusCode: response.status,
           responseTime: Date.now() - startTime,
-          model: originalModel,
+          model: forwardedModel,
           usage
         })
 
@@ -383,7 +387,7 @@ export async function setupProxy(
           timestamp: requestData.timestamp,
           statusCode: response.status,
           responseTime: Date.now() - startTime,
-          model: originalModel,
+          model: forwardedModel,
           usage
         })
         return
@@ -441,7 +445,7 @@ export async function setupProxy(
             timestamp: requestData.timestamp,
             statusCode: response.status,
             responseTime: elapsed,
-            model: originalModel,
+            model: forwardedModel,
             usage
           })
 

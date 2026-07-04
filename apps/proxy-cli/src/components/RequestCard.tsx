@@ -159,8 +159,10 @@ export function RequestCard({
                   details.response?.events && details.response.events.length > 0 ? (
                     <div className="max-h-[600px] overflow-y-auto">
                       <ParsedResponseBlocks events={details.response.events} />
-                      <div className="mt-4 border-t border-border pt-2">
-                        <h3 className="text-sm font-semibold mb-2">原始 Events</h3>
+                      <details className="mt-4 border-t border-border pt-2">
+                        <summary className="text-sm font-semibold mb-2 cursor-pointer select-none">
+                          原始 Events ({details.response.events.length})
+                        </summary>
                         {details.response.events.map((event, i) => (
                           <div key={i} className="my-2 border-b border-border">
                             <span className="text-text-muted text-xs block mb-1">
@@ -172,7 +174,7 @@ export function RequestCard({
                             />
                           </div>
                         ))}
-                      </div>
+                      </details>
                     </div>
                   ) : details.response?.error ? (
                     <div className="bg-error/10 p-2 rounded text-error">
