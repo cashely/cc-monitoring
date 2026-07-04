@@ -57,6 +57,11 @@ export function initDatabase(): Database.Database {
     db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (3)').run()
   }
 
+  if (currentVersion < 4) {
+    applySchemaV4(db)
+    db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (4)').run()
+  }
+
   return db
 }
 
@@ -86,6 +91,41 @@ export function applySchemaV3(db: Database.Database) {
   const columns = db.prepare("PRAGMA table_info(providers)").all() as { name: string }[]
   if (!columns.some(c => c.name === 'is_default')) {
     db.exec('ALTER TABLE providers ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0')
+  }
+}
+
+export function applySchemaV4(db: Database.Database) {
+  // Remove NOT NULL constraints from base_url, api_key, model
+  // SQLite doesn't support ALTER COLUMN, so rebuild the table
+  const columns = db.prepare("PRAGMA table_info(providers)").all() as { name: string }[]
+  const hasNotNullColumns = columns.some(c => ['base_url', 'api_key', 'model'].includes(c.name))
+
+  if (hasNotNullColumns) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS providers_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE NOT NULL,
+        base_url TEXT,
+        api_key TEXT,
+        model TEXT,
+        haiku_model TEXT,
+        sonnet_model TEXT,
+        opus_model TEXT,
+        subagent_model TEXT,
+        provider TEXT NOT NULL,
+        is_default INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `)
+    db.exec(`
+      INSERT INTO providers_new
+      SELECT id, name, base_url, api_key, model, haiku_model, sonnet_model, opus_model, subagent_model, provider, is_default, created_at, updated_at
+      FROM providers
+    `)
+    db.exec('DROP TABLE providers')
+    db.exec('ALTER TABLE providers_new RENAME TO providers')
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_providers_name ON providers(name)')
   }
 }
 
