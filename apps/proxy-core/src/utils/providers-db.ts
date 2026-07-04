@@ -3,9 +3,9 @@ import Database from 'better-sqlite3'
 export interface Provider {
   id: number
   name: string
-  base_url: string
-  api_key: string
-  model: string
+  base_url: string | null
+  api_key: string | null
+  model: string | null
   haiku_model: string | null
   sonnet_model: string | null
   opus_model: string | null
@@ -18,9 +18,9 @@ export interface Provider {
 
 export interface ProviderInput {
   name: string
-  base_url: string
-  api_key: string
-  model: string
+  base_url?: string
+  api_key?: string
+  model?: string
   haiku_model?: string
   sonnet_model?: string
   opus_model?: string
@@ -35,7 +35,7 @@ export interface ProviderValidationError {
   message: string
 }
 
-const REQUIRED_FIELDS: (keyof ProviderInput)[] = ['name', 'base_url', 'api_key', 'model', 'provider']
+const REQUIRED_FIELDS: (keyof ProviderInput)[] = ['name', 'provider']
 
 export function listProviders(db: Database.Database): Provider[] {
   const rows = db.prepare(
@@ -66,13 +66,13 @@ export function saveProviders(db: Database.Database, providers: ProviderInput[])
     for (const p of providers) {
       insertOne.run(
         p.name,
-        p.base_url,
-        p.api_key,
-        p.model,
-        p.haiku_model || null,
-        p.sonnet_model || null,
-        p.opus_model || null,
-        p.subagent_model || null,
+        p.base_url && p.base_url.trim() !== '' ? p.base_url : null,
+        p.api_key && p.api_key.trim() !== '' ? p.api_key : null,
+        p.model && p.model.trim() !== '' ? p.model : null,
+        p.haiku_model && p.haiku_model.trim() !== '' ? p.haiku_model : null,
+        p.sonnet_model && p.sonnet_model.trim() !== '' ? p.sonnet_model : null,
+        p.opus_model && p.opus_model.trim() !== '' ? p.opus_model : null,
+        p.subagent_model && p.subagent_model.trim() !== '' ? p.subagent_model : null,
         p.provider,
         p.default ? 1 : 0
       )
@@ -96,7 +96,21 @@ export function validateProvider(input: ProviderInput): ProviderValidationError[
     }
   }
 
-  // Validate base_url format (only if not already flagged as empty)
+  // At least one of the optional fields should have a value
+  const hasOptionalValue =
+    (input.base_url && input.base_url.trim() !== '') ||
+    (input.api_key && input.api_key.trim() !== '') ||
+    (input.model && input.model.trim() !== '') ||
+    (input.haiku_model && input.haiku_model.trim() !== '') ||
+    (input.sonnet_model && input.sonnet_model.trim() !== '') ||
+    (input.opus_model && input.opus_model.trim() !== '') ||
+    (input.subagent_model && input.subagent_model.trim() !== '')
+
+  if (errors.length === 0 && !hasOptionalValue) {
+    errors.push({ field: 'base_url', message: 'at least one field (base_url, api_key, model, etc.) should have a value' })
+  }
+
+  // Validate base_url format only if provided
   if (input.base_url && input.base_url.trim() !== '') {
     try {
       const url = new URL(input.base_url)
