@@ -290,6 +290,7 @@ export async function setupProxy(
           timestamp: requestData.timestamp,
           statusCode: response.status,
           responseTime: Date.now() - startTime,
+          model,
           usage
         })
 
@@ -358,6 +359,7 @@ export async function setupProxy(
           timestamp: requestData.timestamp,
           statusCode: response.status,
           responseTime: Date.now() - startTime,
+          model,
           usage
         })
         return
@@ -415,6 +417,7 @@ export async function setupProxy(
             timestamp: requestData.timestamp,
             statusCode: response.status,
             responseTime: elapsed,
+            model,
             usage
           })
 
@@ -442,7 +445,8 @@ export async function setupProxy(
         path: request.url,
         timestamp: new Date().toISOString(),
         statusCode: getErrorStatusCode(error),
-        responseTime: Date.now() - startTime
+        responseTime: Date.now() - startTime,
+        model: request.body?.model
       })
 
       const statusCode = getErrorStatusCode(error)
