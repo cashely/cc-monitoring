@@ -44,12 +44,12 @@ export function resolveProxyTarget(proxyConfig: ProxyConfig): ResolvedTarget {
   let apiKey: string | undefined = proxyConfig.apiKey
   let model: string | undefined
 
-  // Parse config target as base
-  const configUrl = new URL(proxyConfig.target)
-  baseUrl = configUrl.origin
-  targetPath = configUrl.pathname.replace(/\/$/, '')
-
   try {
+    // Parse config target as base
+    const configUrl = new URL(proxyConfig.target)
+    baseUrl = configUrl.origin
+    targetPath = configUrl.pathname.replace(/\/$/, '')
+
     const db = getDatabase()
     const active = db.prepare(
       'SELECT base_url, api_key, model FROM providers WHERE is_default = 1 LIMIT 1'
@@ -74,7 +74,10 @@ export function resolveProxyTarget(proxyConfig: ProxyConfig): ResolvedTarget {
       }
     }
   } catch {
-    // DB not initialized yet or read error - use config defaults
+    // DB not initialized yet, read error, or URL parse error - fall back to config
+    const configUrl = new URL(proxyConfig.target)
+    baseUrl = configUrl.origin
+    targetPath = configUrl.pathname.replace(/\/$/, '')
   }
 
   return { baseUrl, targetPath, apiKey, model }
@@ -177,9 +180,9 @@ export async function setupProxy(
     const resolved = resolveProxyTarget(proxyConfig)
     const sessionId = (request.headers['x-claude-code-session-id'] as string) || 'unknown-session'
 
+    // Replace model if provider has one configured
+    const originalModel = request.body?.model
     try {
-      // Replace model if provider has one configured
-      const originalModel = request.body?.model
       if (resolved.model && request.body && typeof request.body === 'object') {
         request.body.model = resolved.model
       }
@@ -467,7 +470,7 @@ export async function setupProxy(
         timestamp: new Date().toISOString(),
         statusCode: getErrorStatusCode(error),
         responseTime: Date.now() - startTime,
-        model: request.body?.model
+        model: originalModel
       })
 
       const statusCode = getErrorStatusCode(error)

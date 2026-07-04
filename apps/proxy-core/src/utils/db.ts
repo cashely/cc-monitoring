@@ -97,8 +97,10 @@ export function applySchemaV3(db: Database.Database) {
 export function applySchemaV4(db: Database.Database) {
   // Remove NOT NULL constraints from base_url, api_key, model
   // SQLite doesn't support ALTER COLUMN, so rebuild the table
-  const columns = db.prepare("PRAGMA table_info(providers)").all() as { name: string }[]
-  const hasNotNullColumns = columns.some(c => ['base_url', 'api_key', 'model'].includes(c.name))
+  const columns = db.prepare("PRAGMA table_info(providers)").all() as { name: string, notnull: number }[]
+  const hasNotNullColumns = columns.some(c =>
+    ['base_url', 'api_key', 'model'].includes(c.name) && c.notnull === 1
+  )
 
   if (hasNotNullColumns) {
     db.exec(`
