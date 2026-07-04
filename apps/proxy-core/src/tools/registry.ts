@@ -1,5 +1,6 @@
 import type { InjectableTool } from './types.js'
 import { probeTool } from './probe.tool.js'
+import { curlTool } from './curl.tool.js'
 
 /**
  * 自定义 tool 注册表（后端）。
@@ -9,7 +10,7 @@ import { probeTool } from './probe.tool.js'
  */
 
 /** 所有已知 tool */
-const ALL_TOOLS: InjectableTool[] = [probeTool]
+const ALL_TOOLS: InjectableTool[] = [probeTool, curlTool]
 
 /** 已启用的 tool 列表（注入用） */
 export function enabledTools(): InjectableTool[] {
