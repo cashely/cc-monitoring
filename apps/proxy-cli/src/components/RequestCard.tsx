@@ -8,6 +8,7 @@ import { MethodTag } from './MethodTag'
 import { ModelTag } from './ModelTag'
 import { ParsedResponseBlocks } from './ParsedResponseBlocks'
 import { useInViewControl } from '../hooks/useInViewControl'
+import { formatTime } from '../utils/format-time'
 
 interface Props {
   summary: RequestSummary
@@ -57,18 +58,6 @@ export function RequestCard({
     }
   }
 
-  const formatTime = (timestamp: string): string => {
-    const date = new Date(timestamp)
-    return date.toLocaleString('zh-CN', {
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit'
-    })
-  }
-
-  // 响应耗时以秒为单位，保留 1 位小数（如 1.2s、0.1s）
   const formatDuration = (ms: number): string => `${(ms / 1000).toFixed(1)}s`
 
   return (
@@ -89,7 +78,7 @@ export function RequestCard({
                 aria-label={t('requests.compare')}
               />
             )}
-            <span className="text-text-muted">[{formatTime(summary.timestamp)}]</span>
+            <span className="text-text-muted">[{formatTime(summary.timestamp, 'monthDayTime')}]</span>
             <MethodTag method={summary.method} statusCode={summary.statusCode} />
             <span>{summary.path}</span>
           </span>

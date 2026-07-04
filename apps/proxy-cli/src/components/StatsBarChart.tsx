@@ -1,15 +1,18 @@
 import { useState } from 'react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import { useTranslation } from 'react-i18next'
-import { StatsData } from '../types/stats'
+import { StatsData, TodayStats } from '../types/stats'
+import { TodayStatsCards } from './TodayStatsCards'
+import { formatTime } from '../utils/format-time'
 
 type ViewMode = 'hour' | 'day'
 
 interface StatsBarChartProps {
   stats: StatsData
+  todayStats: TodayStats
 }
 
-export function StatsBarChart({ stats }: StatsBarChartProps): JSX.Element {
+export function StatsBarChart({ stats, todayStats }: StatsBarChartProps): JSX.Element {
   const { t } = useTranslation('app')
   const [viewMode, setViewMode] = useState<ViewMode>('hour')
 
@@ -68,6 +71,9 @@ export function StatsBarChart({ stats }: StatsBarChartProps): JSX.Element {
 
   return (
     <div className="bg-bg-card rounded-lg p-4">
+      {/* 今日实时统计卡片 */}
+      <TodayStatsCards today={todayStats} />
+
       {/* Toggle buttons */}
       <div className="flex justify-end mb-4">
         <div className="flex gap-2">
@@ -113,7 +119,7 @@ export function StatsBarChart({ stats }: StatsBarChartProps): JSX.Element {
 
       {/* Last updated timestamp */}
       <p className="text-xs text-text-muted mt-2">
-        {t('lastUpdated')}: {stats.lastUpdated ? new Date(stats.lastUpdated).toLocaleString() : '--'}
+        {t('lastUpdated')}: {formatTime(stats.lastUpdated)}
       </p>
     </div>
   )
