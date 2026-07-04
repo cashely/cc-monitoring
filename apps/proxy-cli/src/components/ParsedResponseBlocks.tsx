@@ -1,3 +1,4 @@
+import ReactMarkdown from 'react-markdown'
 import { parseEvents } from '../utils/parse-events'
 import { ShikiHighlighter } from './ShikiHighlighter'
 
@@ -28,9 +29,9 @@ export function ParsedResponseBlocks({ events }: Props): JSX.Element {
           <h3 className="text-sm font-semibold text-green-800 dark:text-green-300 mb-2">
             💬 AI 回复内容
           </h3>
-          <p className="text-green-900 dark:text-green-100 whitespace-pre-wrap">
-            {parsed.text}
-          </p>
+          <div className="prose prose-sm max-w-none dark:prose-invert text-green-900 dark:text-green-100">
+            <ReactMarkdown>{parsed.text}</ReactMarkdown>
+          </div>
         </div>
       )}
 

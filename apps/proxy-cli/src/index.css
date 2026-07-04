@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
 /* 科技蓝配色方案（Tailwind v4 @theme） */
 @theme {
