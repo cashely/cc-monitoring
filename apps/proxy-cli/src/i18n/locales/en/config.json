@@ -7,16 +7,18 @@
   },
   "message": {
     "savedSuccess": "Config saved successfully",
-    "savedAndReloaded": "Config saved successfully, server is reloading...",
+    "savedAndReloaded": "Server restarted successfully",
     "savedButReloadFailed": "Config saved successfully, but server reload failed: {{error}}",
     "restarting": "Server is restarting...",
-    "restartTimeout": "Restart timeout, please check server status"
+    "restartTimeout": "Restart timeout, please check server status",
+    "restartFailed": "Restart failed"
   },
   "label": {
     "autoReload": "Auto-reload server after save"
   },
   "action": {
-    "manageProviders": "Manage Providers"
+    "manageProviders": "Manage Providers",
+    "restartServer": "Restart Server"
   },
   "error": {
     "fieldMessage": "{{field}}: {{message}}"

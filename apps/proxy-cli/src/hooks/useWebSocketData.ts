@@ -137,7 +137,16 @@ export function useWebSocketData(): {
 
           case 'request':
             if (msg.action === 'new') {
-              setRequests(prev => [msg.data, ...prev.slice(0, 199)])
+              setRequests(prev => {
+                // 1. 去重：如果已存在相同 compositeId 的请求，先移除
+                const filtered = prev.filter(r => r.compositeId !== msg.data.compositeId)
+                // 2. 添加新请求
+                const withNew = [msg.data, ...filtered]
+                // 3. 按 timestamp 倒序排序（确保时间顺序正确）
+                const sorted = withNew.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+                // 4. 截取前 1000 条（与后端 LIMIT 一致）
+                return sorted.slice(0, 1000)
+              })
               // New request arrived — refresh today's real-time stats
               fetchTodayStats().then(setTodayStats).catch(() => {})
             }

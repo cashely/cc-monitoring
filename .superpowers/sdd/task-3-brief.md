@@ -1,165 +1,116 @@
-### Task 3: Implement AuthContext
+### Task 3: Update Proxy Forwarding Logic for Partial Replacement
 
 **Files:**
-- Create: `apps/proxy-admin/src/contexts/AuthContext.tsx`
-- Create: `apps/proxy-admin/src/types/auth.ts`
-- Modify: `apps/proxy-admin/src/main.tsx`
+- Modify: `apps/proxy-core/src/server/proxy.ts:24-64,158-165`
 
 **Interfaces:**
-- Produces: `AuthProvider` component, `useAuth` hook with `login`, `logout`, `user`, `token`, `isAuthenticated` properties
+- Consumes: Updated `Provider` interface (nullable fields)
+- Produces: Updated `ResolvedTarget` with `model?: string`, updated forwarding logic
 
-- [ ] **Step 1: Create auth types file**
+- [ ] **Step 1: Update ResolvedTarget interface**
 
-Create `src/types/auth.ts`:
+Change:
 ```typescript
-export interface UserInfo {
-  id: number;
-  username: string;
-  nickname: string;
-  avatar: string;
-  email: string;
-}
-
-export interface AuthState {
-  token: string | null;
-  user: UserInfo | null;
-  isAuthenticated: boolean;
-}
-
-export interface LoginParams {
-  username: string;
-  password: string;
-}
-
-export interface AuthContextType extends AuthState {
-  login: (token: string, user: UserInfo) => void;
-  logout: () => void;
+interface ResolvedTarget {
+  baseUrl: string
+  targetPath: string
+  apiKey?: string
 }
 ```
 
-- [ ] **Step 2: Create AuthContext implementation**
+To:
+```typescript
+interface ResolvedTarget {
+  baseUrl: string
+  targetPath: string
+  apiKey?: string
+  model?: string
+}
+```
 
-Create `src/contexts/AuthContext.tsx`:
-```tsx
-import { createContext, useContext, useReducer, ReactNode } from 'react';
-import { AuthState, AuthContextType, UserInfo } from '../types/auth';
+- [ ] **Step 2: Update resolveProxyTarget function**
 
-const initialState: AuthState = {
-  token: localStorage.getItem('token'),
-  user: JSON.parse(localStorage.getItem('user') || 'null'),
-  isAuthenticated: !!localStorage.getItem('token'),
-};
+Rewrite the function to handle partial replacement:
 
-type AuthAction =
-  | { type: 'LOGIN'; payload: { token: string; user: UserInfo } }
-  | { type: 'LOGOUT' };
+```typescript
+export function resolveProxyTarget(proxyConfig: ProxyConfig): ResolvedTarget {
+  // Default to config values
+  let baseUrl: string
+  let targetPath: string
+  let apiKey: string | undefined = proxyConfig.apiKey
+  let model: string | undefined
 
-const authReducer = (state: AuthState, action: AuthAction): AuthState => {
-  switch (action.type) {
-    case 'LOGIN':
-      return {
-        ...state,
-        token: action.payload.token,
-        user: action.payload.user,
-        isAuthenticated: true,
-      };
-    case 'LOGOUT':
-      return {
-        ...state,
-        token: null,
-        user: null,
-        isAuthenticated: false,
-      };
-    default:
-      return state;
+  // Parse config target as base
+  const configUrl = new URL(proxyConfig.target)
+  baseUrl = configUrl.origin
+  targetPath = configUrl.pathname.replace(/\/$/, '')
+
+  try {
+    const db = getDatabase()
+    const active = db.prepare(
+      'SELECT base_url, api_key, model FROM providers WHERE is_default = 1 LIMIT 1'
+    ).get() as { base_url: string | null, api_key: string | null, model: string | null } | undefined
+
+    if (active) {
+      // Replace base_url only if provided
+      if (active.base_url && active.base_url.trim() !== '') {
+        const providerUrl = new URL(active.base_url)
+        baseUrl = providerUrl.origin
+        targetPath = providerUrl.pathname.replace(/\/$/, '')
+      }
+
+      // Replace api_key only if provided
+      if (active.api_key && active.api_key.trim() !== '') {
+        apiKey = active.api_key
+      }
+
+      // Replace model only if provided
+      if (active.model && active.model.trim() !== '') {
+        model = active.model
+      }
+    }
+  } catch {
+    // DB not initialized yet or read error - use config defaults
   }
-};
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
-
-export const AuthProvider = ({ children }: { children: ReactNode }) => {
-  const [state, dispatch] = useReducer(authReducer, initialState);
-
-  const login = (token: string, user: UserInfo) => {
-    localStorage.setItem('token', token);
-    localStorage.setItem('user', JSON.stringify(user));
-    dispatch({ type: 'LOGIN', payload: { token, user } });
-  };
-
-  const logout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    dispatch({ type: 'LOGOUT' });
-  };
-
-  return (
-    <AuthContext.Provider
-      value={{
-        ...state,
-        login,
-        logout,
-      }}
-    >
-      {children}
-    </AuthContext.Provider>
-  );
-};
-
-export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
-};
-```
-
-- [ ] **Step 3: Add AuthProvider to main.tsx**
-
-Update `src/main.tsx`:
-```tsx
-import React from 'react';
-import ReactDOM from 'react-dom/client';
-import App from './App';
-import './styles/global.css';
-import { AuthProvider } from './contexts/AuthContext';
-
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <AuthProvider>
-      <App />
-    </AuthProvider>
-  </React.StrictMode>,
-);
-```
-
-- [ ] **Step 4: Test AuthContext**
-
-Add test code to App.tsx:
-```tsx
-import { useAuth } from './contexts/AuthContext';
-
-function App() {
-  const { isAuthenticated, login, logout } = useAuth();
-  
-  return (
-    <div>
-      <p>Authenticated: {isAuthenticated ? 'Yes' : 'No'}</p>
-      <button onClick={() => login('test-token', { id: 1, username: 'test', nickname: 'Test User', avatar: '', email: 'test@example.com' })}>
-        Login
-      </button>
-      <button onClick={logout}>Logout</button>
-    </div>
-  );
+  return { baseUrl, targetPath, apiKey, model }
 }
 ```
 
-Run dev server, test login/logout functionality. Expected: Clicking login updates state and localStorage, clicking logout clears them.
+- [ ] **Step 3: Update forwarding logic to replace model in request body**
 
-- [ ] **Step 5: Revert test changes in App.tsx**
+In the fastify route handler, after `resolveProxyTarget` call, add:
 
-- [ ] **Step 6: Commit**
+```typescript
+// Replace model if provider has one configured
+const originalModel = request.body?.model
+if (resolved.model && request.body && typeof request.body === 'object') {
+  request.body.model = resolved.model
+}
+```
+
+Also update the `requestData.model` assignment to use `originalModel` (so logs show what the client sent):
+
+```typescript
+model: originalModel,
+```
+
+Find the line:
+```typescript
+model: request.body?.model,
+```
+
+Change to:
+```typescript
+model: originalModel,
+```
+
+- [ ] **Step 4: Commit**
+
 ```bash
-git add src/types/auth.ts src/contexts/AuthContext.tsx src/main.tsx
-git commit -m "feat: implement AuthContext for auth state management"
+git add apps/proxy-core/src/server/proxy.ts
+git commit -m "feat: implement partial replacement for provider fields"
 ```
+
+---
+

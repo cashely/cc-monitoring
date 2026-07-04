@@ -1,7 +1,7 @@
 {
   "server": {
     "port": 9527,
-    "host": "localhost"
+    "host": "0.0.0.0"
   },
   "proxy": {
     "target": "https://ark.cn-beijing.volces.com/api/coding",
