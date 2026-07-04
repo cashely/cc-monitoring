@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { MockWebSocket } from '../test/setup'
 import { useWebSocketData } from './useWebSocketData'
-import type { StatusApiResponse, StatsData } from '../types'
+import type { StatusApiResponse, StatsData, TodayStats } from '../types'
 
 // Mock the API module
 vi.mock('../api', () => ({
@@ -10,9 +10,10 @@ vi.mock('../api', () => ({
   fetchStatusHistory: vi.fn(),
   fetchRequests: vi.fn(),
   fetchStats: vi.fn(),
+  fetchTodayStats: vi.fn(),
 }))
 
-import { fetchStatus, fetchStatusHistory, fetchRequests, fetchStats } from '../api'
+import { fetchStatus, fetchStatusHistory, fetchRequests, fetchStats, fetchTodayStats } from '../api'
 
 const MOCK_STATUS: StatusApiResponse = {
   status: 'online',
@@ -48,11 +49,20 @@ const MOCK_STATS: StatsData = {
   lastUpdated: '2025-01-01T10:00:00Z',
 }
 
+const MOCK_TODAY: TodayStats = {
+  input_tokens: 100,
+  output_tokens: 50,
+  cache_read_tokens: 20,
+  request_count: 1,
+  models: {},
+}
+
 function setupMocks() {
   vi.mocked(fetchStatus).mockResolvedValue(MOCK_STATUS)
   vi.mocked(fetchStatusHistory).mockResolvedValue({ history: MOCK_HISTORY })
   vi.mocked(fetchRequests).mockResolvedValue(MOCK_REQUESTS)
   vi.mocked(fetchStats).mockResolvedValue(MOCK_STATS)
+  vi.mocked(fetchTodayStats).mockResolvedValue(MOCK_TODAY)
 }
 
 function getWs(): MockWebSocket {

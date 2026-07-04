@@ -10,7 +10,7 @@ import { useConfig, useWebSocketData } from './hooks'
 export function App(): JSX.Element {
   const { t } = useTranslation('app')
   const { versions } = useConfig()
-  const { status, history, requests, stats, connectionState, loading } = useWebSocketData()
+  const { status, history, requests, stats, todayStats, connectionState, loading } = useWebSocketData()
 
   return (
     <div className="min-h-screen flex flex-col bg-bg-primary text-text-primary">
@@ -31,7 +31,7 @@ export function App(): JSX.Element {
 
       {/* Token stats bar chart */}
       <div className="px-4 py-2">
-        <StatsBarChart stats={stats} />
+        <StatsBarChart stats={stats} todayStats={todayStats} />
       </div>
 
       <main className="flex-1 flex gap-4 p-4">

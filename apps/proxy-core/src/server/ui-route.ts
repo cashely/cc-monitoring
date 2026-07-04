@@ -10,7 +10,7 @@ import { loadRequestDB, listRequestDB, type RequestSummary } from '../utils/requ
 import { statusHistory } from '../utils/status-history.js'
 import { addDataClient, removeDataClient, pushStatsNotify } from './data-push.js'
 import { getVersionInfo } from '../utils/version.js'
-import { getStatsData } from '../utils/stats-aggregator.js'
+import { getStatsData, getTodayStats } from '../utils/stats-aggregator.js'
 import { setupProvidersRoutes } from './providers-route.js'
 import { checkAuth } from './auth.js'
 
@@ -141,12 +141,32 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
   // REST endpoint for token aggregation stats (SQLite)
   fastify.get('/ui/api/stats', async (request, reply) => {
     try {
-      const statsData = getStatsData()
-      return statsData
+      return getStatsData()
     } catch (err: any) {
       request.log.error({ err }, 'Failed to load stats from database')
       return reply.code(500).send({
         error: 'Failed to load stats',
+        details: err.message
+      })
+    }
+  })
+
+  // REST endpoint for today's real-time stats (direct query, no aggregation delay).
+  // `since` = client's local midnight (ISO); falls back to server local midnight if absent.
+  fastify.get('/ui/api/stats/today', async (request, reply) => {
+    try {
+      const sinceParam = (request.query as { since?: string })?.since
+      let since = sinceParam
+      if (!since || Number.isNaN(new Date(since).getTime())) {
+        const midnight = new Date()
+        midnight.setHours(0, 0, 0, 0)
+        since = midnight.toISOString()
+      }
+      return getTodayStats(since)
+    } catch (err: any) {
+      request.log.error({ err }, 'Failed to load today stats from database')
+      return reply.code(500).send({
+        error: 'Failed to load today stats',
         details: err.message
       })
     }

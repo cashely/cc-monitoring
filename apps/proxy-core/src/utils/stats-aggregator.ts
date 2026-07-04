@@ -6,11 +6,20 @@ export interface StatsData {
   lastUpdated: string | null
 }
 
+export interface TodayStats {
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  request_count: number
+  models: Record<string, number>
+}
+
 // Aggregate stats from requests table (called periodically)
 export function aggregateStats(): void {
   const db = initDatabase()
 
   const now = new Date()
+  const nowIso = now.toISOString()  // ISO UTC (带 Z)，供 updated_at 写入，前端可正确转本地时区
   const hourlyCutoff = new Date(now.getTime() - 24 * 3600000).toISOString()  // Last 24 hours
   const dailyCutoff = new Date(now.getTime() - 30 * 86400000).toISOString() // Last 30 days
 
@@ -33,7 +42,7 @@ export function aggregateStats(): void {
     INSERT OR REPLACE INTO stats (
       period, period_key, input_tokens, output_tokens,
       cache_read_tokens, cache_creation_tokens, request_count, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   for (const row of hourlyRows) {
@@ -44,7 +53,8 @@ export function aggregateStats(): void {
       row.output_tokens || 0,
       row.cache_read_tokens || 0,
       row.cache_creation_tokens || 0,
-      row.request_count
+      row.request_count,
+      nowIso
     )
   }
 
@@ -67,7 +77,7 @@ export function aggregateStats(): void {
     INSERT OR REPLACE INTO stats (
       period, period_key, input_tokens, output_tokens,
       cache_read_tokens, cache_creation_tokens, request_count, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   for (const row of dailyRows) {
@@ -78,7 +88,8 @@ export function aggregateStats(): void {
       row.output_tokens || 0,
       row.cache_read_tokens || 0,
       row.cache_creation_tokens || 0,
-      row.request_count
+      row.request_count,
+      nowIso
     )
   }
 
@@ -135,6 +146,47 @@ export function getStatsData(): StatsData {
     hourly,
     daily,
     lastUpdated: lastUpdatedRow?.last_updated || null
+  }
+}
+
+// Get today's real-time stats directly from requests table (no aggregation delay).
+// `since` is the ISO timestamp of local midnight (computed by the caller/frontend),
+// so the "today" boundary follows the user's timezone instead of a hardcoded offset.
+export function getTodayStats(since: string): TodayStats {
+  const db = initDatabase()
+
+  // Totals: SUM tokens + COUNT requests since local midnight
+  const totalRow = db.prepare(`
+    SELECT
+      SUM(input_tokens) as input_tokens,
+      SUM(output_tokens) as output_tokens,
+      SUM(cache_read_tokens) as cache_read_tokens,
+      COUNT(*) as request_count
+    FROM requests
+    WHERE timestamp >= ?
+  `).get(since) as any
+
+  // Per-model usage count since local midnight
+  const modelRows = db.prepare(`
+    SELECT model, COUNT(*) as count
+    FROM requests
+    WHERE timestamp >= ?
+      AND model IS NOT NULL AND model != ''
+    GROUP BY model
+    ORDER BY count DESC
+  `).all(since) as any[]
+
+  const models: Record<string, number> = {}
+  for (const row of modelRows) {
+    models[row.model] = row.count
+  }
+
+  return {
+    input_tokens: totalRow?.input_tokens || 0,
+    output_tokens: totalRow?.output_tokens || 0,
+    cache_read_tokens: totalRow?.cache_read_tokens || 0,
+    request_count: totalRow?.request_count || 0,
+    models
   }
 }
 

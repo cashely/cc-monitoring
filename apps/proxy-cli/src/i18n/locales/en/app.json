@@ -23,6 +23,14 @@
   "outputTokens": "Output",
   "cacheTokens": "Cache",
   "lastUpdated": "Last updated",
+  "today": {
+    "inputTokens": "Today Input",
+    "outputTokens": "Today Output",
+    "cacheTokens": "Today Cache Hit",
+    "requestCount": "Today Requests",
+    "models": "Today Models",
+    "noModels": "No data"
+  },
   "versions": {
     "claudeCode": "Claude Code",
     "project": "Project"

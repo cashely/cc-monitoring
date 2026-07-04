@@ -32,6 +32,7 @@ vi.mock('./hooks/useWebSocketData', () => ({
     history: [],
     requests: [],
     stats: { hourly: {}, daily: {}, lastUpdated: null },
+    todayStats: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, request_count: 0, models: {} },
     connectionState: 'connected',
     reconnect: vi.fn()
   })

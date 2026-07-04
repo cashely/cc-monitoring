@@ -1,6 +1,6 @@
 import { StatusApiResponse, StatusHistoryResponse, AppConfig, ValidationError, VersionInfo } from '../types'
 import { RequestSummary } from '../types/request'
-import { StatsData } from '../types/stats'
+import { StatsData, TodayStats } from '../types/stats'
 
 const API_BASE = '/ui/api'
 
@@ -44,6 +44,14 @@ export async function controlProcess(action: 'start' | 'stop' | 'restart'): Prom
 
 export async function fetchStats(): Promise<StatsData> {
   const res = await fetch(`${API_BASE}/stats`)
+  return res.json()
+}
+
+export async function fetchTodayStats(): Promise<TodayStats> {
+  // 以浏览器本地时区的今日 00:00 作为查询起点，保证「今日」边界随用户时区
+  const midnight = new Date()
+  midnight.setHours(0, 0, 0, 0)
+  const res = await fetch(`${API_BASE}/stats/today?since=${encodeURIComponent(midnight.toISOString())}`)
   return res.json()
 }
 

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { fetchStatus, fetchStatusHistory, fetchRequests, fetchStats } from '../api'
-import type { StatusApiResponse, StatusDataPoint, RequestSummary, StatsData } from '../types'
+import { fetchStatus, fetchStatusHistory, fetchRequests, fetchStats, fetchTodayStats } from '../api'
+import type { StatusApiResponse, StatusDataPoint, RequestSummary, StatsData, TodayStats } from '../types'
 
 type ConnectionState = 'connecting' | 'connected' | 'disconnected'
 
@@ -18,6 +18,14 @@ const INITIAL_STATS: StatsData = {
   lastUpdated: null
 }
 
+const INITIAL_TODAY: TodayStats = {
+  input_tokens: 0,
+  output_tokens: 0,
+  cache_read_tokens: 0,
+  request_count: 0,
+  models: {}
+}
+
 const HEARTBEAT_TIMEOUT_MS = 30000
 
 export function useWebSocketData(): {
@@ -25,6 +33,7 @@ export function useWebSocketData(): {
   history: StatusDataPoint[]
   requests: RequestSummary[]
   stats: StatsData
+  todayStats: TodayStats
   connectionState: ConnectionState
   loading: boolean
   reconnect: () => void
@@ -33,6 +42,7 @@ export function useWebSocketData(): {
   const [history, setHistory] = useState<StatusDataPoint[]>([])
   const [requests, setRequests] = useState<RequestSummary[]>([])
   const [stats, setStats] = useState<StatsData>(INITIAL_STATS)
+  const [todayStats, setTodayStats] = useState<TodayStats>(INITIAL_TODAY)
   const [connectionState, setConnectionState] = useState<ConnectionState>('connecting')
   const [loading, setLoading] = useState(true)
 
@@ -49,16 +59,18 @@ export function useWebSocketData(): {
   }, [])
 
   const refreshAll = useCallback(async () => {
-    const [statusData, historyData, requestsData, statsData] = await Promise.all([
+    const [statusData, historyData, requestsData, statsData, todayData] = await Promise.all([
       fetchStatus(),
       fetchStatusHistory(),
       fetchRequests(),
-      fetchStats()
+      fetchStats(),
+      fetchTodayStats()
     ])
     setStatus(statusData)
     setHistory(historyData.history)
     setRequests(requestsData.requests || [])
     setStats(statsData)
+    setTodayStats(todayData)
     setLoading(false)
   }, [])
 
@@ -126,6 +138,8 @@ export function useWebSocketData(): {
           case 'request':
             if (msg.action === 'new') {
               setRequests(prev => [msg.data, ...prev.slice(0, 199)])
+              // New request arrived — refresh today's real-time stats
+              fetchTodayStats().then(setTodayStats).catch(() => {})
             }
             break
 
@@ -185,5 +199,5 @@ export function useWebSocketData(): {
     connect()
   }, [connect])
 
-  return { status, history, requests, stats, connectionState, loading, reconnect }
+  return { status, history, requests, stats, todayStats, connectionState, loading, reconnect }
 }

@@ -1,6 +1,7 @@
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { StatusDataPoint } from '../types/status'
 import { DARK_CHART_THEME } from './chart-theme'
+import { formatTime } from '../utils/format-time'
 
 interface StatusLineChartProps {
   data: StatusDataPoint[]
@@ -9,10 +10,7 @@ interface StatusLineChartProps {
 }
 
 export function StatusLineChart({ data, metric, height = 120 }: StatusLineChartProps): JSX.Element {
-  const formatTime = (timestamp: number): string => {
-    const date = new Date(timestamp)
-    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-  }
+  const formatTick = (timestamp: number): string => formatTime(timestamp, 'time')
 
   const isCpu = metric === 'cpu'
   const color = isCpu ? '#3B82F6' : '#10B981'  // Primary蓝 / Success绿
@@ -24,7 +22,7 @@ export function StatusLineChart({ data, metric, height = 120 }: StatusLineChartP
       <LineChart data={data} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
         <XAxis
           dataKey="timestamp"
-          tickFormatter={formatTime}
+          tickFormatter={formatTick}
           stroke={DARK_CHART_THEME.axisColor}
           tick={{ fill: DARK_CHART_THEME.axisTickColor, fontSize: 10 }}
           tickLine={{ stroke: DARK_CHART_THEME.axisColor }}
@@ -42,7 +40,7 @@ export function StatusLineChart({ data, metric, height = 120 }: StatusLineChartP
             border: `1px solid ${DARK_CHART_THEME.tooltipBorder}`,
             color: DARK_CHART_THEME.tooltipText,
           }}
-          labelFormatter={formatTime}
+          labelFormatter={formatTick}
           formatter={(value: number) => [`${value.toFixed(1)}${yAxisUnit}`, isCpu ? 'CPU' : 'Memory']}
         />
         <Line
