@@ -14,6 +14,70 @@ function formatNumber(n: number): string {
   return n.toLocaleString('en-US')
 }
 
+// 发光渐变边框卡片组件
+function GlowCard({ children, color }: { children: React.ReactNode; color: string }): JSX.Element {
+  // 将hex颜色转为带透明度的
+  const colorWithAlpha = (alpha: number) => {
+    if (color.startsWith('#')) {
+      const r = parseInt(color.slice(1, 3), 16)
+      const g = parseInt(color.slice(3, 5), 16)
+      const b = parseInt(color.slice(5, 7), 16)
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`
+    }
+    return color
+  }
+
+  return (
+    <div className="relative rounded-lg overflow-hidden">
+      {/* 发光边框层 */}
+      <div className="absolute inset-0 rounded-lg" style={{ padding: '1px' }}>
+        <div className="absolute inset-0 overflow-hidden rounded-lg">
+          {/* 大尺寸渐变背景，避免角落截断 */}
+          <div
+            className="absolute"
+            style={{
+              width: '300%',
+              height: '300%',
+              left: '-100%',
+              top: '-100%',
+              background: `conic-gradient(from 0deg,
+                transparent 0deg,
+                transparent 70deg,
+                ${colorWithAlpha(0)} 80deg,
+                ${colorWithAlpha(1)} 100deg,
+                ${colorWithAlpha(1)} 140deg,
+                ${colorWithAlpha(0)} 160deg,
+                transparent 170deg,
+                transparent 250deg,
+                ${colorWithAlpha(0)} 260deg,
+                ${colorWithAlpha(1)} 280deg,
+                ${colorWithAlpha(1)} 320deg,
+                ${colorWithAlpha(0)} 340deg,
+                transparent 350deg,
+                transparent 360deg
+              )`,
+              animation: 'glowRotate 6s linear infinite',
+              transformOrigin: 'center center',
+            }}
+          />
+        </div>
+        {/* 内部背景遮罩 */}
+        <div className="absolute inset-[1px] bg-bg-secondary rounded-lg" />
+      </div>
+      {/* 内容层 */}
+      <div className="relative z-10 p-3">
+        {children}
+      </div>
+      <style>{`
+        @keyframes glowRotate {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+      `}</style>
+    </div>
+  )
+}
+
 export function TodayStatsCards({ today }: Props): JSX.Element {
   const { t } = useTranslation('app')
 
@@ -30,19 +94,19 @@ export function TodayStatsCards({ today }: Props): JSX.Element {
   return (
     <div className="grid grid-cols-5 gap-2 mb-4">
       {cards.map(card => (
-        <div key={card.key} className="bg-bg-secondary rounded-lg p-3">
+        <GlowCard key={card.key} color={card.color}>
           <div className="flex items-center justify-between mb-1">
             <span className="text-xs text-text-muted">{card.label}</span>
             <card.Icon size={14} style={{ color: card.color }} />
           </div>
-          <div className="text-lg font-semibold" style={{ color: card.color }}>
+          <div className="text-lg font-semibold text-center" style={{ color: card.color }}>
             {formatNumber(card.value)}
           </div>
-        </div>
+        </GlowCard>
       ))}
 
       {/* 今日模型使用次数（横向长方条） */}
-      <div className="bg-bg-secondary rounded-lg p-3">
+      <GlowCard color={MODEL_COLOR}>
         <div className="flex items-center justify-between mb-1">
           <span className="text-xs text-text-muted">{t('today.models')}</span>
           <Boxes size={14} style={{ color: MODEL_COLOR }} />
@@ -50,7 +114,7 @@ export function TodayStatsCards({ today }: Props): JSX.Element {
         {modelEntries.length === 0 ? (
           <div className="text-sm text-text-muted">{t('today.noModels')}</div>
         ) : (
-          <div className="flex items-end gap-1.5 h-12">
+          <div className="flex items-end justify-center gap-1.5 h-12">
             {modelEntries.map(([model, count]) => (
               <div key={model} className="flex flex-col items-center justify-end group relative shrink-0 h-full">
                 {/* 竖向柱体 */}
@@ -71,7 +135,7 @@ export function TodayStatsCards({ today }: Props): JSX.Element {
             ))}
           </div>
         )}
-      </div>
+      </GlowCard>
     </div>
   )
 }
