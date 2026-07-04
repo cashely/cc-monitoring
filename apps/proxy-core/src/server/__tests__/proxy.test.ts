@@ -85,7 +85,7 @@ describe('resolveProxyTarget', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     db = new Database(':memory:')
-    db.exec(`CREATE TABLE providers (id INTEGER PRIMARY KEY, base_url TEXT, api_key TEXT, is_default INTEGER)`)
+    db.exec(`CREATE TABLE providers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, base_url TEXT, api_key TEXT, model TEXT, haiku_model TEXT, sonnet_model TEXT, opus_model TEXT, subagent_model TEXT, provider TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`)
     getDatabase.mockReturnValue(db)
   })
 
@@ -94,8 +94,8 @@ describe('resolveProxyTarget', () => {
   })
 
   test('uses active provider base_url and api_key when one is active', () => {
-    db.prepare('INSERT INTO providers (base_url, api_key, is_default) VALUES (?, ?, ?)').run(
-      'https://provider.example.com/v1', 'provider-key', 1
+    db.prepare('INSERT INTO providers (name, base_url, api_key, model, provider, is_default) VALUES (?, ?, ?, ?, ?, ?)').run(
+      'test-provider', 'https://provider.example.com/v1', 'provider-key', 'test-model', 'anthropic', 1
     )
 
     const result = resolveProxyTarget(config)
