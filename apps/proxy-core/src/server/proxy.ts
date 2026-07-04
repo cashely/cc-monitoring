@@ -26,41 +26,58 @@ interface ResolvedTarget {
   baseUrl: string
   targetPath: string
   apiKey?: string
+  model?: string
 }
 
 /**
  * Resolves the proxy target per request:
- * - If a provider with is_default=1 exists in DB, use its base_url + api_key
+ * - If a provider with is_default=1 exists in DB, use its base_url + api_key + model (partial replacement)
  * - Otherwise fall back to config.json proxy.target + proxy.apiKey
  *
  * Called per request for hot-swap support (no server restart needed on activation change).
  * better-sqlite3 is synchronous and ~us-level for a single-row SELECT; no caching needed.
  */
 export function resolveProxyTarget(proxyConfig: ProxyConfig): ResolvedTarget {
+  // Default to config values
+  let baseUrl: string
+  let targetPath: string
+  let apiKey: string | undefined = proxyConfig.apiKey
+  let model: string | undefined
+
+  // Parse config target as base
+  const configUrl = new URL(proxyConfig.target)
+  baseUrl = configUrl.origin
+  targetPath = configUrl.pathname.replace(/\/$/, '')
+
   try {
     const db = getDatabase()
     const active = db.prepare(
-      'SELECT base_url, api_key FROM providers WHERE is_default = 1 LIMIT 1'
-    ).get() as { base_url: string; api_key: string } | undefined
+      'SELECT base_url, api_key, model FROM providers WHERE is_default = 1 LIMIT 1'
+    ).get() as { base_url: string | null, api_key: string | null, model: string | null } | undefined
 
     if (active) {
-      const u = new URL(active.base_url)
-      return {
-        baseUrl: u.origin,
-        targetPath: u.pathname.replace(/\/$/, ''),
-        apiKey: active.api_key
+      // Replace base_url only if provided
+      if (active.base_url && active.base_url.trim() !== '') {
+        const providerUrl = new URL(active.base_url)
+        baseUrl = providerUrl.origin
+        targetPath = providerUrl.pathname.replace(/\/$/, '')
+      }
+
+      // Replace api_key only if provided
+      if (active.api_key && active.api_key.trim() !== '') {
+        apiKey = active.api_key
+      }
+
+      // Replace model only if provided
+      if (active.model && active.model.trim() !== '') {
+        model = active.model
       }
     }
   } catch {
-    // DB not initialized yet (startup early phase) or read error -- fall back to config
+    // DB not initialized yet or read error - use config defaults
   }
 
-  const u = new URL(proxyConfig.target)
-  return {
-    baseUrl: u.origin,
-    targetPath: u.pathname.replace(/\/$/, ''),
-    apiKey: proxyConfig.apiKey
-  }
+  return { baseUrl, targetPath, apiKey, model }
 }
 
 // Extract safe headers (avoid circular reference)
@@ -161,6 +178,12 @@ export async function setupProxy(
     const sessionId = (request.headers['x-claude-code-session-id'] as string) || 'unknown-session'
 
     try {
+      // Replace model if provider has one configured
+      const originalModel = request.body?.model
+      if (resolved.model && request.body && typeof request.body === 'object') {
+        request.body.model = resolved.model
+      }
+
       // Prepare headers for forwarding (replace API key if configured)
       const forwardHeaders = filterForwardHeaders(
         extractSafeHeaders(request.headers),
@@ -179,8 +202,6 @@ export async function setupProxy(
       const proxyApiKey = forwardHeaders['x-api-key'] ||
         (forwardedAuthHeader?.startsWith('Bearer ') ? forwardedAuthHeader.slice(7) : undefined)
 
-      const model = request.body?.model
-
       // Log complete request data (Fastify already parsed body)
       const requestData: RequestData = {
         requestId: request.id, // Will be updated with cloud x-request-id later
@@ -189,7 +210,7 @@ export async function setupProxy(
         apiKey,
         proxyApiKey,
         baseUrl: resolved.baseUrl,
-        model,
+        model: originalModel,
         request: {
           method: request.method,
           path: request.url,
@@ -290,7 +311,7 @@ export async function setupProxy(
           timestamp: requestData.timestamp,
           statusCode: response.status,
           responseTime: Date.now() - startTime,
-          model,
+          model: originalModel,
           usage
         })
 
@@ -359,7 +380,7 @@ export async function setupProxy(
           timestamp: requestData.timestamp,
           statusCode: response.status,
           responseTime: Date.now() - startTime,
-          model,
+          model: originalModel,
           usage
         })
         return
@@ -417,7 +438,7 @@ export async function setupProxy(
             timestamp: requestData.timestamp,
             statusCode: response.status,
             responseTime: elapsed,
-            model,
+            model: originalModel,
             usage
           })
 
