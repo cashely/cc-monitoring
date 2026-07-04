@@ -5,6 +5,9 @@ node_modules/
 # Build outputs
 dist/
 build/
+docs/superpowers/
+docs/thinks/
+.superpoweres/
 
 # Environment variables
 .env.local
