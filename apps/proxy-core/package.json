@@ -1,20 +1,47 @@
 {
   "name": "@cc-monitoring/proxy-core",
-  "version": "1.0.0",
+  "version": "0.1.0",
+  "description": "Claude Code 代理 + 监控 CLI（Fastify 代理服务器 + PM2 守护 + Web UI + 请求记录）",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "anthropic",
+    "proxy",
+    "monitoring",
+    "cli",
+    "fastify"
+  ],
+  "author": "cashely",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cashely/cc-monitoring.git",
+    "directory": "apps/proxy-core"
+  },
+  "homepage": "https://github.com/cashely/cc-monitoring#readme",
+  "bugs": {
+    "url": "https://github.com/cashely/cc-monitoring/issues"
+  },
   "type": "module",
   "bin": {
-    "proxy": "./dist/cli/index.js"
+    "ccm": "./dist/cli/index.js"
   },
   "main": "./dist/server/index.js",
   "files": [
     "dist",
-    "ecosystem.config.cjs"
+    "ecosystem.config.cjs",
+    "README.md",
+    "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/server/index.ts",
     "start": "pm2 start ecosystem.config.js",
-    "test": "jest"
+    "test": "jest",
+    "prepublishOnly": "pnpm build && node scripts/bundle-ui.mjs"
   },
   "dependencies": {
     "@fastify/http-proxy": "^9.5.0",

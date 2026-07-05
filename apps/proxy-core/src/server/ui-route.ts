@@ -394,7 +394,11 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
 
   // Derive server directory from utils dirname (esm-dirname lives in src/utils/)
   const serverDirname = getCallerDirname('../server')
-  const uiDistPath = path.join(serverDirname, '../../../proxy-cli/dist')
+  // 发布产物：dist/ui（bundle-ui.mjs 注入）；本地开发：monorepo 的 proxy-cli/dist
+  const bundledUi = path.join(serverDirname, '../ui')
+  const uiDistPath = fs.existsSync(bundledUi)
+    ? bundledUi
+    : path.join(serverDirname, '../../../proxy-cli/dist')
   await fastify.register(staticPlugin, {
     root: uiDistPath,
     prefix: '/ui/',
