@@ -1,5 +1,5 @@
 {
-  "name": "@cc-monitoring/cli-core",
+  "name": "@cc-monitoring/proxy-core",
   "version": "1.0.0",
   "type": "module",
   "bin": {
