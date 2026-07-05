@@ -4,7 +4,7 @@
 
 [![Build Status][build-badge]][build-link]
 [![Test Coverage][coverage-badge]][coverage-link]
-[![License: MIT][license-badge]][license-link]
+[![License: Apache-2.0][license-badge]][license-link]
 
 ## 为什么需要这个项目
 Claude Code 直接访问 Anthropic API 在国内网络环境下受限。CC Monitoring 在本地启动一个 Fastify 代理服务器，将所有请求透明转发到阿里云中转服务，同时提供完整的请求监控、日志流、用户管理、权限控制等企业级能力。你只需要改一个 API endpoint 配置，其余一切照旧。
@@ -484,13 +484,13 @@ UI 包测试覆盖：组件渲染、交互逻辑、自定义 hooks、API 调用�
 代码风格遵循 TypeScript strict 模式。
 
 ## 许可
-MIT License - 详见 [LICENSE](LICENSE) 文件。
+Apache-2.0 License - 详见 [LICENSE](LICENSE) 文件。
 
 <!-- Badge placeholders -->
 [build-badge]: https://img.shields.io/badge/build-passing-brightgreen
 [coverage-badge]: https://img.shields.io/badge/coverage-80%25-green
-[license-badge]: https://img.shields.io/badge/License-MIT-yellow.svg
+[license-badge]: https://img.shields.io/badge/License-Apache_2.0-blue.svg
 
-[build-link]: https://github.com/your-org/cc-monitoring/actions
-[coverage-link]: https://github.com/your-org/cc-monitoring/actions
-[license-link]: https://opensource.org/licenses/MIT
+[build-link]: https://github.com/cashely/cc-monitoring/actions
+[coverage-link]: https://github.com/cashely/cc-monitoring/actions
+[license-link]: https://opensource.org/licenses/Apache-2.0

@@ -15,16 +15,23 @@ export interface UiOptions {
 export async function uiCommand(options: UiOptions): Promise<void> {
   const status = await getProcessStatus('cc-monitoring')
   if (!status || status.status !== 'online') {
-    console.error('Server not running. Use "proxy start" first.')
+    console.error('Server not running. Use "ccm start" first.')
     return
   }
 
-  const uiDistPath = path.join(commandsDirname, '../../../ui/dist')
-  const needsBuild = options.build || !fs.existsSync(uiDistPath)
+  // 发布产物：与 server 同级的 dist/ui；本地开发：monorepo 的 proxy-cli/dist
+  const bundledUi = path.join(commandsDirname, '../../ui')
+  const monorepoUi = path.join(commandsDirname, '../../../../proxy-cli/dist')
+  const uiExists = fs.existsSync(bundledUi) || fs.existsSync(monorepoUi)
+  const needsBuild = options.build || !uiExists
 
   if (needsBuild) {
+    // 仅 monorepo 场景下才可能触发 build；全局安装场景 bundledUi 一定存在
     console.log('Building UI...')
-    execSync('pnpm --filter @proxy/ui build', { stdio: 'inherit', cwd: path.join(commandsDirname, '../../..') })
+    execSync('pnpm --filter @cc-monitoring/proxy-cli build', {
+      stdio: 'inherit',
+      cwd: path.join(commandsDirname, '../../../..')
+    })
   }
 
   const config = await loadConfig()
