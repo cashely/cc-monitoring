@@ -80,7 +80,7 @@ export function StatsBarChart({ stats, todayStats }: StatsBarChartProps): JSX.El
         <div className="flex gap-2">
           <button
             onClick={() => setViewMode('hour')}
-            className={`px-3 py-1 text-sm rounded ${
+            className={`px-3 py-1 text-xs rounded ${
               viewMode === 'hour'
                 ? 'bg-accent text-white'
                 : 'bg-bg-secondary text-text-muted hover:bg-bg-hover'
@@ -90,7 +90,7 @@ export function StatsBarChart({ stats, todayStats }: StatsBarChartProps): JSX.El
           </button>
           <button
             onClick={() => setViewMode('day')}
-            className={`px-3 py-1 text-sm rounded ${
+            className={`px-3 py-1 text-xs rounded ${
               viewMode === 'day'
                 ? 'bg-accent text-white'
                 : 'bg-bg-secondary text-text-muted hover:bg-bg-hover'
@@ -102,7 +102,7 @@ export function StatsBarChart({ stats, todayStats }: StatsBarChartProps): JSX.El
       </div>
 
       {/* Bar chart */}
-      <ResponsiveContainer width="100%" height={200}>
+      <ResponsiveContainer width="100%" height={200} className="text-xs">
         <BarChart data={data} margin={{ top: 10, right: 20, bottom: 5, left: 40 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#4a5568" />
           <XAxis dataKey="time" stroke="#718096" />
@@ -111,7 +111,7 @@ export function StatsBarChart({ stats, todayStats }: StatsBarChartProps): JSX.El
             contentStyle={{ backgroundColor: '#2d3748', border: '1px solid #4a5568' }}
             labelStyle={{ color: '#e2e8f0' }}
           />
-          <Legend />
+          <Legend className='text-xs' />
           <Bar dataKey="input" fill="#3b82f6" name={t('inputTokens')} />
           <Bar dataKey="output" fill="#10b981" name={t('outputTokens')} />
           <Bar dataKey="cache" fill="#f59e0b" name={t('cacheTokens')} />
