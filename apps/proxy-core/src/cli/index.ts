@@ -1,23 +1,48 @@
 import { Command } from 'commander'
 import path from 'path'
 import { setConfigPathOverride } from '../utils/paths.js'
-import { startCommand } from './commands/start.js'
-import { stopCommand } from './commands/stop.js'
-import { killCommand } from './commands/kill.js'
-import { statusCommand } from './commands/status.js'
-import { logsCommand } from './commands/logs.js'
-import { configCommand } from './commands/config.js'
-import { reloadCommand } from './commands/reload.js'
-import { testCommand } from './commands/test.js'
-import { uiCommand } from './commands/ui.js'
+
+// Check for -p/--prompt BEFORE loading commander and other commands
+function checkForPromptOption() {
+  let prompt: string | null = null
+  let configPath: string | null = null
+
+  for (let i = 0; i < process.argv.length; i++) {
+    const arg = process.argv[i]
+    if (arg === '-p' || arg === '--prompt') {
+      if (i + 1 < process.argv.length) {
+        prompt = process.argv[i + 1]
+      }
+    }
+    if (arg === '-c' || arg === '--config') {
+      if (i + 1 < process.argv.length) {
+        configPath = process.argv[i + 1]
+      }
+    }
+  }
+
+  return { prompt, configPath }
+}
+
+// Handle prompt option early
+const { prompt, configPath } = checkForPromptOption()
+if (prompt) {
+  if (configPath) {
+    setConfigPathOverride(path.resolve(configPath))
+  }
+  const { execCommand } = await import('./commands/exec.js')
+  await execCommand(prompt)
+  process.exit(0)
+}
 
 const program = new Command()
 
 program
-  .name('proxy')
-  .description('Claude Code Proxy Helper - Forward requests to Aliyun')
+  .name('ccm')
+  .description('Claude Code Proxy Helper')
   .version('1.0.0')
   .option('-c, --config <path>', 'Path to config file')
+  .option('-p, --prompt <prompt>', 'Execute claude -p <prompt> via server')
   .hook('preAction', () => {
     const opts = program.opts()
     if (opts.config) {
@@ -25,45 +50,81 @@ program
     }
   })
 
+program.command('prompt')
+  .alias('p')
+  .description('Execute claude -p <prompt> via server')
+  .argument('<prompt>', 'Prompt text')
+  .action(async (prompt) => {
+    const { execCommand } = await import('./commands/exec.js')
+    await execCommand(prompt)
+  })
+
 program.command('start')
   .description('Start proxy server')
   .option('-p, --port <port>', 'Override port', (val) => parseInt(val))
-  .action(startCommand)
+  .action(async (options) => {
+    const { startCommand } = await import('./commands/start.js')
+    await startCommand(options)
+  })
 
 program.command('stop')
   .description('Stop proxy server')
-  .action(stopCommand)
+  .action(async () => {
+    const { stopCommand } = await import('./commands/stop.js')
+    await stopCommand()
+  })
 
 program.command('kill')
   .description('Kill proxy server and remove from PM2')
-  .action(killCommand)
+  .action(async () => {
+    const { killCommand } = await import('./commands/kill.js')
+    await killCommand()
+  })
 
 program.command('status')
   .description('Show server status')
-  .action(statusCommand)
+  .action(async () => {
+    const { statusCommand } = await import('./commands/status.js')
+    await statusCommand()
+  })
 
 program.command('logs [n]')
   .description('Show recent logs')
   .option('-l, --level <level>', 'Filter by level')
   .option('-g, --grep <pattern>', 'Search pattern')
-  .action(logsCommand)
+  .action(async (n, options) => {
+    const { logsCommand } = await import('./commands/logs.js')
+    await logsCommand(n, options)
+  })
 
 program.command('config <action> [key] [value]')
   .description('Manage configuration (show/set/reset)')
-  .action(configCommand)
+  .action(async (action, key, value) => {
+    const { configCommand } = await import('./commands/config.js')
+    await configCommand(action, key, value)
+  })
 
 program.command('reload')
   .description('Restart server (graceful)')
-  .action(reloadCommand)
+  .action(async () => {
+    const { reloadCommand } = await import('./commands/reload.js')
+    await reloadCommand()
+  })
 
 program.command('test')
   .description('Test connection to target')
-  .action(testCommand)
+  .action(async () => {
+    const { testCommand } = await import('./commands/test.js')
+    await testCommand()
+  })
 
 program.command('ui')
   .description('Open web UI dashboard')
   .option('--build', 'Force rebuild UI')
-  .action(uiCommand)
+  .action(async (options) => {
+    const { uiCommand } = await import('./commands/ui.js')
+    await uiCommand(options)
+  })
 
 program.command('clean-requests')
   .description('清理旧的请求日志（SQLite）')
