@@ -53,6 +53,15 @@ async function pm2Stop(name: string): Promise<void> {
   })
 }
 
+async function pm2Delete(name: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    pm2.delete(name, (err: Error | null) => {
+      if (err) reject(err)
+      else resolve()
+    })
+  })
+}
+
 async function pm2Reload(name: string): Promise<void> {
   return new Promise((resolve, reject) => {
     pm2.reload(name, (err: Error | null) => {
@@ -80,6 +89,12 @@ export async function startProcess(ecosystemPath: string): Promise<void> {
 export async function stopProcess(name: string): Promise<void> {
   await pm2Connect()
   await pm2Stop(name)
+  await pm2Disconnect()
+}
+
+export async function killProcess(name: string): Promise<void> {
+  await pm2Connect()
+  await pm2Delete(name)
   await pm2Disconnect()
 }
 

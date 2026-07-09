@@ -6,7 +6,7 @@ import { WebSocketServer, WebSocket } from 'ws'
 import { loadConfig, saveConfig } from '../config/index.js'
 import { getProcessStatus, startProcess, stopProcess, reloadProcess } from '../utils/pm2.js'
 import { getCallerDirname } from '../utils/esm-dirname.js'
-import { getConfigPath } from '../utils/paths.js'
+import { getConfigPath, getDisplayPath } from '../utils/paths.js'
 import { loadRequestDB, listRequestDB, type RequestSummary } from '../utils/request-writer.js'
 import { statusHistory } from '../utils/status-history.js'
 import { addDataClient, removeDataClient, pushStatsNotify } from './data-push.js'
@@ -61,7 +61,7 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get('/ui/api/config', async (request, reply) => {
     const cfg = await loadConfig()
     const versions = getVersionInfo()
-    return { config: cfg, versions, configPath: getConfigPath() }
+    return { config: cfg, versions, configPath: getDisplayPath(getConfigPath()) }
   })
 
   fastify.post<{ Body: { reload?: boolean } }>('/ui/api/config', async (request, reply) => {

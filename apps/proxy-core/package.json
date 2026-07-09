@@ -1,6 +1,6 @@
 {
   "name": "@cc-monitoring/proxy-core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Claude Code 代理 + 监控 CLI（Fastify 代理服务器 + PM2 守护 + Web UI + 请求记录）",
   "keywords": [
     "claude",

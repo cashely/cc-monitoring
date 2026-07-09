@@ -221,7 +221,7 @@ export async function setupProxy(
         request: {
           method: request.method,
           path: request.url,
-          headers: extractSafeHeaders(request.headers),
+          headers: forwardHeaders,
           body: request.body // Full payload: model, messages, tools, MCP params, etc.
         },
         response: {

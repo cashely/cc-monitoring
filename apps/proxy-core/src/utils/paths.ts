@@ -19,6 +19,15 @@ export function getConfigPath(): string {
   return configPathOverride || process.env.CONFIG_PATH || path.join(dataDir, 'config.json')
 }
 
+// 将绝对路径转换为用户友好的显示路径（用 ~ 代替 home dir）
+export function getDisplayPath(absPath: string): string {
+  const home = os.homedir()
+  if (absPath.startsWith(home)) {
+    return absPath.replace(home, '~')
+  }
+  return absPath
+}
+
 // 确保数据目录与日志目录存在
 export function ensureDataDirs(): void {
   if (!fs.existsSync(logsDir)) {
