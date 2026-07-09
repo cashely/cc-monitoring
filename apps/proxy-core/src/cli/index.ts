@@ -1,6 +1,7 @@
 import { Command } from 'commander'
 import path from 'path'
 import { setConfigPathOverride } from '../utils/paths.js'
+import { getProjectVersion } from '../utils/version.js'
 
 // Check for -p/--prompt BEFORE loading commander and other commands
 function checkForPromptOption() {
@@ -40,7 +41,7 @@ const program = new Command()
 program
   .name('ccm')
   .description('Claude Code Proxy Helper')
-  .version('1.0.0')
+  .version(getProjectVersion())
   .option('-c, --config <path>', 'Path to config file')
   .option('-p, --prompt <prompt>', 'Execute claude -p <prompt> via server')
   .hook('preAction', () => {
