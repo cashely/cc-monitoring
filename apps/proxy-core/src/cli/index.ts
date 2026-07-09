@@ -3,6 +3,7 @@ import path from 'path'
 import { setConfigPathOverride } from '../utils/paths.js'
 import { startCommand } from './commands/start.js'
 import { stopCommand } from './commands/stop.js'
+import { killCommand } from './commands/kill.js'
 import { statusCommand } from './commands/status.js'
 import { logsCommand } from './commands/logs.js'
 import { configCommand } from './commands/config.js'
@@ -32,6 +33,10 @@ program.command('start')
 program.command('stop')
   .description('Stop proxy server')
   .action(stopCommand)
+
+program.command('kill')
+  .description('Kill proxy server and remove from PM2')
+  .action(killCommand)
 
 program.command('status')
   .description('Show server status')
