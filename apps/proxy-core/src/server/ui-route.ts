@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify'
 import staticPlugin from '@fastify/static'
 import path from 'path'
 import fs from 'fs'
+import { spawn } from 'child_process'
 import { WebSocketServer, WebSocket } from 'ws'
 import { loadConfig, saveConfig } from '../config/index.js'
 import { getProcessStatus, startProcess, stopProcess, reloadProcess } from '../utils/pm2.js'
@@ -14,6 +15,19 @@ import { getVersionInfo } from '../utils/version.js'
 import { getStatsData, getTodayStats } from '../utils/stats-aggregator.js'
 import { setupProvidersRoutes } from './providers-route.js'
 import { checkAuth } from './auth.js'
+
+// Exec API types
+interface ExecRequestBody {
+  tool: 'claude'
+  prompt: string
+  stream?: boolean
+}
+
+interface ExecResponse {
+  success: boolean
+  output?: string
+  error?: string
+}
 
 export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
   const config = await loadConfig()
@@ -213,6 +227,148 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
         success: false,
         error: err.message || `Failed to ${action} process`
       })
+    }
+  })
+
+  // Exec endpoint: run claude -p <prompt>
+  fastify.post<{ Body: ExecRequestBody }>('/ui/api/exec', async (request, reply) => {
+    if (!checkAuth(request, config)) {
+      return reply.code(401).send({
+        success: false,
+        error: 'Unauthorized: missing or invalid Authorization header'
+      })
+    }
+
+    const { tool, prompt, stream = false } = request.body
+
+    if (tool !== 'claude') {
+      return reply.code(400).send({
+        success: false,
+        error: 'Unsupported tool: only "claude" is supported'
+      })
+    }
+
+    if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
+      return reply.code(400).send({
+        success: false,
+        error: 'prompt is required and must be a non-empty string'
+      })
+    }
+
+    if (stream) {
+      // Streaming mode: use SSE
+      reply.hijack()
+      const res = reply.raw
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      })
+
+      const sendSSE = (event: string, data: string) => {
+        if (res.destroyed) return
+        res.write(`event: ${event}\ndata: ${data}\n\n`)
+      }
+
+      const child = spawn('claude', ['-p', prompt], {
+        env: { ...process.env }
+      })
+
+      const TIMEOUT = 5 * 60 * 1000 // 5 minutes
+      const timeoutId = setTimeout(() => {
+        child.kill('SIGTERM')
+        if (!res.destroyed) {
+          sendSSE('error', JSON.stringify({ message: 'Execution timeout (5 minutes)' }))
+          sendSSE('done', JSON.stringify({ code: 1 }))
+          res.end()
+        }
+      }, TIMEOUT)
+
+      child.stdout?.on('data', (chunk) => {
+        sendSSE('data', JSON.stringify({ content: chunk.toString() }))
+      })
+
+      child.stderr?.on('data', (chunk) => {
+        sendSSE('data', JSON.stringify({ content: chunk.toString(), type: 'stderr' }))
+      })
+
+      child.on('error', (err) => {
+        clearTimeout(timeoutId)
+        if (!res.destroyed) {
+          sendSSE('error', JSON.stringify({ message: err.message }))
+          sendSSE('done', JSON.stringify({ code: 1 }))
+          res.end()
+        }
+      })
+
+      child.on('close', (code) => {
+        clearTimeout(timeoutId)
+        if (!res.destroyed) {
+          sendSSE('done', JSON.stringify({ code: code ?? 0 }))
+          res.end()
+        }
+      })
+
+      // Handle client disconnect
+      res.on('close', () => {
+        clearTimeout(timeoutId)
+        if (!child.killed) {
+          child.kill('SIGTERM')
+        }
+      })
+    } else {
+      // Non-streaming mode: buffer all output
+      const child = spawn('claude', ['-p', prompt], {
+        env: { ...process.env }
+      })
+
+      const TIMEOUT = 5 * 60 * 1000 // 5 minutes
+      const timeoutId = setTimeout(() => {
+        child.kill('SIGTERM')
+      }, TIMEOUT)
+
+      let stdout = ''
+      let stderr = ''
+
+      child.stdout?.on('data', (chunk) => {
+        stdout += chunk.toString()
+      })
+
+      child.stderr?.on('data', (chunk) => {
+        stderr += chunk.toString()
+      })
+
+      const result: ExecResponse = await new Promise((resolve) => {
+        child.on('error', (err) => {
+          clearTimeout(timeoutId)
+          resolve({
+            success: false,
+            error: err.message
+          })
+        })
+
+        child.on('close', (code) => {
+          clearTimeout(timeoutId)
+          const output = stdout + stderr
+          if (code === 0) {
+            resolve({
+              success: true,
+              output
+            })
+          } else {
+            resolve({
+              success: false,
+              error: output || `Process exited with code ${code}`
+            })
+          }
+        })
+      })
+
+      if (!result.success) {
+        return reply.code(500).send(result)
+      }
+
+      return result
     }
   })
 
