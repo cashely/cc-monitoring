@@ -8,6 +8,8 @@
     "allowImportingTsExtensions": false,
     "noUnusedLocals": false,
     "noUnusedParameters": false,
+    "sourceMap": false,
+    "declarationMap": false,
     "paths": {
       "@config/*": ["config/*"],
       "@logger/*": ["logger/*"],
