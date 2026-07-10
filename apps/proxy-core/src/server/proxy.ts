@@ -106,11 +106,19 @@ function filterForwardHeaders(
   // Remove headers that cause issues
   delete filtered.host
   delete filtered['content-length']
+  delete filtered['x-req-key']
 
   // Replace API key if proxy key is configured
   if (proxyApiKey) {
-    filtered['x-api-key'] = proxyApiKey
-    filtered['authorization'] = `Bearer ${proxyApiKey}`
+    // Only replace existing headers, don't add new ones
+    if ('x-api-key' in filtered) {
+      filtered['x-api-key'] = proxyApiKey
+    }
+    if ('authorization' in filtered || 'Authorization' in filtered) {
+      // Use the same case as the original header
+      const key = 'authorization' in filtered ? 'authorization' : 'Authorization'
+      filtered[key] = `Bearer ${proxyApiKey}`
+    }
   }
 
   return filtered
