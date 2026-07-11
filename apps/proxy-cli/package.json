@@ -12,6 +12,7 @@
   "dependencies": {
     "@ant-design/icons": "^5.6.1",
     "@ant-design/x": "^1.6.1",
+    "@ant-design/x-markdown": "^2.8.0",
     "@pierre/diffs": "^1.2.11",
     "@tanstack/react-virtual": "^3.14.3",
     "antd": "^5.29.3",

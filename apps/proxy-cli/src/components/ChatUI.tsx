@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState } from 'react'
 import { Bubble, Sender } from '@ant-design/x'
+import XMarkdown from '@ant-design/x-markdown'
 import { Button, Tooltip } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
@@ -26,7 +27,7 @@ export function ChatUI(): JSX.Element {
 
   const items = messages.map((msg) => ({
     key: msg.id,
-    content: msg.content,
+    content: msg.role === 'assistant' ? <XMarkdown content={msg.content} /> : msg.content,
     role: msg.role as 'user' | 'assistant',
     loading: msg.role === 'assistant' && loading && !msg.content,
   }))
