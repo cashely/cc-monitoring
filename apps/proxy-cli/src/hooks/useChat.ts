@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { createChatConnection, loadConversations, saveConversations } from '../api/chat'
 import type { ChatMessage, ChatConversation } from '../types/chat'
 
@@ -11,15 +11,29 @@ export function useChat() {
   const [error, setError] = useState<string | null>(null)
 
   const connectionRef = useRef<ReturnType<typeof createChatConnection> | null>(null)
+  const conversationsRef = useRef<ChatConversation[]>(conversations)
+
+  // Keep ref in sync with state so SSE callbacks always read latest
+  useEffect(() => {
+    conversationsRef.current = conversations
+  }, [conversations])
 
   const currentConversation = currentIndex >= 0 ? conversations[currentIndex] : null
   const messages = currentConversation?.messages ?? []
   const sessionId = currentConversation?.sessionId ?? undefined
 
   // 保存到 localStorage
-  const persist = useCallback((updated: ChatConversation[]) => {
-    saveConversations(updated)
-    setConversations(updated)
+  const persist = useCallback((updater: ChatConversation[] | ((prev: ChatConversation[]) => ChatConversation[])) => {
+    if (typeof updater === 'function') {
+      setConversations(prev => {
+        const next = updater(prev)
+        saveConversations(next)
+        return next
+      })
+    } else {
+      saveConversations(updater)
+      setConversations(updater)
+    }
   }, [])
 
   // 发送消息
@@ -38,7 +52,8 @@ export function useChat() {
       timestamp: Date.now()
     }
 
-    let updatedConversations: ChatConversation[]
+    // Build initial snapshot from latest state via ref
+    const currentConvs = conversationsRef.current
     let convIndex: number
 
     if (!sessionId) {
@@ -47,29 +62,36 @@ export function useChat() {
         sessionId: '',  // 临时为空，等 SSE session event 回填
         messages: [userMessage]
       }
-      updatedConversations = [...conversations, newConv]
-      convIndex = updatedConversations.length - 1
+      convIndex = currentConvs.length
+      persist([...currentConvs, newConv])
     } else {
       // 继续现有对话
-      updatedConversations = [...conversations]
-      updatedConversations[currentIndex] = {
-        ...updatedConversations[currentIndex],
-        messages: [...updatedConversations[currentIndex].messages, userMessage]
-      }
       convIndex = currentIndex
+      persist(prev => {
+        const patched = [...prev]
+        patched[convIndex] = {
+          ...patched[convIndex],
+          messages: [...patched[convIndex].messages, userMessage]
+        }
+        return patched
+      })
     }
 
     // 添加空的 assistant message placeholder
-    const assistantMessage: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: 'assistant',
-      content: '',
-      timestamp: Date.now()
-    }
-    updatedConversations[convIndex] = {
-      ...updatedConversations[convIndex],
-      messages: [...updatedConversations[convIndex].messages, assistantMessage]
-    }
+    persist(prev => {
+      const patched = [...prev]
+      const assistantMessage: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: '',
+        timestamp: Date.now()
+      }
+      patched[convIndex] = {
+        ...patched[convIndex],
+        messages: [...patched[convIndex].messages, assistantMessage]
+      }
+      return patched
+    })
 
     setCurrentIndex(convIndex)
 
@@ -80,25 +102,29 @@ export function useChat() {
     connectionRef.current = connection
 
     connection.onSession = (sid: string) => {
-      // 回填 sessionId
-      const patched = [...updatedConversations]
-      patched[convIndex] = { ...patched[convIndex], sessionId: sid }
-      persist(patched)
+      // 回填 sessionId — use functional updater to avoid stale closure
+      persist(prev => {
+        const patched = [...prev]
+        patched[convIndex] = { ...patched[convIndex], sessionId: sid }
+        return patched
+      })
     }
 
     connection.onData = (type: string, content: string) => {
       if (type === 'stdout') {
         accumulatedStdout += content
 
-        // 实时更新 assistant message content
-        const patched = [...updatedConversations]
-        const msgs = [...patched[convIndex].messages]
-        msgs[msgs.length - 1] = {
-          ...msgs[msgs.length - 1],
-          content: accumulatedStdout
-        }
-        patched[convIndex] = { ...patched[convIndex], messages: msgs }
-        persist(patched)
+        // 实时更新 assistant message content — use functional updater
+        persist(prev => {
+          const patched = [...prev]
+          const msgs = [...patched[convIndex].messages]
+          msgs[msgs.length - 1] = {
+            ...msgs[msgs.length - 1],
+            content: accumulatedStdout
+          }
+          patched[convIndex] = { ...patched[convIndex], messages: msgs }
+          return patched
+        })
       }
       // stderr 不拼入 assistant content，忽略（后续可在 UI 中展示）
     }
@@ -108,12 +134,14 @@ export function useChat() {
       setLoading(false)
       connectionRef.current = null
 
-      // 如果 assistant content 为空，移除 placeholder
-      const patched = [...updatedConversations]
+      // 如果 assistant content 为空，移除 placeholder — use functional updater
       if (!accumulatedStdout) {
-        const msgs = patched[convIndex].messages.slice(0, -1)
-        patched[convIndex] = { ...patched[convIndex], messages: msgs }
-        persist(patched)
+        persist(prev => {
+          const patched = [...prev]
+          const msgs = patched[convIndex].messages.slice(0, -1)
+          patched[convIndex] = { ...patched[convIndex], messages: msgs }
+          return patched
+        })
       }
     }
 
@@ -122,14 +150,16 @@ export function useChat() {
       connectionRef.current = null
 
       if (code !== 0 && !accumulatedStdout) {
-        // 进程非零退出且无输出，移除 assistant placeholder
-        const patched = [...updatedConversations]
-        const msgs = patched[convIndex].messages.slice(0, -1)
-        patched[convIndex] = { ...patched[convIndex], messages: msgs }
-        persist(patched)
+        // 进程非零退出且无输出，移除 assistant placeholder — use functional updater
+        persist(prev => {
+          const patched = [...prev]
+          const msgs = patched[convIndex].messages.slice(0, -1)
+          patched[convIndex] = { ...patched[convIndex], messages: msgs }
+          return patched
+        })
       }
     }
-  }, [conversations, currentIndex, sessionId, loading, persist])
+  }, [sessionId, currentIndex, loading, persist])
 
   // 开始新对话
   const newConversation = useCallback(() => {
@@ -141,6 +171,16 @@ export function useChat() {
     }
     setCurrentIndex(-1)
     setError(null)
+  }, [])
+
+  // Cleanup: abort connection on unmount
+  useEffect(() => {
+    return () => {
+      if (connectionRef.current) {
+        connectionRef.current.abort()
+        connectionRef.current = null
+      }
+    }
   }, [])
 
   return {
