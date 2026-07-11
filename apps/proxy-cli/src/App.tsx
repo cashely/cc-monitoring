@@ -3,6 +3,7 @@ import { ConfigEditor } from './components/ConfigEditor'
 import { RequestHistory } from './components/RequestHistory'
 import { LanguageSwitcher } from './components/LanguageSwitcher'
 import { StatsBarChart } from './components/StatsBarChart'
+import { ChatUI } from './components/ChatUI'
 import { ConnectionBanner } from './components/ConnectionBanner'
 import { useTranslation } from 'react-i18next'
 import { useConfig, useWebSocketData } from './hooks'
@@ -29,9 +30,14 @@ export function App(): JSX.Element {
         )}
       </header>
 
-      {/* Token stats bar chart */}
-      <div className="px-4 py-2">
-        <StatsBarChart stats={stats} todayStats={todayStats} />
+      {/* Token stats bar chart + ChatUI */}
+      <div className="px-4 py-2 flex gap-4">
+        <div className="flex-1">
+          <StatsBarChart stats={stats} todayStats={todayStats} />
+        </div>
+        <div className="w-96">
+          <ChatUI />
+        </div>
       </div>
 
       <main className="flex-1 flex gap-4 p-4">

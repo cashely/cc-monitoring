@@ -34,5 +34,9 @@
   "versions": {
     "claudeCode": "Claude Code",
     "project": "Project"
+  },
+  "chat": {
+    "title": "Chat",
+    "placeholder": "Chat UI coming soon"
   }
 }
