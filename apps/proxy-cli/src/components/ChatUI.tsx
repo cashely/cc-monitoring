@@ -2,7 +2,7 @@ import { useRef, useEffect, useState } from 'react'
 import { Bubble, Sender } from '@ant-design/x'
 import XMarkdown from '@ant-design/x-markdown'
 import { Button, Tooltip } from 'antd'
-import { PlusOutlined } from '@ant-design/icons'
+import { PlusOutlined, RobotOutlined, UserOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { useChat } from '../hooks/useChat'
 
@@ -46,6 +46,18 @@ export function ChatUI(): JSX.Element {
         )}
         <Bubble.List
           items={items}
+          roles={{
+            assistant: {
+              placement: 'start',
+              avatar: { icon: <RobotOutlined />, style: { backgroundColor: '#1677ff' } },
+              variant: 'borderless',
+            },
+            user: {
+              placement: 'end',
+              avatar: { icon: <UserOutlined />, style: { backgroundColor: '#52c41a' } },
+              variant: 'filled',
+            },
+          }}
           style={{ height: '100%' }}
         />
       </div>
