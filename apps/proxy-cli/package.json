@@ -10,6 +10,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@ant-design/x": "^2.8.0",
     "@pierre/diffs": "^1.2.11",
     "@tanstack/react-virtual": "^3.14.3",
     "i18next": "^26.3.1",
