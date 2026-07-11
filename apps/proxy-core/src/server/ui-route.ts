@@ -21,12 +21,14 @@ interface ExecRequestBody {
   tool: 'claude'
   prompt: string
   stream?: boolean
+  sessionId?: string  // claude 会话 ID，用于多轮对话
 }
 
 interface ExecResponse {
   success: boolean
   output?: string
   error?: string
+  sessionId?: string  // server 生成的会话 UUID
 }
 
 export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
@@ -239,7 +241,7 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    const { tool, prompt, stream = false } = request.body
+    const { tool, prompt, stream = false, sessionId } = request.body
 
     if (tool !== 'claude') {
       return reply.code(400).send({
@@ -257,6 +259,8 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
 
     if (stream) {
       // Streaming mode: use SSE
+      const newSessionId = sessionId ?? crypto.randomUUID()
+
       reply.hijack()
       const res = reply.raw
       res.writeHead(200, {
@@ -270,7 +274,16 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
         res.write(`event: ${event}\ndata: ${data}\n\n`)
       }
 
-      const child = spawn('claude', ['-p', prompt], {
+      // 新对话时发送 session event
+      if (!sessionId) {
+        sendSSE('session', newSessionId)
+      }
+
+      const spawnArgs = sessionId
+        ? ['-r', sessionId, '-p', prompt]
+        : ['--session-id', newSessionId, '-p', prompt]
+
+      const child = spawn('claude', spawnArgs, {
         env: { ...process.env }
       })
 
@@ -285,11 +298,11 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
       }, TIMEOUT)
 
       child.stdout?.on('data', (chunk) => {
-        sendSSE('data', JSON.stringify({ content: chunk.toString() }))
+        sendSSE('data', JSON.stringify({ type: 'stdout', content: chunk.toString() }))
       })
 
       child.stderr?.on('data', (chunk) => {
-        sendSSE('data', JSON.stringify({ content: chunk.toString(), type: 'stderr' }))
+        sendSSE('data', JSON.stringify({ type: 'stderr', content: chunk.toString() }))
       })
 
       child.on('error', (err) => {
@@ -318,7 +331,13 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
       })
     } else {
       // Non-streaming mode: buffer all output
-      const child = spawn('claude', ['-p', prompt], {
+      const newSessionId = sessionId ?? crypto.randomUUID()
+
+      const spawnArgs = sessionId
+        ? ['-r', sessionId, '-p', prompt]
+        : ['--session-id', newSessionId, '-p', prompt]
+
+      const child = spawn('claude', spawnArgs, {
         env: { ...process.env }
       })
 
@@ -353,12 +372,14 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
           if (code === 0) {
             resolve({
               success: true,
-              output
+              output,
+              sessionId: newSessionId
             })
           } else {
             resolve({
               success: false,
-              error: output || `Process exited with code ${code}`
+              error: output || `Process exited with code ${code}`,
+              sessionId: newSessionId
             })
           }
         })
