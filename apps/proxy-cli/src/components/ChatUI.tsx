@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, useState } from 'react'
 import { Bubble, Sender } from '@ant-design/x'
 import { Button, Tooltip } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
@@ -9,6 +9,7 @@ export function ChatUI(): JSX.Element {
   const { t } = useTranslation('app')
   const { messages, loading, error, sendMessage, newConversation } = useChat()
   const listRef = useRef<HTMLDivElement>(null)
+  const [inputValue, setInputValue] = useState('')
 
   // 自动滚动到底部
   useEffect(() => {
@@ -20,6 +21,7 @@ export function ChatUI(): JSX.Element {
   const handleSubmit = (content: string) => {
     if (!content.trim()) return
     sendMessage(content.trim())
+    setInputValue('')
   }
 
   const items = messages.map((msg) => ({
@@ -30,11 +32,11 @@ export function ChatUI(): JSX.Element {
   }))
 
   return (
-    <div className="bg-bg-card rounded-lg h-full flex flex-col">
+    <div className="bg-bg-card rounded-lg h-full overflow-hidden flex flex-col">
       {/* 对话记录 */}
       <div
         ref={listRef}
-        className="flex-1 overflow-y-auto px-4 py-2"
+        className="flex-1 min-h-0 overflow-y-auto px-4 py-2 h-101.25"
       >
         {messages.length === 0 && (
           <div className="flex items-center justify-center h-full text-text-muted text-sm">
@@ -55,21 +57,25 @@ export function ChatUI(): JSX.Element {
       )}
 
       {/* 输入框区域 */}
-      <div className="px-4 py-2 border-t border-border flex items-center gap-2">
-        <Tooltip title={t('chat.newConversation')}>
-          <Button
-            type="text"
-            icon={<PlusOutlined />}
-            onClick={newConversation}
-            size="small"
+      <div className="px-3 py-3">
+        <div className="bg-bg-secondary rounded-lg p-2 flex items-center gap-2">
+          <Tooltip title={t('chat.newConversation')}>
+            <Button
+              type="text"
+              icon={<PlusOutlined />}
+              onClick={newConversation}
+              size="small"
+            />
+          </Tooltip>
+          <Sender
+            value={inputValue}
+            onChange={setInputValue}
+            onSubmit={handleSubmit}
+            placeholder={t('chat.placeholder')}
+            loading={loading}
+            style={{ flex: 1 }}
           />
-        </Tooltip>
-        <Sender
-          onSubmit={handleSubmit}
-          placeholder={t('chat.placeholder')}
-          loading={loading}
-          style={{ flex: 1 }}
-        />
+        </div>
       </div>
     </div>
   )

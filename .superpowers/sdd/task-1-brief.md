@@ -1,34 +1,33 @@
-### Task 1: Install Dependencies
+### Task 1: 安装 @ant-design/x 依赖
 
 **Files:**
-- Modify: `apps/proxy-admin/package.json`
-- Modify: `pnpm-lock.yaml` (auto-generated)
+- Modify: `apps/proxy-cli/package.json`
 
 **Interfaces:**
-- Produces: Required dependencies installed: `vite-plugin-mock`, `tailwindcss`, `postcss`, `autoprefixer`
+- Consumes: none
+- Produces: @ant-design/x 可用，后续 Task 使用 Bubble/Bubble.List/Sender 组件
 
-- [ ] **Step 1: Install dependencies via pnpm**
+- [ ] **Step 1: 安装依赖**
 
-Run:
 ```bash
-cd /Users/cashely.shi/Documents/projects/cc-monitoring/apps/proxy-admin
-pnpm add -D vite-plugin-mock mockjs tailwindcss postcss autoprefixer
-pnpm add @ant-design/icons
+cd /Users/cashely.shi/Documents/projects/cc-monitoring
+pnpm --filter @cc-monitoring/proxy-cli add @ant-design/x
 ```
 
-Expected: All dependencies installed successfully, no errors.
+- [ ] **Step 2: 确认安装成功**
 
-- [ ] **Step 2: Verify installation**
-
-Run:
 ```bash
-pnpm list tailwindcss vite-plugin-mock @ant-design/icons
+cat apps/proxy-cli/package.json | grep "@ant-design/x"
 ```
 
-Expected: Shows installed versions of all packages.
+Expected: `@ant-design/x` 出现在 dependencies 中
 
 - [ ] **Step 3: Commit**
+
 ```bash
-git add package.json pnpm-lock.yaml
-git commit -m "chore: install tailwindcss, vite-plugin-mock and icons"
+git add apps/proxy-cli/package.json apps/proxy-cli/pnpm-lock.yaml
+git commit -m "chore: add @ant-design/x dependency"
 ```
+
+---
+

@@ -1,115 +1,292 @@
-### Task 3: Update Proxy Forwarding Logic for Partial Replacement
+### Task 3: 前端 chat API 和类型定义
 
 **Files:**
-- Modify: `apps/proxy-core/src/server/proxy.ts:24-64,158-165`
+- Create: `apps/proxy-cli/src/api/chat.ts`
+- Create: `apps/proxy-cli/src/types/chat.ts`
 
 **Interfaces:**
-- Consumes: Updated `Provider` interface (nullable fields)
-- Produces: Updated `ResolvedTarget` with `model?: string`, updated forwarding logic
+- Consumes: `API_BASE = '/ui/api'` from `apps/proxy-cli/src/api/index.ts:5`
+- Produces:
+  - `ChatMessage` type — Task 4 的 useChat hook 和 ChatUI.tsx 使用
+  - `ChatConversation` type — Task 4 使用
+  - `sendChatMessage(prompt, sessionId?)` — Task 4 使用，返回 SSE EventSource
+  - `LOCALSTORAGE_KEY = 'cc-chat-conversations'` — Task 4 使用
 
-- [ ] **Step 1: Update ResolvedTarget interface**
+- [ ] **Step 1: 创建 chat 类型定义**
 
-Change:
+创建 `apps/proxy-cli/src/types/chat.ts`：
+
 ```typescript
-interface ResolvedTarget {
-  baseUrl: string
-  targetPath: string
-  apiKey?: string
+export interface ChatMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  timestamp: number
+}
+
+export interface ChatConversation {
+  sessionId: string
+  messages: ChatMessage[]
 }
 ```
 
-To:
-```typescript
-interface ResolvedTarget {
-  baseUrl: string
-  targetPath: string
-  apiKey?: string
-  model?: string
-}
-```
+- [ ] **Step 2: 创建 chat API 封装**
 
-- [ ] **Step 2: Update resolveProxyTarget function**
-
-Rewrite the function to handle partial replacement:
+创建 `apps/proxy-cli/src/api/chat.ts`：
 
 ```typescript
-export function resolveProxyTarget(proxyConfig: ProxyConfig): ResolvedTarget {
-  // Default to config values
-  let baseUrl: string
-  let targetPath: string
-  let apiKey: string | undefined = proxyConfig.apiKey
-  let model: string | undefined
+import type { ChatConversation } from '../types/chat'
 
-  // Parse config target as base
-  const configUrl = new URL(proxyConfig.target)
-  baseUrl = configUrl.origin
-  targetPath = configUrl.pathname.replace(/\/$/, '')
+const API_BASE = '/ui/api'
 
+export const LOCALSTORAGE_KEY = 'cc-chat-conversations'
+
+export function loadConversations(): ChatConversation[] {
   try {
-    const db = getDatabase()
-    const active = db.prepare(
-      'SELECT base_url, api_key, model FROM providers WHERE is_default = 1 LIMIT 1'
-    ).get() as { base_url: string | null, api_key: string | null, model: string | null } | undefined
-
-    if (active) {
-      // Replace base_url only if provided
-      if (active.base_url && active.base_url.trim() !== '') {
-        const providerUrl = new URL(active.base_url)
-        baseUrl = providerUrl.origin
-        targetPath = providerUrl.pathname.replace(/\/$/, '')
-      }
-
-      // Replace api_key only if provided
-      if (active.api_key && active.api_key.trim() !== '') {
-        apiKey = active.api_key
-      }
-
-      // Replace model only if provided
-      if (active.model && active.model.trim() !== '') {
-        model = active.model
-      }
-    }
+    const raw = localStorage.getItem(LOCALSTORAGE_KEY)
+    if (!raw) return []
+    return JSON.parse(raw) as ChatConversation[]
   } catch {
-    // DB not initialized yet or read error - use config defaults
+    return []
+  }
+}
+
+export function saveConversations(conversations: ChatConversation[]): void {
+  localStorage.setItem(LOCALSTORAGE_KEY, JSON.stringify(conversations))
+}
+
+/**
+ * 发送对话消息，建立 SSE 连接
+ * 返回 EventSource 供调用方监听事件
+ */
+export function sendChatMessage(prompt: string, sessionId?: string): EventSource {
+  // POST 请求无法直接用 EventSource（它只支持 GET）
+  // 先发 POST 获取 SSE URL 或使用 fetch + ReadableStream
+  // 这里用 fetch + 手动解析 SSE
+  // 但 EventSource 更简单——我们需要改造为 GET 或用 fetch 方式
+
+  // 实际方案：用 fetch 发 POST，手动解析 SSE stream
+  // 返回一个自定义对象模拟 EventSource 行为
+  const body = JSON.stringify({
+    tool: 'claude',
+    prompt,
+    stream: true,
+    sessionId
+  })
+
+  // 创建 AbortController 供取消
+  const abortController = new AbortController()
+
+  // 自定义 SSE 连接对象
+  const sseConnection = {
+    abortController,
+    onSession: ((_sessionId: string) => {}) as (sid: string) => void,
+    onData: ((_type: string, _content: string) => {}) as (type: string, content: string) => void,
+    onError: ((_message: string) => {}) as (msg: string) => void,
+    onDone: ((_code: number) => {}) as (code: number) => void,
+    aborted: false
   }
 
-  return { baseUrl, targetPath, apiKey, model }
+  fetch(`${API_BASE}/exec`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body,
+    signal: abortController.signal
+  }).then(async (response) => {
+    if (!response.ok) {
+      const err = await response.json()
+      sseConnection.onError(err.error || `HTTP ${response.status}`)
+      return
+    }
+
+    const reader = response.body?.getReader()
+    if (!reader) {
+      sseConnection.onError('No response body')
+      return
+    }
+
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done || sseConnection.aborted) break
+
+      buffer += decoder.decode(value, { stream: true })
+
+      // 解析 SSE events
+      const lines = buffer.split('\n')
+      buffer = ''
+
+      let currentEvent = ''
+      let currentData = ''
+
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          currentEvent = line.slice(7)
+        } else if (line.startsWith('data: ')) {
+          currentData = line.slice(6)
+        } else if (line === '' && currentEvent && currentData) {
+          // 完整 event，触发回调
+          if (currentEvent === 'session') {
+            sseConnection.onSession(currentData)
+          } else if (currentEvent === 'data') {
+            try {
+              const parsed = JSON.parse(currentData)
+              sseConnection.onData(parsed.type || 'stdout', parsed.content || '')
+            } catch {
+              // 非 JSON，当作 stdout
+              sseConnection.onData('stdout', currentData)
+            }
+          } else if (currentEvent === 'error') {
+            try {
+              const parsed = JSON.parse(currentData)
+              sseConnection.onError(parsed.message || currentData)
+            } catch {
+              sseConnection.onError(currentData)
+            }
+          } else if (currentEvent === 'done') {
+            try {
+              const parsed = JSON.parse(currentData)
+              sseConnection.onDone(parsed.code ?? 0)
+            } catch {
+              sseConnection.onDone(0)
+            }
+          }
+          currentEvent = ''
+          currentData = ''
+        } else if (line !== '' && !line.startsWith('event:') && !line.startsWith('data:')) {
+          // 不完整行，保留到下次
+          buffer = line
+        }
+      }
+    }
+  }).catch((err) => {
+    if (!sseConnection.aborted) {
+      sseConnection.onError(err.message || 'Connection failed')
+    }
+  })
+
+  return sseConnection as unknown as EventSource  // 类型欺骗，实际返回 SSEConnection
+}
+
+// 更准确的返回类型
+export interface SSEConnection {
+  abortController: AbortController
+  onSession: (sessionId: string) => void
+  onData: (type: string, content: string) => void
+  onError: (message: string) => void
+  onDone: (code: number) => void
+  abort: () => void
+}
+
+export function createChatConnection(prompt: string, sessionId?: string): SSEConnection {
+  const abortController = new AbortController()
+
+  const connection: SSEConnection = {
+    abortController,
+    onSession: () => {},
+    onData: () => {},
+    onError: () => {},
+    onDone: () => {},
+    abort: () => {
+      abortController.abort()
+    }
+  }
+
+  fetch(`${API_BASE}/exec`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      tool: 'claude',
+      prompt,
+      stream: true,
+      sessionId
+    }),
+    signal: abortController.signal
+  }).then(async (response) => {
+    if (!response.ok) {
+      const err = await response.json()
+      connection.onError(err.error || `HTTP ${response.status}`)
+      return
+    }
+
+    const reader = response.body?.getReader()
+    if (!reader) {
+      connection.onError('No response body')
+      return
+    }
+
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+
+      // 解析 SSE events
+      const events = buffer.split('\n\n')
+      buffer = events.pop() || ''  // 最后一段可能不完整
+
+      for (const eventStr of events) {
+        if (!eventStr.trim()) continue
+
+        let eventType = ''
+        let eventData = ''
+
+        for (const line of eventStr.split('\n')) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7)
+          } else if (line.startsWith('data: ')) {
+            eventData = line.slice(6)
+          }
+        }
+
+        if (!eventType || !eventData) continue
+
+        if (eventType === 'session') {
+          connection.onSession(eventData)
+        } else if (eventType === 'data') {
+          try {
+            const parsed = JSON.parse(eventData)
+            connection.onData(parsed.type || 'stdout', parsed.content || '')
+          } catch {
+            connection.onData('stdout', eventData)
+          }
+        } else if (eventType === 'error') {
+          try {
+            const parsed = JSON.parse(eventData)
+            connection.onError(parsed.message || eventData)
+          } catch {
+            connection.onError(eventData)
+          }
+        } else if (eventType === 'done') {
+          try {
+            const parsed = JSON.parse(eventData)
+            connection.onDone(parsed.code ?? 0)
+          } catch {
+            connection.onDone(0)
+          }
+        }
+      }
+    }
+  }).catch((err) => {
+    if (err.name !== 'AbortError') {
+      connection.onError(err.message || 'Connection failed')
+    }
+  })
+
+  return connection
 }
 ```
 
-- [ ] **Step 3: Update forwarding logic to replace model in request body**
-
-In the fastify route handler, after `resolveProxyTarget` call, add:
-
-```typescript
-// Replace model if provider has one configured
-const originalModel = request.body?.model
-if (resolved.model && request.body && typeof request.body === 'object') {
-  request.body.model = resolved.model
-}
-```
-
-Also update the `requestData.model` assignment to use `originalModel` (so logs show what the client sent):
-
-```typescript
-model: originalModel,
-```
-
-Find the line:
-```typescript
-model: request.body?.model,
-```
-
-Change to:
-```typescript
-model: originalModel,
-```
-
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add apps/proxy-core/src/server/proxy.ts
-git commit -m "feat: implement partial replacement for provider fields"
+git add apps/proxy-cli/src/types/chat.ts apps/proxy-cli/src/api/chat.ts
+git commit -m "feat: add chat API layer and types for SSE connection"
 ```
 
 ---

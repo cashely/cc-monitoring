@@ -1,180 +1,208 @@
-### Task 2: Update Providers Data Layer Interfaces and Validation
+### Task 2: Server exec endpoint 扩展 — sessionId 支持
 
 **Files:**
-- Modify: `apps/proxy-core/src/utils/providers-db.ts`
+- Modify: `apps/proxy-core/src/server/ui-route.ts:19-30,234-373`
 
 **Interfaces:**
-- Consumes: None
-- Produces: Updated `Provider`, `ProviderInput` interfaces; updated validation logic
+- Consumes: none
+- Produces:
+  - `ExecRequestBody.sessionId?: string` — 前端 Task 3/4 使用
+  - `ExecResponse.sessionId?: string` — 前端 Task 4 使用
+  - SSE `session` event — 前端 Task 4 的 `useChat` hook 消费
+  - SSE `data` event JSON `{ type: 'stdout'|'stderr', content: string }` — 前端 Task 4 消费
 
-- [ ] **Step 1: Update Provider and ProviderInput interfaces**
+- [ ] **Step 1: 扩展 ExecRequestBody 和 ExecResponse 类型**
 
-Change from:
+在 `apps/proxy-core/src/server/ui-route.ts` 修改类型定义（行19-30）：
+
 ```typescript
-export interface Provider {
-  id: number
-  name: string
-  base_url: string
-  api_key: string
-  model: string
-  haiku_model: string | null
-  sonnet_model: string | null
-  opus_model: string | null
-  subagent_model: string | null
-  provider: string
-  default: boolean
-  created_at: string
-  updated_at: string
+// Exec API types
+interface ExecRequestBody {
+  tool: 'claude'
+  prompt: string
+  stream?: boolean
+  sessionId?: string  // 新增：claude 会话 ID，用于多轮对话
 }
 
-export interface ProviderInput {
-  name: string
-  base_url: string
-  api_key: string
-  model: string
-  haiku_model?: string
-  sonnet_model?: string
-  opus_model?: string
-  subagent_model?: string
-  provider: string
-  default?: boolean
+interface ExecResponse {
+  success: boolean
+  output?: string
+  error?: string
+  sessionId?: string  // 新增：server 生成的会话 UUID
 }
 ```
 
-To:
-```typescript
-export interface Provider {
-  id: number
-  name: string
-  base_url: string | null
-  api_key: string | null
-  model: string | null
-  haiku_model: string | null
-  sonnet_model: string | null
-  opus_model: string | null
-  subagent_model: string | null
-  provider: string
-  default: boolean
-  created_at: string
-  updated_at: string
-}
+- [ ] **Step 2: 修改 stream 模式的 spawn 命令和 SSE 逻辑**
 
-export interface ProviderInput {
-  name: string
-  base_url?: string
-  api_key?: string
-  model?: string
-  haiku_model?: string
-  sonnet_model?: string
-  opus_model?: string
-  subagent_model?: string
-  provider: string
-  default?: boolean
-}
-```
-
-- [ ] **Step 2: Update REQUIRED_FIELDS and validateProvider**
-
-Change:
-```typescript
-const REQUIRED_FIELDS: (keyof ProviderInput)[] = ['name', 'base_url', 'api_key', 'model', 'provider']
-```
-
-To:
-```typescript
-const REQUIRED_FIELDS: (keyof ProviderInput)[] = ['name', 'provider']
-```
-
-Update `validateProvider` function:
+修改 `/ui/api/exec` stream 模式部分（行258-318）。整体替换如下：
 
 ```typescript
-export function validateProvider(input: ProviderInput): ProviderValidationError[] {
-  const errors: ProviderValidationError[] = []
+if (stream) {
+  // Streaming mode: use SSE
+  const newSessionId = sessionId ?? crypto.randomUUID()
 
-  // Check required fields
-  for (const field of REQUIRED_FIELDS) {
-    const value = input[field]
-    if (typeof value === 'boolean') {
-      continue
-    }
-    if (!value || (value as string).trim() === '') {
-      errors.push({ field, message: `${field} is required` })
-    }
+  reply.hijack()
+  const res = reply.raw
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive'
+  })
+
+  const sendSSE = (event: string, data: string) => {
+    if (res.destroyed) return
+    res.write(`event: ${event}\ndata: ${data}\n\n`)
   }
 
-  // At least one of the optional fields should have a value
-  const hasOptionalValue = 
-    (input.base_url && input.base_url.trim() !== '') ||
-    (input.api_key && input.api_key.trim() !== '') ||
-    (input.model && input.model.trim() !== '') ||
-    (input.haiku_model && input.haiku_model.trim() !== '') ||
-    (input.sonnet_model && input.sonnet_model.trim() !== '') ||
-    (input.opus_model && input.opus_model.trim() !== '') ||
-    (input.subagent_model && input.subagent_model.trim() !== '')
-
-  if (errors.length === 0 && !hasOptionalValue) {
-    errors.push({ field: 'base_url', message: 'at least one field (base_url, api_key, model, etc.) should have a value' })
+  // 新对话时发送 session event
+  if (!sessionId) {
+    sendSSE('session', newSessionId)
   }
 
-  // Validate base_url format only if provided
-  if (input.base_url && input.base_url.trim() !== '') {
-    try {
-      const url = new URL(input.base_url)
-      if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-        errors.push({ field: 'base_url', message: 'base_url must be a valid HTTP or HTTPS URL' })
-      }
-    } catch {
-      errors.push({ field: 'base_url', message: 'base_url must be a valid URL' })
+  const spawnArgs = sessionId
+    ? ['-r', sessionId, '-p', prompt]
+    : ['--session-id', newSessionId, '-p', prompt]
+
+  const child = spawn('claude', spawnArgs, {
+    env: { ...process.env }
+  })
+
+  const TIMEOUT = 5 * 60 * 1000 // 5 minutes
+  const timeoutId = setTimeout(() => {
+    child.kill('SIGTERM')
+    if (!res.destroyed) {
+      sendSSE('error', JSON.stringify({ message: 'Execution timeout (5 minutes)' }))
+      sendSSE('done', JSON.stringify({ code: 1 }))
+      res.end()
     }
-  }
+  }, TIMEOUT)
 
-  return errors
-}
-```
+  child.stdout?.on('data', (chunk) => {
+    sendSSE('data', JSON.stringify({ type: 'stdout', content: chunk.toString() }))
+  })
 
-- [ ] **Step 3: Update saveProviders to handle empty strings as NULL**
+  child.stderr?.on('data', (chunk) => {
+    sendSSE('data', JSON.stringify({ type: 'stderr', content: chunk.toString() }))
+  })
 
-In `saveProviders` function, when inserting, convert empty strings to null:
-
-```typescript
-export function saveProviders(db: Database.Database, providers: ProviderInput[]): void {
-  const deleteAll = db.prepare('DELETE FROM providers')
-  const insertOne = db.prepare(`
-    INSERT INTO providers (name, base_url, api_key, model, haiku_model, sonnet_model, opus_model, subagent_model, provider, is_default)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `)
-
-  const transaction = db.transaction(() => {
-    deleteAll.run()
-    for (const p of providers) {
-      insertOne.run(
-        p.name,
-        p.base_url && p.base_url.trim() !== '' ? p.base_url : null,
-        p.api_key && p.api_key.trim() !== '' ? p.api_key : null,
-        p.model && p.model.trim() !== '' ? p.model : null,
-        p.haiku_model && p.haiku_model.trim() !== '' ? p.haiku_model : null,
-        p.sonnet_model && p.sonnet_model.trim() !== '' ? p.sonnet_model : null,
-        p.opus_model && p.opus_model.trim() !== '' ? p.opus_model : null,
-        p.subagent_model && p.subagent_model.trim() !== '' ? p.subagent_model : null,
-        p.provider,
-        p.default ? 1 : 0
-      )
+  child.on('error', (err) => {
+    clearTimeout(timeoutId)
+    if (!res.destroyed) {
+      sendSSE('error', JSON.stringify({ message: err.message }))
+      sendSSE('done', JSON.stringify({ code: 1 }))
+      res.end()
     }
   })
 
-  transaction()
+  child.on('close', (code) => {
+    clearTimeout(timeoutId)
+    if (!res.destroyed) {
+      sendSSE('done', JSON.stringify({ code: code ?? 0 }))
+      res.end()
+    }
+  })
+
+  // Handle client disconnect
+  res.on('close', () => {
+    clearTimeout(timeoutId)
+    if (!child.killed) {
+      child.kill('SIGTERM')
+    }
+  })
 }
 ```
 
-- [ ] **Step 4: Update listProviders to handle null correctly**
+- [ ] **Step 3: 修改非 stream 模式**
 
-Current code is already okay - it maps `is_default` but other nulls pass through fine.
+修改非 stream 部分（行319-372）。替换整体：
 
-- [ ] **Step 5: Commit**
+```typescript
+} else {
+  // Non-streaming mode: buffer all output
+  const newSessionId = sessionId ?? crypto.randomUUID()
+
+  const spawnArgs = sessionId
+    ? ['-r', sessionId, '-p', prompt]
+    : ['--session-id', newSessionId, '-p', prompt]
+
+  const child = spawn('claude', spawnArgs, {
+    env: { ...process.env }
+  })
+
+  const TIMEOUT = 5 * 60 * 1000 // 5 minutes
+  const timeoutId = setTimeout(() => {
+    child.kill('SIGTERM')
+  }, TIMEOUT)
+
+  let stdout = ''
+  let stderr = ''
+
+  child.stdout?.on('data', (chunk) => {
+    stdout += chunk.toString()
+  })
+
+  child.stderr?.on('data', (chunk) => {
+    stderr += chunk.toString()
+  })
+
+  const result: ExecResponse = await new Promise((resolve) => {
+    child.on('error', (err) => {
+      clearTimeout(timeoutId)
+      resolve({
+        success: false,
+        error: err.message
+      })
+    })
+
+    child.on('close', (code) => {
+      clearTimeout(timeoutId)
+      const output = stdout + stderr
+      if (code === 0) {
+        resolve({
+          success: true,
+          output,
+          sessionId: newSessionId
+        })
+      } else {
+        resolve({
+          success: false,
+          error: output || `Process exited with code ${code}`,
+          sessionId: newSessionId
+        })
+      }
+    })
+  })
+
+  if (!result.success) {
+    return reply.code(500).send(result)
+  }
+
+  return result
+}
+```
+
+- [ ] **Step 4: 更新请求体解构**
+
+修改行242，从 `request.body` 解构新增 `sessionId`：
+
+```typescript
+const { tool, prompt, stream = false, sessionId } = request.body
+```
+
+- [ ] **Step 5: 构建验证**
 
 ```bash
-git add apps/proxy-core/src/utils/providers-db.ts
-git commit -m "feat: update provider interfaces and validation for partial fields"
+cd /Users/cashely.shi/Documents/projects/cc-monitoring
+pnpm build:proxy-core
+```
+
+Expected: 构建成功，无 TS 错误
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add apps/proxy-core/src/server/ui-route.ts
+git commit -m "feat: extend exec endpoint with sessionId support for multi-turn chat"
 ```
 
 ---
