@@ -50,7 +50,7 @@ export function ChatUI(): JSX.Element {
             assistant: {
               placement: 'start',
               avatar: { icon: <RobotOutlined />, style: { backgroundColor: '#1677ff' } },
-              variant: 'borderless',
+              variant: 'filled',
             },
             user: {
               placement: 'end',
