@@ -37,6 +37,10 @@
   },
   "chat": {
     "title": "对话",
-    "placeholder": "对话功能开发中"
+    "placeholder": "输入消息...",
+    "newConversation": "新对话",
+    "send": "发送",
+    "loading": "思考中...",
+    "errorPrefix": "错误："
   }
 }

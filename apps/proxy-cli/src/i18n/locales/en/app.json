@@ -37,6 +37,10 @@
   },
   "chat": {
     "title": "Chat",
-    "placeholder": "Chat UI coming soon"
+    "placeholder": "Type a message...",
+    "newConversation": "New Chat",
+    "send": "Send",
+    "loading": "Thinking...",
+    "errorPrefix": "Error: "
   }
 }
