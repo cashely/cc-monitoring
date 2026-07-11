@@ -16,13 +16,6 @@
     "compareLeft": "左侧",
     "compareRight": "右侧"
   },
-  "tokenStats": "Token 统计",
-  "hourly": "时",
-  "daily": "天",
-  "inputTokens": "输入",
-  "outputTokens": "输出",
-  "cacheTokens": "缓存",
-  "lastUpdated": "最后更新",
   "today": {
     "inputTokens": "今日输入",
     "outputTokens": "今日输出",
@@ -31,8 +24,19 @@
     "models": "今日模型使用",
     "noModels": "暂无数据"
   },
+  "tokenStats": "Token 统计",
+  "hourly": "时",
+  "daily": "天",
+  "inputTokens": "输入",
+  "outputTokens": "输出",
+  "cacheTokens": "缓存",
+  "lastUpdated": "最后更新",
   "versions": {
     "claudeCode": "Claude Code",
     "project": "项目"
+  },
+  "chat": {
+    "title": "对话",
+    "placeholder": "对话功能开发中"
   }
 }
