@@ -28,6 +28,43 @@
   --color-info: #06B6D4;     /* Info */
 }
 
+/* Chat semantic tokens - reference primitives for global theme switching */
+:root {
+  --chat-bubble-bg: var(--color-bg-secondary);
+  --chat-text-color: var(--color-text-primary);
+  --chat-input-bg: var(--color-bg-secondary);
+}
+
+/* Chat UI overrides - antd-x Bubble & Sender */
+.ant-bubble-content-filled {
+  background-color: var(--chat-bubble-bg) !important;
+  color: var(--chat-text-color) !important;
+}
+.ant-bubble-content {
+  color: var(--chat-text-color) !important;
+}
+.ant-bubble-header,
+.ant-bubble-footer {
+  color: var(--chat-text-color) !important;
+}
+.ant-sender {
+  border: none !important;
+  box-shadow: none !important;
+  background-color: transparent !important;
+}
+.ant-sender:focus-within {
+  box-shadow: none !important;
+  border-color: transparent !important;
+}
+.ant-sender .ant-input {
+  background-color: transparent !important;
+  color: var(--chat-text-color) !important;
+  border: none !important;
+}
+.ant-sender .ant-input::placeholder {
+  color: var(--color-text-muted) !important;
+}
+
 /* Custom utility classes for calc heights */
 .max-h-main {
   max-height: calc(100vh - 80px);
