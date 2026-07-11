@@ -259,7 +259,7 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
 
     if (stream) {
       // Streaming mode: use SSE
-      const newSessionId = sessionId ?? crypto.randomUUID()
+      const newSessionId = sessionId ?? `ccm-${crypto.randomUUID()}`
 
       reply.hijack()
       const res = reply.raw
@@ -331,7 +331,7 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
       })
     } else {
       // Non-streaming mode: buffer all output
-      const newSessionId = sessionId ?? crypto.randomUUID()
+      const newSessionId = sessionId ?? `ccm-${crypto.randomUUID()}`
 
       const spawnArgs = sessionId
         ? ['-r', sessionId, '-p', prompt]
