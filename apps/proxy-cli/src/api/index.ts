@@ -42,8 +42,11 @@ export async function controlProcess(action: 'start' | 'stop' | 'restart'): Prom
   return res.json()
 }
 
-export async function fetchStats(): Promise<StatsData> {
-  const res = await fetch(`${API_BASE}/stats`)
+export async function fetchStats(since?: string): Promise<StatsData> {
+  const url = since
+    ? `${API_BASE}/stats?since=${encodeURIComponent(since)}`
+    : `${API_BASE}/stats`
+  const res = await fetch(url)
   return res.json()
 }
 

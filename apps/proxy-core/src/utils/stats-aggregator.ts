@@ -1,8 +1,15 @@
-import { initDatabase, getDatabase } from './db.js'
+import { initDatabase } from './db.js'
+
+export interface HourlyEntry {
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+  request_count: number
+}
 
 export interface StatsData {
-  hourly: Record<string, any>
-  daily: Record<string, any>
+  hourly: Record<string, HourlyEntry>
   lastUpdated: string | null
 }
 
@@ -15,15 +22,17 @@ export interface TodayStats {
 }
 
 // Aggregate stats from requests table (called periodically)
+// Only stores hourly (UTC) entries — daily aggregation is done on the frontend
+// using the user's local timezone.
 export function aggregateStats(): void {
   const db = initDatabase()
 
   const now = new Date()
-  const nowIso = now.toISOString()  // ISO UTC (带 Z)，供 updated_at 写入，前端可正确转本地时区
-  const hourlyCutoff = new Date(now.getTime() - 24 * 3600000).toISOString()  // Last 24 hours
-  const dailyCutoff = new Date(now.getTime() - 30 * 86400000).toISOString() // Last 30 days
+  const nowIso = now.toISOString()
+  // 30 days of hourly data = 720 entries
+  const hourlyCutoff = new Date(now.getTime() - 30 * 86400000).toISOString()
 
-  // Aggregate hourly stats (using UTC, frontend will format with local timezone)
+  // Aggregate hourly stats using SQLite's built-in strftime (UTC)
   const hourlyRows = db.prepare(`
     SELECT
       strftime('%Y-%m-%d-%H', timestamp) as hour,
@@ -58,69 +67,39 @@ export function aggregateStats(): void {
     )
   }
 
-  // Aggregate daily stats (using local date UTC+8, frontend queries with local date)
-  const dailyRows = db.prepare(`
-    SELECT
-      strftime('%Y-%m-%d', datetime(timestamp, '+8 hours')) as day,
-      SUM(input_tokens) as input_tokens,
-      SUM(output_tokens) as output_tokens,
-      SUM(cache_read_tokens) as cache_read_tokens,
-      SUM(cache_creation_tokens) as cache_creation_tokens,
-      COUNT(*) as request_count
-    FROM requests
-    WHERE timestamp >= ?
-    GROUP BY day
-  `).all(dailyCutoff) as any[]
+  // Clean old hourly entries: compute cutoff key using UTC methods
+  // to match the UTC keys stored in the DB
+  const cutoffDate = new Date(hourlyCutoff)
+  const cutoffKey = `${cutoffDate.getUTCFullYear()}-${String(cutoffDate.getUTCMonth() + 1).padStart(2, '0')}-${String(cutoffDate.getUTCDate()).padStart(2, '0')}-${String(cutoffDate.getUTCHours()).padStart(2, '0')}`
+  db.prepare(`DELETE FROM stats WHERE period = 'hourly' AND period_key < ?`).run(cutoffKey)
 
-  // Upsert daily stats
-  const upsertDaily = db.prepare(`
-    INSERT OR REPLACE INTO stats (
-      period, period_key, input_tokens, output_tokens,
-      cache_read_tokens, cache_creation_tokens, request_count, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `)
-
-  for (const row of dailyRows) {
-    upsertDaily.run(
-      'daily',
-      row.day,
-      row.input_tokens || 0,
-      row.output_tokens || 0,
-      row.cache_read_tokens || 0,
-      row.cache_creation_tokens || 0,
-      row.request_count,
-      nowIso
-    )
-  }
-
-  // Clean old stats entries (hourly uses UTC, daily uses local date)
-  db.prepare(`DELETE FROM stats WHERE period = 'hourly' AND period_key < ?`).run(
-    strftime('%Y-%m-%d-%H', hourlyCutoff)
-  )
-  // Daily cutoff needs to be in local date (UTC+8)
-  const dailyCutoffLocal = new Date(new Date(dailyCutoff).getTime() + 8 * 3600000)
-  db.prepare(`DELETE FROM stats WHERE period = 'daily' AND period_key < ?`).run(
-    strftime('%Y-%m-%d', dailyCutoffLocal)
-  )
+  // Clean ALL daily entries (legacy data from old +8h approach)
+  db.prepare(`DELETE FROM stats WHERE period = 'daily'`).run()
 }
 
 // Get aggregated stats for UI
-export function getStatsData(): StatsData {
+export function getStatsData(since?: string): StatsData {
   const db = initDatabase()
 
-  const hourlyRows = db.prepare(`
-    SELECT * FROM stats WHERE period = 'hourly' ORDER BY period_key DESC LIMIT 24
-  `).all() as any[]
-
-  const dailyRows = db.prepare(`
-    SELECT * FROM stats WHERE period = 'daily' ORDER BY period_key DESC LIMIT 30
-  `).all() as any[]
+  let hourlyRows: any[]
+  if (since) {
+    // Convert since (ISO UTC) to UTC hourly key format for filtering
+    const sinceDate = new Date(since)
+    const sinceKey = `${sinceDate.getUTCFullYear()}-${String(sinceDate.getUTCMonth() + 1).padStart(2, '0')}-${String(sinceDate.getUTCDate()).padStart(2, '0')}-${String(sinceDate.getUTCHours()).padStart(2, '0')}`
+    hourlyRows = db.prepare(`
+      SELECT * FROM stats WHERE period = 'hourly' AND period_key >= ? ORDER BY period_key ASC
+    `).all(sinceKey) as any[]
+  } else {
+    hourlyRows = db.prepare(`
+      SELECT * FROM stats WHERE period = 'hourly' ORDER BY period_key ASC LIMIT 720
+    `).all() as any[]
+  }
 
   const lastUpdatedRow = db.prepare(`
     SELECT MAX(updated_at) as last_updated FROM stats
   `).get() as any
 
-  const hourly: Record<string, any> = {}
+  const hourly: Record<string, HourlyEntry> = {}
   for (const row of hourlyRows) {
     hourly[row.period_key] = {
       input_tokens: row.input_tokens,
@@ -131,20 +110,8 @@ export function getStatsData(): StatsData {
     }
   }
 
-  const daily: Record<string, any> = {}
-  for (const row of dailyRows) {
-    daily[row.period_key] = {
-      input_tokens: row.input_tokens,
-      output_tokens: row.output_tokens,
-      cache_read_tokens: row.cache_read_tokens,
-      cache_creation_tokens: row.cache_creation_tokens,
-      request_count: row.request_count
-    }
-  }
-
   return {
     hourly,
-    daily,
     lastUpdated: lastUpdatedRow?.last_updated || null
   }
 }
@@ -188,21 +155,4 @@ export function getTodayStats(since: string): TodayStats {
     request_count: totalRow?.request_count || 0,
     models
   }
-}
-
-// Helper function (strftime for JS)
-function strftime(format: string, date: string | Date): string {
-  const d = typeof date === 'string' ? new Date(date) : date
-
-  if (format === '%Y-%m-%d-%H') {
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}`
-  }
-  if (format === '%Y-%m-%d') {
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-  }
-  return ''
-}
-
-function pad(n: number): string {
-  return n.toString().padStart(2, '0')
 }
