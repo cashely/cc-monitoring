@@ -14,7 +14,7 @@ export function App(): JSX.Element {
   const { status, history, requests, stats, todayStats, connectionState, loading } = useWebSocketData()
 
   return (
-    <div className="h-screen overflow-hidden flex flex-col bg-bg-primary text-text-primary">
+    <div className="min-h-screen flex flex-col bg-bg-primary text-text-primary">
       <ConnectionBanner connected={connectionState !== 'disconnected'} />
 
       <header className="bg-bg-secondary px-6 py-4 flex justify-between items-center border-b border-border">
@@ -31,7 +31,7 @@ export function App(): JSX.Element {
       </header>
 
       {/* Token stats bar chart + ChatUI */}
-      <div className="px-4 py-2 flex gap-4 items-stretch flex-shrink-0">
+      <div className="px-4 py-2 flex gap-4">
         <div className="flex-1">
           <StatsBarChart stats={stats} todayStats={todayStats} />
         </div>
@@ -40,7 +40,7 @@ export function App(): JSX.Element {
         </div>
       </div>
 
-      <main className="flex-1 flex gap-4 p-4 overflow-hidden">
+      <main className="flex-1 flex gap-4 p-4">
         <section className="flex-1 bg-bg-card rounded-lg overflow-hidden relative">
           <div className="absolute inset-0 p-4 overflow-y-auto">
             <RequestHistory requests={requests} loading={loading} />
@@ -50,7 +50,7 @@ export function App(): JSX.Element {
           <div className="bg-bg-card rounded-lg p-4">
             <StatusPanel status={{ ...status, history }} />
           </div>
-          <div className="bg-bg-card rounded-lg p-4 flex-1 overflow-y-auto max-h-panel">
+          <div className="bg-bg-card rounded-lg p-4 overflow-y-auto">
             <ConfigEditor />
           </div>
         </section>
