@@ -1,12 +1,20 @@
 import { useState } from 'react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import { useTranslation } from 'react-i18next'
-import { StatsData, TodayStats } from '../types/stats'
+import { StatsData, TodayStats, HourlyEntry } from '../types/stats'
 import { TodayStatsCards } from './TodayStatsCards'
 import { formatTime } from '../utils/format-time'
 import { formatCompactNumber } from '../utils/format-number'
 
 type ViewMode = 'hour' | 'day'
+
+const EMPTY_ENTRY: HourlyEntry = {
+  input_tokens: 0,
+  output_tokens: 0,
+  cache_read_tokens: 0,
+  cache_creation_tokens: 0,
+  request_count: 0
+}
 
 interface StatsBarChartProps {
   stats: StatsData
@@ -34,7 +42,7 @@ export function StatsBarChart({ stats, todayStats }: StatsBarChartProps): JSX.El
         // Display: "HH:mm" (local time)
         const display = `${String(time.getHours()).padStart(2, '0')}:00`
 
-        const usage = stats.hourly[utcKey] || { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0 }
+        const usage = stats.hourly[utcKey] || EMPTY_ENTRY
         result.push({
           time: display,
           input: usage.input_tokens,
@@ -43,24 +51,46 @@ export function StatsBarChart({ stats, todayStats }: StatsBarChartProps): JSX.El
         })
       }
     } else {
-      // Past 30 days: today backwards (using local date for key)
+      // Daily mode: aggregate hourly entries into local-day buckets
+      // This handles timezone correctly — each UTC hour is mapped to its local day.
+      const dailyMap: Record<string, { input: number, output: number, cache: number }> = {}
+
+      for (const [utcKey, entry] of Object.entries(stats.hourly)) {
+        // utcKey format: 'YYYY-MM-DD-HH' (UTC)
+        const parts = utcKey.split('-')
+        const [y, m, d, h] = parts.map(Number)
+        if (parts.length !== 4 || parts.some(p => Number.isNaN(Number(p)))) continue
+
+        // Construct Date from UTC components, then get local date
+        const utcMs = Date.UTC(y, m - 1, d, h)
+        if (Number.isNaN(utcMs)) continue
+
+        const localDate = new Date(utcMs)
+        const localKey = `${localDate.getFullYear()}-${String(localDate.getMonth() + 1).padStart(2, '0')}-${String(localDate.getDate()).padStart(2, '0')}`
+
+        if (!dailyMap[localKey]) {
+          dailyMap[localKey] = { input: 0, output: 0, cache: 0 }
+        }
+        dailyMap[localKey].input += entry.input_tokens
+        dailyMap[localKey].output += entry.output_tokens
+        dailyMap[localKey].cache += entry.cache_read_tokens
+      }
+
+      // Generate 30-day display scale (local time, backwards)
       for (let i = 29; i >= 0; i--) {
         const time = new Date(now)
         time.setDate(now.getDate() - i)
-        time.setHours(0, 0, 0, 0) // Round to day start (local time)
+        time.setHours(0, 0, 0, 0)
 
-        // Key format: "YYYY-MM-DD" (local date)
         const localKey = `${time.getFullYear()}-${String(time.getMonth() + 1).padStart(2, '0')}-${String(time.getDate()).padStart(2, '0')}`
-
-        // Display: "MM-DD" (local time)
         const display = `${String(time.getMonth() + 1).padStart(2, '0')}-${String(time.getDate()).padStart(2, '0')}`
 
-        const usage = stats.daily[localKey] || { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0 }
+        const aggregated = dailyMap[localKey] || { input: 0, output: 0, cache: 0 }
         result.push({
           time: display,
-          input: usage.input_tokens,
-          output: usage.output_tokens,
-          cache: usage.cache_read_tokens
+          input: aggregated.input,
+          output: aggregated.output,
+          cache: aggregated.cache
         })
       }
     }

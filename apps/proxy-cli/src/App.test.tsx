@@ -14,7 +14,7 @@ vi.mock('./api', () => ({
   fetchStatus: vi.fn().mockResolvedValue({ status: 'stopped', cpu: 0, memory: 0, uptime: 0, restarts: 0 }),
   fetchStatusHistory: vi.fn().mockResolvedValue({ history: [] }),
   fetchRequests: vi.fn().mockResolvedValue({ requests: [] }),
-  fetchStats: vi.fn().mockResolvedValue({ hourly: {}, daily: {}, lastUpdated: null }),
+  fetchStats: vi.fn().mockResolvedValue({ hourly: {}, lastUpdated: null }),
   fetchConfig: vi.fn().mockResolvedValue({
     config: {
       server: { port: 3000, host: 'localhost' },
@@ -31,7 +31,7 @@ vi.mock('./hooks/useWebSocketData', () => ({
     status: { status: 'stopped', cpu: 0, memory: 0, uptime: 0, restarts: 0 },
     history: [],
     requests: [],
-    stats: { hourly: {}, daily: {}, lastUpdated: null },
+    stats: { hourly: {}, lastUpdated: null },
     todayStats: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, request_count: 0, models: {} },
     connectionState: 'connected',
     reconnect: vi.fn()

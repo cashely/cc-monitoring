@@ -156,10 +156,12 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
     }
   })
 
-  // REST endpoint for token aggregation stats (SQLite)
-  fastify.get('/ui/api/stats', async (request, reply) => {
+  // REST endpoint for token aggregation stats (SQLite).
+  // Optional `since` query param: ISO UTC string, limits hourly entries returned.
+  fastify.get<{ Querystring: { since?: string } }>('/ui/api/stats', async (request, reply) => {
     try {
-      return getStatsData()
+      const since = request.query.since
+      return getStatsData(since)
     } catch (err: any) {
       request.log.error({ err }, 'Failed to load stats from database')
       return reply.code(500).send({

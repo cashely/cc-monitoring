@@ -44,8 +44,7 @@ const MOCK_REQUESTS = {
 }
 
 const MOCK_STATS: StatsData = {
-  hourly: { '10': { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 20 } },
-  daily: {},
+  hourly: { '2025-01-01-10': { input_tokens: 100, output_tokens: 50, cache_read_tokens: 20, cache_creation_tokens: 0, request_count: 3 } },
   lastUpdated: '2025-01-01T10:00:00Z',
 }
 
@@ -233,8 +232,7 @@ describe('useWebSocketData', () => {
 
   it('re-fetches stats on stats notify message', async () => {
     vi.mocked(fetchStats).mockResolvedValue({
-      hourly: { '11': { input_tokens: 200, output_tokens: 100, cache_read_input_tokens: 30 } },
-      daily: {},
+      hourly: { '2025-01-01-11': { input_tokens: 200, output_tokens: 100, cache_read_tokens: 30, cache_creation_tokens: 0, request_count: 5 } },
       lastUpdated: '2025-01-01T11:00:00Z',
     })
 
@@ -256,7 +254,7 @@ describe('useWebSocketData', () => {
       // Let the promise from fetchStats().then(setStats) resolve
     })
 
-    expect(result.current.stats.hourly['11']).toBeDefined()
+    expect(result.current.stats.hourly['2025-01-01-11']).toBeDefined()
   })
 
   it('detects heartbeat timeout and sets disconnected', async () => {

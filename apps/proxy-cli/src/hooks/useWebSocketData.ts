@@ -14,7 +14,6 @@ const INITIAL_STATUS: StatusApiResponse = {
 
 const INITIAL_STATS: StatsData = {
   hourly: {},
-  daily: {},
   lastUpdated: null
 }
 
@@ -27,6 +26,15 @@ const INITIAL_TODAY: TodayStats = {
 }
 
 const HEARTBEAT_TIMEOUT_MS = 30000
+
+// Compute since parameter for fetchStats: local time - 30 days → UTC ISO string.
+// This ensures the "daily" boundary follows the user's timezone.
+function computeStatsSince(): string {
+  const d = new Date()
+  d.setDate(d.getDate() - 30)
+  d.setHours(0, 0, 0, 0)
+  return d.toISOString()
+}
 
 export function useWebSocketData(): {
   status: StatusApiResponse
@@ -63,7 +71,7 @@ export function useWebSocketData(): {
       fetchStatus(),
       fetchStatusHistory(),
       fetchRequests(),
-      fetchStats(),
+      fetchStats(computeStatsSince()),
       fetchTodayStats()
     ])
     setStatus(statusData)
@@ -155,7 +163,7 @@ export function useWebSocketData(): {
           case 'stats':
             if (msg.action === 'notify') {
               // Stats file changed — re-fetch via REST
-              fetchStats().then(setStats).catch(() => {})
+              fetchStats(computeStatsSince()).then(setStats).catch(() => {})
             }
             break
         }
