@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useMemo } from 'react'
 import { Table, TableProps, Button, Checkbox } from 'antd'
 import { GitCompareArrows } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -36,7 +36,7 @@ export function RequestTable({
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
 
   // 合并新请求
-  useState(() => {
+  useMemo(() => {
     setAllRequests(prev => {
       const existingIds = new Set(prev.map(r => r.compositeId))
       const newRequests = initialRequests.filter(r => !existingIds.has(r.compositeId))
@@ -46,6 +46,33 @@ export function RequestTable({
   }, [initialRequests])
 
   const displayedRequests = allRequests.slice(0, displayedCount)
+
+  // 计算 rowSpan
+  const rowSpanMap = useMemo(() => {
+    const map = new Map<string, { index: number; count: number }>()
+    let lastSessionId: string | null = null
+    let currentCount = 0
+    let currentStartIndex = 0
+
+    displayedRequests.forEach((req, index) => {
+      if (req.sessionId !== lastSessionId) {
+        if (lastSessionId !== null) {
+          map.set(lastSessionId, { index: currentStartIndex, count: currentCount })
+        }
+        lastSessionId = req.sessionId
+        currentCount = 1
+        currentStartIndex = index
+      } else {
+        currentCount++
+      }
+    })
+
+    if (lastSessionId !== null) {
+      map.set(lastSessionId, { index: currentStartIndex, count: currentCount })
+    }
+
+    return map
+  }, [displayedRequests])
 
   const handleLoadMore = useCallback(async () => {
     if (loadingMore || !hasMore) return
@@ -76,6 +103,7 @@ export function RequestTable({
       title: '',
       key: 'checkbox',
       width: 48,
+      fixed: 'left',
       render: (_, record) => (
         <Checkbox
           checked={selectedRowKeys.includes(record.compositeId)}
@@ -92,6 +120,25 @@ export function RequestTable({
           }}
         />
       ),
+    },
+    {
+      title: 'Session ID',
+      dataIndex: 'sessionId',
+      key: 'sessionId',
+      width: 140,
+      fixed: 'left',
+      render: (value: string, _, index: number) => {
+        const spanInfo = rowSpanMap.get(value)
+        const rowSpan = spanInfo && spanInfo.index === index ? spanInfo.count : 0
+        return {
+          children: (
+            <span className="text-xs text-text-muted font-mono" title={value}>
+              {truncateSessionId(value, 12)}
+            </span>
+          ),
+          props: { rowSpan },
+        }
+      },
     },
     {
       title: '时间',
@@ -142,17 +189,6 @@ export function RequestTable({
       render: (value: string) => value ? <ModelTag model={value} /> : null,
     },
     {
-      title: 'Session ID',
-      dataIndex: 'sessionId',
-      key: 'sessionId',
-      width: 140,
-      render: (value: string) => (
-        <span className="text-xs text-text-muted font-mono" title={value}>
-          {truncateSessionId(value, 12)}
-        </span>
-      ),
-    },
-    {
       title: '状态码',
       dataIndex: 'statusCode',
       key: 'statusCode',
@@ -185,7 +221,7 @@ export function RequestTable({
           disabled={selectedRowKeys.length !== 2}
           onClick={() => onCompare(selectedRowKeys as string[])}
         >
-          {t('requests.compare') || '对比'}
+          对比
         </Button>
       </div>
 
