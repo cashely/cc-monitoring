@@ -42,7 +42,7 @@ export function App(): JSX.Element {
 
       <main className="flex-1 flex gap-4 p-4">
         <section className="flex-1 bg-bg-card rounded-lg overflow-hidden relative">
-          <div className="absolute inset-0 p-4 overflow-y-auto">
+          <div className="absolute inset-0 overflow-y-auto">
             <RequestHistory requests={requests} loading={loading} />
           </div>
         </section>
