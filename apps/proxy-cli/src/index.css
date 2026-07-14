@@ -36,6 +36,16 @@
 }
 
 /* Chat UI overrides - antd-x Bubble & Sender */
+.chat-bubble-list .ant-bubble {
+  flex-direction: column !important;
+  gap: 8px !important;
+}
+.chat-bubble-list .ant-bubble .ant-bubble-avatar {
+  align-self: flex-start;
+}
+.chat-bubble-list .ant-bubble.ant-bubble-end .ant-bubble-avatar {
+  align-self: flex-end;
+}
 .ant-bubble-content-filled {
   background-color: var(--chat-bubble-bg) !important;
   color: var(--chat-text-color) !important;

@@ -1,10 +1,21 @@
-import { useRef, useEffect, useState } from 'react'
-import { Bubble, Sender } from '@ant-design/x'
-import XMarkdown from '@ant-design/x-markdown'
+import { useRef, useEffect, useState, useMemo } from 'react'
+import { Bubble, Sender, CodeHighlighter, Mermaid } from '@ant-design/x'
+import XMarkdown, { type ComponentProps } from '@ant-design/x-markdown'
 import { Button, Tooltip } from 'antd'
 import { PlusOutlined, RobotOutlined, UserOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { useChat } from '../hooks/useChat'
+
+const Code: React.FC<ComponentProps> = (props) => {
+  const { className, children } = props
+  const lang = className?.match(/language-(\w+)/)?.[1] || ''
+
+  if (typeof children !== 'string') return null
+  if (lang === 'mermaid') {
+    return <Mermaid>{children}</Mermaid>
+  }
+  return <CodeHighlighter lang={lang}>{children}</CodeHighlighter>
+}
 
 export function ChatUI(): JSX.Element {
   const { t } = useTranslation('app')
@@ -25,12 +36,19 @@ export function ChatUI(): JSX.Element {
     setInputValue('')
   }
 
-  const items = messages.map((msg) => ({
+  const items = useMemo(() => messages.map((msg) => ({
     key: msg.id,
-    content: msg.role === 'assistant' ? <XMarkdown content={msg.content} /> : msg.content,
+    content: msg.content,
     role: msg.role as 'user' | 'assistant',
     loading: msg.role === 'assistant' && loading && !msg.content,
-  }))
+    contentRender: msg.role === 'assistant'
+      ? (content: string) => (
+          <XMarkdown components={{ code: Code }} paragraphTag="div">
+            {content}
+          </XMarkdown>
+        )
+      : undefined,
+  })), [messages, loading])
 
   return (
     <div className="bg-bg-card rounded-lg overflow-hidden flex flex-col h-101.25">
@@ -46,19 +64,20 @@ export function ChatUI(): JSX.Element {
         )}
         <Bubble.List
           items={items}
-          roles={{
+          role={{
             assistant: {
               placement: 'start',
-              avatar: { icon: <RobotOutlined />, style: { backgroundColor: '#1677ff' } },
+              avatar: <RobotOutlined style={{ backgroundColor: '#1677ff', color: '#fff', borderRadius: '50%', padding: '4px', fontSize: '24px' }} />,
               variant: 'filled',
             },
             user: {
               placement: 'end',
-              avatar: { icon: <UserOutlined />, style: { backgroundColor: '#52c41a' } },
+              avatar: <UserOutlined style={{ backgroundColor: '#52c41a', color: '#fff', borderRadius: '50%', padding: '4px', fontSize: '24px' }} />,
               variant: 'filled',
             },
           }}
           style={{ height: '100%' }}
+          className="chat-bubble-list"
         />
       </div>
 
