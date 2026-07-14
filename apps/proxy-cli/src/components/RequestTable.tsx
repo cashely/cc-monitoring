@@ -189,6 +189,18 @@ export function RequestTable({
       render: (value: string) => value ? <ModelTag model={value} /> : null,
     },
     {
+      title: '请求端点',
+      dataIndex: 'baseUrl',
+      key: 'baseUrl',
+      width: 220,
+      ellipsis: true,
+      render: (value: string) => (
+        <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }} title={value}>
+          {value || '-'}
+        </span>
+      ),
+    },
+    {
       title: '耗时',
       dataIndex: 'responseTime',
       key: 'responseTime',

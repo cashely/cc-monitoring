@@ -334,6 +334,7 @@ export async function setupProxy(
           responseTime: Date.now() - startTime,
           model: forwardedModel,
           machineId,
+          baseUrl: resolved.baseUrl,
           usage
         })
 
@@ -404,6 +405,7 @@ export async function setupProxy(
           responseTime: Date.now() - startTime,
           model: forwardedModel,
           machineId,
+          baseUrl: resolved.baseUrl,
           usage
         })
         return
@@ -492,7 +494,8 @@ export async function setupProxy(
         statusCode: getErrorStatusCode(error),
         responseTime: Date.now() - startTime,
         model: originalModel,
-        machineId: getMachineIdSync() ?? undefined
+        machineId: getMachineIdSync() ?? undefined,
+        baseUrl: resolved.baseUrl
       })
 
       const statusCode = getErrorStatusCode(error)

@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { createChatConnection, loadConversations, saveConversations } from '../api/chat'
 import type { ChatMessage, ChatConversation } from '../types/chat'
+import { generateUUID } from '../utils/uuid'
 
 export function useChat() {
   const [conversations, setConversations] = useState<ChatConversation[]>(loadConversations())
@@ -46,7 +47,7 @@ export function useChat() {
 
     // 添加 user message
     const userMessage: ChatMessage = {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       role: 'user',
       content: prompt,
       timestamp: Date.now()
@@ -55,11 +56,13 @@ export function useChat() {
     // Build initial snapshot from latest state via ref
     const currentConvs = conversationsRef.current
     let convIndex: number
+    let currentSessionId: string | undefined = sessionId
 
     if (!sessionId) {
-      // 新对话
+      // 新对话 - 浏览器生成 session ID
+      currentSessionId = generateUUID()
       const newConv: ChatConversation = {
-        sessionId: '',  // 临时为空，等 SSE session event 回填
+        sessionId: currentSessionId,
         messages: [userMessage]
       }
       convIndex = currentConvs.length
@@ -81,7 +84,7 @@ export function useChat() {
     persist(prev => {
       const patched = [...prev]
       const assistantMessage: ChatMessage = {
-        id: crypto.randomUUID(),
+        id: generateUUID(),
         role: 'assistant',
         content: '',
         timestamp: Date.now()
@@ -98,17 +101,8 @@ export function useChat() {
     // 累积 stdout
     let accumulatedStdout = ''
 
-    const connection = createChatConnection(prompt, sessionId)
+    const connection = createChatConnection(prompt, currentSessionId)
     connectionRef.current = connection
-
-    connection.onSession = (sid: string) => {
-      // 回填 sessionId — use functional updater to avoid stale closure
-      persist(prev => {
-        const patched = [...prev]
-        patched[convIndex] = { ...patched[convIndex], sessionId: sid }
-        return patched
-      })
-    }
 
     connection.onData = (type: string, content: string) => {
       if (type === 'stdout') {

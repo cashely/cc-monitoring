@@ -16,6 +16,7 @@ export interface RequestSummary {
   responseTime: number
   model?: string
   machineId?: string
+  baseUrl?: string
   usage?: TokenUsage
 }
 
