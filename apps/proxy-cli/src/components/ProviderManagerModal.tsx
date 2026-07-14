@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { Button, Tooltip } from 'antd'
+import { CloseOutlined, DeleteOutlined, CheckOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { fetchProviders, saveProviders } from '../api/providers'
 import type { Provider, ProviderInput, ProviderValidationError } from '../types/providers'
@@ -139,12 +141,11 @@ export function ProviderManagerModal({ isOpen, onClose }: ProviderManagerModalPr
       <div className="bg-bg-primary rounded-lg shadow-xl w-full max-w-6xl max-h-[90vh] overflow-auto p-6">
         <div className="flex items-center justify-between mb-4 pb-2 border-b border-border">
           <h3 className="text-base font-medium">{t('providers:heading')}</h3>
-          <button
+          <Button
+            type="text"
+            icon={<CloseOutlined />}
             onClick={onClose}
-            className="text-text-muted hover:text-text-primary transition-colors"
-          >
-            {t('providers:action.close')}
-          </button>
+          />
         </div>
 
         <div className="overflow-x-auto">
@@ -170,24 +171,24 @@ export function ProviderManagerModal({ isOpen, onClose }: ProviderManagerModalPr
                       />
                     </td>
                   ))}
-                  <td className="px-1 py-1 whitespace-nowrap">
-                    <button
+                  <td className="px-1 py-1 whitespace-nowrap flex gap-1">
+                    <Button
+                      type={row.default ? 'primary' : 'default'}
+                      size="small"
+                      icon={row.default ? <CheckOutlined /> : undefined}
                       onClick={() => handleActivate(rowIndex)}
                       disabled={row.default}
-                      className={`px-2 py-1 rounded text-sm transition-colors ${
-                        row.default
-                          ? 'opacity-50 cursor-not-allowed text-text-muted'
-                          : 'text-success hover:bg-success/10'
-                      }`}
                     >
                       {row.default ? t('providers:action.activated') : t('providers:action.activate')}
-                    </button>
-                    <button
-                      onClick={() => handleDeleteRow(rowIndex)}
-                      className="ml-2 px-2 py-1 rounded text-error hover:bg-error/10 transition-colors text-sm"
-                    >
-                      {t('providers:action.delete')}
-                    </button>
+                    </Button>
+                    <Tooltip title={t('providers:action.delete')}>
+                      <Button
+                        danger
+                        size="small"
+                        icon={<DeleteOutlined />}
+                        onClick={() => handleDeleteRow(rowIndex)}
+                      />
+                    </Tooltip>
                   </td>
                 </tr>
               ))}
@@ -196,12 +197,9 @@ export function ProviderManagerModal({ isOpen, onClose }: ProviderManagerModalPr
         </div>
 
         <div className="flex items-center gap-2 mt-4">
-          <button
-            onClick={handleAddRow}
-            className="px-4 py-2 rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-hover transition-colors"
-          >
+          <Button onClick={handleAddRow}>
             {t('providers:action.add')}
-          </button>
+          </Button>
         </div>
 
         {validationErrors.length > 0 && (
@@ -219,19 +217,16 @@ export function ProviderManagerModal({ isOpen, onClose }: ProviderManagerModalPr
         )}
 
         <div className="flex gap-2 mt-4 pt-2 border-t border-border">
-          <button
+          <Button
+            type="primary"
             onClick={handleSave}
-            disabled={isSaving}
-            className="px-4 py-2 rounded bg-primary text-white hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            loading={isSaving}
           >
             {isSaving ? t('providers:action.saving') : t('providers:action.save')}
-          </button>
-          <button
-            onClick={onClose}
-            className="px-4 py-2 rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-hover transition-colors"
-          >
+          </Button>
+          <Button onClick={onClose}>
             {t('providers:action.close')}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
