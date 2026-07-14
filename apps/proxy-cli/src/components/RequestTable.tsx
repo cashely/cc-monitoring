@@ -201,6 +201,8 @@ export function RequestTable({
           })}
           rowKey="compositeId"
           size="small"
+          scroll={{ x: 'max-content' }}
+          tableLayout="auto"
         />
       </div>
 
