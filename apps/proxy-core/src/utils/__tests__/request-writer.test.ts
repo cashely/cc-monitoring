@@ -44,9 +44,9 @@ describe('request-writer-db', () => {
   })
 
   it('should list requests summary', async () => {
-    const summaries = await listRequestDB()
-    expect(summaries.length).toBeGreaterThan(0)
-    expect(summaries[0].compositeId).toBeDefined()
+    const result = await listRequestDB()
+    expect(result.requests.length).toBeGreaterThan(0)
+    expect(result.requests[0].compositeId).toBeDefined()
   })
 
   it('should clean old requests', async () => {

@@ -28,8 +28,13 @@ export async function saveConfig(config: AppConfig, reload: boolean = false): Pr
   return res.json()
 }
 
-export async function fetchRequests(limit: number = 1000): Promise<{ requests: RequestSummary[] }> {
-  const res = await fetch(`${API_BASE}/requests?limit=${limit}`)
+export async function fetchRequests(limit: number = 100, before?: string): Promise<{ requests: RequestSummary[]; hasMore: boolean }> {
+  const params = new URLSearchParams()
+  params.set('limit', String(limit))
+  if (before) {
+    params.set('before', before)
+  }
+  const res = await fetch(`${API_BASE}/requests?${params.toString()}`)
   return res.json()
 }
 
