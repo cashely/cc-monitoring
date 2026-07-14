@@ -18,15 +18,13 @@ interface RequestTableProps {
 
 interface TableRowData {
   key: string
-  type: 'session' | 'request'
-  sessionId: string
+  sessionId?: string
+  requestCount?: number
   request?: RequestSummary
   children?: TableRowData[]
 }
 
 const PAGE_SIZE = 100
-const SESSION_ID_TRUNCATE_SHORT = 8
-const SESSION_ID_TRUNCATE_LONG = 12
 
 // Helper to truncate session ID
 function truncateSessionId(sessionId: string, length: number): string {
@@ -53,32 +51,27 @@ export function RequestTable({
   if (initialRequestsKey !== prevInitialRequestsRef.current) {
     prevInitialRequestsRef.current = initialRequestsKey
     setAllRequests(prev => {
-      // 合并新请求并去重
       const existingIds = new Set(prev.map(r => r.compositeId))
       const newRequests = initialRequests.filter(r => !existingIds.has(r.compositeId))
       if (newRequests.length === 0) return prev
-      // 新请求加到前面，保持已有顺序
       return [...newRequests, ...prev]
     })
   }
 
-  // 构建树状数据结构
+  // 构建 antd 原生树形数据结构
   const tableData = useMemo((): TableRowData[] => {
     const sessionMap = new Map<string, RequestSummary[]>()
     const displayedRequests = allRequests.slice(0, displayedCount)
 
-    // 按 sessionId 分组
     for (const request of displayedRequests) {
       const sessionRequests = sessionMap.get(request.sessionId) || []
       sessionRequests.push(request)
       sessionMap.set(request.sessionId, sessionRequests)
     }
 
-    // 构建树状结构
     const result: TableRowData[] = []
     const seenSessions = new Set<string>()
 
-    // 保持顺序（按每个 session 最新请求的时间排序）
     for (const request of displayedRequests) {
       if (seenSessions.has(request.sessionId)) continue
       seenSessions.add(request.sessionId)
@@ -87,12 +80,10 @@ export function RequestTable({
 
       result.push({
         key: `session:${request.sessionId}`,
-        type: 'session',
         sessionId: request.sessionId,
+        requestCount: sessionRequests.length,
         children: sessionRequests.map(req => ({
           key: req.compositeId,
-          type: 'request',
-          sessionId: req.sessionId,
           request: req,
         })),
       })
@@ -133,7 +124,7 @@ export function RequestTable({
       key: 'checkbox',
       width: 48,
       render: (_, record) => {
-        if (record.type !== 'request') return null
+        if (!record.request) return null
         return (
           <Checkbox
             checked={selectedRowKeys.includes(record.key)}
@@ -142,7 +133,6 @@ export function RequestTable({
               setSelectedRowKeys(prev => {
                 if (e.target.checked) {
                   const newSelected = [...prev, record.key]
-                  // 最多选择2个
                   return newSelected.slice(-2)
                 } else {
                   return prev.filter(k => k !== record.key)
@@ -155,101 +145,107 @@ export function RequestTable({
     },
     {
       title: '时间',
+      dataIndex: 'timestamp',
       key: 'timestamp',
       width: 160,
       render: (_, record) => {
-        if (record.type === 'session') {
-          return null
-        }
+        if (!record.request) return null
         return (
           <span className="text-sm text-text-muted">
-            {formatTime(record.request!.timestamp, 'monthDayTime')}
+            {formatTime(record.request.timestamp, 'monthDayTime')}
           </span>
         )
       },
     },
     {
       title: 'Method',
+      dataIndex: 'method',
       key: 'method',
       width: 100,
       render: (_, record) => {
-        if (record.type === 'session') {
+        if (record.request) {
+          return (
+            <MethodTag
+              method={record.request.method}
+              statusCode={record.request.statusCode}
+            />
+          )
+        }
+        if (record.sessionId) {
           return (
             <span className="text-xs text-text-muted font-mono">
-              {truncateSessionId(record.sessionId, SESSION_ID_TRUNCATE_SHORT)}
+              {truncateSessionId(record.sessionId, 8)}
             </span>
           )
         }
-        return (
-          <MethodTag
-            method={record.request!.method}
-            statusCode={record.request!.statusCode}
-          />
-        )
+        return null
       },
     },
     {
       title: 'URL',
-      key: 'url',
       dataIndex: 'url',
+      key: 'url',
       ellipsis: true,
       render: (_, record) => {
-        if (record.type === 'session') {
-          const children = tableData.find(r => r.key === record.key)?.children
+        if (record.request) {
+          return <span className="text-sm">{record.request.path}</span>
+        }
+        if (record.requestCount !== undefined) {
           return (
             <span className="text-xs text-text-muted">
-              {children?.length || 0} 条请求
+              {record.requestCount} 条请求
             </span>
           )
         }
-        return <span className="text-sm">{record.request!.path}</span>
+        return null
       },
     },
     {
       title: '耗时',
+      dataIndex: 'duration',
       key: 'duration',
       width: 80,
       render: (_, record) => {
-        if (record.type === 'session') return null
+        if (!record.request) return null
         return (
           <span className="text-xs text-text-muted">
-            {(record.request!.responseTime / 1000).toFixed(1)}s
+            {(record.request.responseTime / 1000).toFixed(1)}s
           </span>
         )
       },
     },
     {
       title: '模型',
+      dataIndex: 'model',
       key: 'model',
       width: 120,
       render: (_, record) => {
-        if (record.type === 'session') return null
-        return record.request!.model ? (
-          <ModelTag model={record.request!.model} />
-        ) : null
+        if (!record.request?.model) return null
+        return <ModelTag model={record.request.model} />
       },
     },
     {
       title: 'Session ID',
+      dataIndex: 'sessionId',
       key: 'sessionId',
       width: 140,
       render: (_, record) => {
-        if (record.type === 'session') return null
-        const sessionId = record.request!.sessionId
+        if (!record.request) return null
         return (
-          <span className="text-xs text-text-muted font-mono" title={sessionId}>
-            {truncateSessionId(sessionId, SESSION_ID_TRUNCATE_LONG)}
+          <span className="text-xs text-text-muted font-mono" title={record.request.sessionId}>
+            {truncateSessionId(record.request.sessionId, 12)}
           </span>
         )
       },
     },
     {
       title: '状态码',
+      dataIndex: 'statusCode',
       key: 'statusCode',
       width: 80,
       render: (_, record) => {
-        if (record.type === 'session') return null
-        const statusCode = record.request!.statusCode
+        if (!record.request) return null
+        const statusCode = record.request.statusCode
         const color = statusCode >= 200 && statusCode < 300 ? 'text-emerald-600' : 'text-red-600'
         return (
           <span className={`text-sm font-medium ${color}`}>
@@ -263,14 +259,14 @@ export function RequestTable({
       key: 'token',
       width: 140,
       render: (_, record) => {
-        if (record.type === 'session') return null
-        return <TokenMetricsCell usage={record.request!.usage} />
+        if (!record.request) return null
+        return <TokenMetricsCell usage={record.request.usage} />
       },
     },
   ]
 
   const handleRowClick = (record: TableRowData) => {
-    if (record.type === 'request' && record.request) {
+    if (record.request) {
       onRowClick(record.request)
     }
   }
@@ -309,14 +305,13 @@ export function RequestTable({
             onExpand: handleExpand,
             defaultExpandAllRows: true,
             indentSize: 24,
-            expandIcon: () => null,
           }}
           onRow={(record) => ({
             onClick: () => handleRowClick(record),
-            className: record.type === 'request' ? 'cursor-pointer hover:bg-bg-hover' : '',
+            className: record.request ? 'cursor-pointer hover:bg-bg-hover' : '',
           })}
           rowClassName={(record) => {
-            if (record.type === 'session') {
+            if (!record.request && record.sessionId) {
               return 'bg-bg-secondary font-medium'
             }
             return ''
