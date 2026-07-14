@@ -62,6 +62,11 @@ export function initDatabase(): Database.Database {
     db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (4)').run()
   }
 
+  if (currentVersion < 5) {
+    applySchemaV5(db)
+    db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (5)').run()
+  }
+
   return db
 }
 
@@ -207,6 +212,16 @@ function applySchemaV1(db: Database.Database) {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_stats_period ON stats(period, period_key)
   `)
+}
+
+export function applySchemaV5(db: Database.Database) {
+  // Add machine_id column to requests table
+  const columns = db.prepare("PRAGMA table_info(requests)").all() as { name: string }[]
+  if (!columns.some(c => c.name === 'machine_id')) {
+    db.exec('ALTER TABLE requests ADD COLUMN machine_id TEXT')
+  }
+  // Create index for machine_id
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_requests_machine_id ON requests(machine_id)`)
 }
 
 export function closeDatabase() {

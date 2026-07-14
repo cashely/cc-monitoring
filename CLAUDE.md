@@ -264,6 +264,17 @@ cc-monitoring/
 - 提交信息格式：`type: description`
 - type可选值：feat（新功能）、fix（修复bug）、docs（文档）、style（格式）、refactor（重构）、test（测试）、chore（构建/工具）
 
+### proxy-cli UI 开发规范
+**重要**：对 proxy-cli 进行任何 UI 调整时，必须先参考 README.md 中的「主题配置」章节，确保符合当前配置的主题系统。
+
+1. **颜色使用**：始终使用 CSS 变量 `var(--color-*)`，禁止硬编码颜色值
+2. **Glassmorphism**：使用 `.glass` 或 `.glass-strong` 工具类实现玻璃态效果
+3. **字体大小**：正文统一 12px（`text-xs`），标题可稍大（`text-sm` / `text-base`）
+4. **主题切换**：确保新增组件同时支持暗黑/亮色主题，通过 `.light` class 区分
+5. **Ant Design 配置**：通过 ConfigProvider 统一设置 `fontSize: 12`
+
+完整主题配置参考：`apps/proxy-cli/src/index.css` 和 README.md「主题配置」章节。
+
 ### 开发流程规范
 1. 每次收到任务需求之前必须进行需求分析，确保能理解用户的需求
 2. 对于需求实现的方案必须跟用户确认才能执行接下来的动作

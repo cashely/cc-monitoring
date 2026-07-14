@@ -8,6 +8,7 @@ export interface RequestData {
   proxyApiKey?: string
   baseUrl?: string
   model?: string
+  machineId?: string
   request: {
     method: string
     path: string
@@ -44,6 +45,7 @@ export interface RequestSummary {
   proxyApiKey?: string
   baseUrl?: string
   model?: string
+  machineId?: string
   usage?: TokenUsage
 }
 
@@ -66,12 +68,12 @@ export async function saveRequestDB(
   const stmt = db.prepare(`
     INSERT OR REPLACE INTO requests (
       request_id, session_id, timestamp, method, path, status_code, response_time,
-      api_key, proxy_api_key, base_url, model,
+      api_key, proxy_api_key, base_url, model, machine_id,
       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
       request_headers, request_body, response_headers, response_events,
       completed_at, closed_at, error
     ) VALUES (
-      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     )
   `)
 
@@ -89,6 +91,7 @@ export async function saveRequestDB(
     data.proxyApiKey || null,
     data.baseUrl || null,
     data.model || null,
+    data.machineId || null,
     usage?.input_tokens || null,
     usage?.output_tokens || null,
     usage?.cache_read_input_tokens || null,
@@ -131,6 +134,7 @@ export async function loadRequestDB(compositeId: string): Promise<RequestData> {
     proxyApiKey: row.proxy_api_key,
     baseUrl: row.base_url,
     model: row.model,
+    machineId: row.machine_id,
     request: {
       method: row.method,
       path: row.path,
@@ -161,7 +165,7 @@ export async function listRequestDB(
   const rows = db.prepare(`
     SELECT
       request_id, session_id, timestamp, method, path, status_code, response_time,
-      api_key, proxy_api_key, base_url, model,
+      api_key, proxy_api_key, base_url, model, machine_id,
       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
     FROM requests
     ${whereClause}
@@ -186,6 +190,7 @@ export async function listRequestDB(
       proxyApiKey: row.proxy_api_key,
       baseUrl: row.base_url,
       model: row.model,
+      machineId: row.machine_id,
       usage: row.input_tokens || row.output_tokens ? {
         input_tokens: row.input_tokens,
         output_tokens: row.output_tokens,

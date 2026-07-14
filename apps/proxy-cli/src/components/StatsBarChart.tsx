@@ -1,10 +1,21 @@
 import { useState } from 'react'
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  Legend,
+} from 'recharts'
 import { useTranslation } from 'react-i18next'
 import { StatsData, TodayStats, HourlyEntry } from '../types/stats'
 import { TodayStatsCards } from './TodayStatsCards'
 import { formatTime } from '../utils/format-time'
 import { formatCompactNumber } from '../utils/format-number'
+import { DARK_CHART_THEME, LIGHT_CHART_THEME, TOKEN_COLORS } from './chart-theme'
+import { useTheme } from '../hooks'
 
 type ViewMode = 'hour' | 'day'
 
@@ -13,7 +24,7 @@ const EMPTY_ENTRY: HourlyEntry = {
   output_tokens: 0,
   cache_read_tokens: 0,
   cache_creation_tokens: 0,
-  request_count: 0
+  request_count: 0,
 }
 
 interface StatsBarChartProps {
@@ -23,45 +34,37 @@ interface StatsBarChartProps {
 
 export function StatsBarChart({ stats, todayStats }: StatsBarChartProps): JSX.Element {
   const { t } = useTranslation('app')
+  const { theme } = useTheme()
   const [viewMode, setViewMode] = useState<ViewMode>('hour')
+  const chartTheme = theme === 'dark' ? DARK_CHART_THEME : LIGHT_CHART_THEME
 
-  // Generate fixed time scale and match with stats data
   const generateTimeScale = (mode: ViewMode) => {
     const now = new Date()
     const result = []
 
     if (mode === 'hour') {
-      // Past 24 hours: now backwards
       for (let i = 23; i >= 0; i--) {
         const time = new Date(now)
-        time.setHours(now.getHours() - i, 0, 0, 0) // Round to hour start (local time)
+        time.setHours(now.getHours() - i, 0, 0, 0)
 
-        // Use UTC methods for querying backend stats (stored in UTC)
         const utcKey = `${time.getUTCFullYear()}-${String(time.getUTCMonth() + 1).padStart(2, '0')}-${String(time.getUTCDate()).padStart(2, '0')}-${String(time.getUTCHours()).padStart(2, '0')}`
-
-        // Display: "HH:mm" (local time)
         const display = `${String(time.getHours()).padStart(2, '0')}:00`
-
         const usage = stats.hourly[utcKey] || EMPTY_ENTRY
         result.push({
           time: display,
           input: usage.input_tokens,
           output: usage.output_tokens,
-          cache: usage.cache_read_tokens
+          cache: usage.cache_read_tokens,
         })
       }
     } else {
-      // Daily mode: aggregate hourly entries into local-day buckets
-      // This handles timezone correctly — each UTC hour is mapped to its local day.
-      const dailyMap: Record<string, { input: number, output: number, cache: number }> = {}
+      const dailyMap: Record<string, { input: number; output: number; cache: number }> = {}
 
       for (const [utcKey, entry] of Object.entries(stats.hourly)) {
-        // utcKey format: 'YYYY-MM-DD-HH' (UTC)
         const parts = utcKey.split('-')
         const [y, m, d, h] = parts.map(Number)
-        if (parts.length !== 4 || parts.some(p => Number.isNaN(Number(p)))) continue
+        if (parts.length !== 4 || parts.some((p) => Number.isNaN(Number(p)))) continue
 
-        // Construct Date from UTC components, then get local date
         const utcMs = Date.UTC(y, m - 1, d, h)
         if (Number.isNaN(utcMs)) continue
 
@@ -76,7 +79,6 @@ export function StatsBarChart({ stats, todayStats }: StatsBarChartProps): JSX.El
         dailyMap[localKey].cache += entry.cache_read_tokens
       }
 
-      // Generate 30-day display scale (local time, backwards)
       for (let i = 29; i >= 0; i--) {
         const time = new Date(now)
         time.setDate(now.getDate() - i)
@@ -90,7 +92,7 @@ export function StatsBarChart({ stats, todayStats }: StatsBarChartProps): JSX.El
           time: display,
           input: aggregated.input,
           output: aggregated.output,
-          cache: aggregated.cache
+          cache: aggregated.cache,
         })
       }
     }
@@ -101,16 +103,14 @@ export function StatsBarChart({ stats, todayStats }: StatsBarChartProps): JSX.El
   const data = generateTimeScale(viewMode)
 
   return (
-    <div className="bg-bg-card rounded-lg p-4">
-      {/* 今日实时统计卡片 */}
+    <div className="glass rounded-xl p-4">
       <TodayStatsCards today={todayStats} />
 
-      {/* Toggle buttons */}
       <div className="flex justify-end mb-4">
         <div className="flex gap-2">
           <button
             onClick={() => setViewMode('hour')}
-            className={`px-3 py-1 text-xs rounded ${
+            className={`px-3 py-1 text-xs rounded transition-all ${
               viewMode === 'hour'
                 ? 'bg-accent text-white'
                 : 'bg-bg-secondary text-text-muted hover:bg-bg-hover'
@@ -120,7 +120,7 @@ export function StatsBarChart({ stats, todayStats }: StatsBarChartProps): JSX.El
           </button>
           <button
             onClick={() => setViewMode('day')}
-            className={`px-3 py-1 text-xs rounded ${
+            className={`px-3 py-1 text-xs rounded transition-all ${
               viewMode === 'day'
                 ? 'bg-accent text-white'
                 : 'bg-bg-secondary text-text-muted hover:bg-bg-hover'
@@ -131,24 +131,32 @@ export function StatsBarChart({ stats, todayStats }: StatsBarChartProps): JSX.El
         </div>
       </div>
 
-      {/* Bar chart */}
       <ResponsiveContainer width="100%" height={200} className="text-xs">
-        <BarChart data={data} margin={{ top: 10, right: 20, bottom: 5, left: 40 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#4a5568" />
-          <XAxis dataKey="time" stroke="#718096" />
-          <YAxis stroke="#718096" tickFormatter={formatCompactNumber} />
-          <Tooltip
-            contentStyle={{ backgroundColor: '#2d3748', border: '1px solid #4a5568' }}
-            labelStyle={{ color: '#e2e8f0' }}
+        <BarChart data={data} margin={{ top: 10, right: 20, bottom: 5, left: 10 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.gridColor} />
+          <XAxis dataKey="time" stroke={chartTheme.axisColor} />
+          <YAxis
+            stroke={chartTheme.axisTickColor}
+            tickFormatter={formatCompactNumber}
+            width={50}
           />
-          <Legend className='text-xs' />
-          <Bar dataKey="input" fill="#3b82f6" name={t('inputTokens')} />
-          <Bar dataKey="output" fill="#10b981" name={t('outputTokens')} />
-          <Bar dataKey="cache" fill="#f59e0b" name={t('cacheTokens')} />
+          <Tooltip
+            contentStyle={{
+              backgroundColor: chartTheme.tooltipBg,
+              border: `1px solid ${chartTheme.tooltipBorder}`,
+              backdropFilter: 'blur(12px)',
+              WebkitBackdropFilter: 'blur(12px)',
+              borderRadius: '8px',
+            }}
+            labelStyle={{ color: chartTheme.tooltipText }}
+          />
+          <Legend className="text-xs" />
+          <Bar dataKey="input" fill={TOKEN_COLORS.input} name={t('inputTokens')} />
+          <Bar dataKey="output" fill={TOKEN_COLORS.output} name={t('outputTokens')} />
+          <Bar dataKey="cache" fill={TOKEN_COLORS.cacheRead} name={t('cacheTokens')} />
         </BarChart>
       </ResponsiveContainer>
 
-      {/* Last updated timestamp */}
       <p className="text-xs text-text-muted mt-2">
         {t('lastUpdated')}: {formatTime(stats.lastUpdated)}
       </p>

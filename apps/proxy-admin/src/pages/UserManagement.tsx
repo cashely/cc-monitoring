@@ -86,21 +86,22 @@ const UserManagement = () => {
     <div>
       <div className="mb-6 flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">用户管理</h1>
-          <p className="text-gray-500">管理系统用户账号</p>
+          <h1 className="text-xl font-bold text-text-primary">用户管理</h1>
+          <p className="text-xs text-text-muted">管理系统用户账号</p>
         </div>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalVisible(true)}>
           创建用户
         </Button>
       </div>
 
-      <Card>
+      <Card className="glass">
         <Table
           columns={columns}
           dataSource={users}
           rowKey="id"
           loading={loading}
           bordered={false}
+          size="small"
         />
       </Card>
 
@@ -140,13 +141,6 @@ const UserManagement = () => {
             ]}
           >
             <Input placeholder="请输入邮箱" />
-          </Form.Item>
-
-          <Form.Item
-            name="avatar"
-            label="头像"
-          >
-            <Input placeholder="请输入头像URL" />
           </Form.Item>
 
           <Form.Item className="text-right mb-0">

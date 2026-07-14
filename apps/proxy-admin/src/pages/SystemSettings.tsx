@@ -45,8 +45,8 @@ const SystemSettings = () => {
     <div>
       <div className="mb-6 flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">系统设置</h1>
-          <p className="text-gray-500">配置系统基础参数</p>
+          <h1 className="text-xl font-bold text-text-primary">系统设置</h1>
+          <p className="text-xs text-text-muted">配置系统基础参数</p>
         </div>
         <Button
           type="primary"
@@ -58,7 +58,7 @@ const SystemSettings = () => {
         </Button>
       </div>
 
-      <Card loading={loading}>
+      <Card className="glass" loading={loading}>
         <Form
           form={form}
           layout="vertical"

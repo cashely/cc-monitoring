@@ -1,5 +1,10 @@
 {
   "title": "CC Monitoring",
+  "theme": {
+    "dark": "暗色",
+    "light": "亮色",
+    "toggle": "切换主题"
+  },
   "connection": {
     "disconnected": "WebSocket 连接断开,请刷新页面重新连接"
   },
@@ -39,7 +44,7 @@
   },
   "chat": {
     "title": "对话",
-    "placeholder": "输入消息...",
+    "placeholder": "输入消息... (Shift+Enter 换行)",
     "newConversation": "新对话",
     "send": "发送",
     "loading": "思考中...",

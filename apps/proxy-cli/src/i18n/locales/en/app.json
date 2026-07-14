@@ -1,5 +1,10 @@
 {
   "title": "CC Monitoring",
+  "theme": {
+    "dark": "Dark",
+    "light": "Light",
+    "toggle": "Toggle theme"
+  },
   "connection": {
     "disconnected": "WebSocket disconnected. Please refresh the page to reconnect."
   },
@@ -37,7 +42,7 @@
   },
   "chat": {
     "title": "Chat",
-    "placeholder": "Type a message...",
+    "placeholder": "Type a message... (Shift+Enter for new line)",
     "newConversation": "New Chat",
     "send": "Send",
     "loading": "Thinking...",

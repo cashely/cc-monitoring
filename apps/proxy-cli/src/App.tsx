@@ -2,6 +2,7 @@ import { StatusPanel } from './components/StatusPanel'
 import { ConfigEditor } from './components/ConfigEditor'
 import { RequestHistory } from './components/RequestHistory'
 import { LanguageSwitcher } from './components/LanguageSwitcher'
+import { ThemeSwitcher } from './components/ThemeSwitcher'
 import { StatsBarChart } from './components/StatsBarChart'
 import { ChatUI } from './components/ChatUI'
 import { ConnectionBanner } from './components/ConnectionBanner'
@@ -11,50 +12,60 @@ import { useConfig, useWebSocketData } from './hooks'
 export function App(): JSX.Element {
   const { t } = useTranslation('app')
   const { versions } = useConfig()
-  const { status, history, requests, stats, todayStats, connectionState, loading } = useWebSocketData()
+  const { status, history, requests, stats, todayStats, connectionState, loading } =
+    useWebSocketData()
 
   return (
-    <div className="min-h-screen flex flex-col bg-bg-primary text-text-primary">
-      <ConnectionBanner connected={connectionState !== 'disconnected'} />
+    <div className="min-h-screen flex flex-col bg-bg-primary text-text-primary relative overflow-hidden">
+      {/* Ambient background blobs */}
+      <div className="ambient-blob blob-1" />
+      <div className="ambient-blob blob-2" />
+      <div className="ambient-blob blob-3" />
 
-      <header className="bg-bg-secondary px-6 py-4 flex justify-between items-center border-b border-border">
-        <div className="flex items-center gap-4">
-          <h1 className="text-base font-semibold">{t('title')}</h1>
-          <LanguageSwitcher />
-        </div>
-        {versions && (
-          <div className="flex items-center gap-4 text-sm text-text-secondary">
-            <span>{t('versions.claudeCode')}: {versions.claudeVersion}</span>
-            <span>{t('versions.project')}: v{versions.projectVersion}</span>
+      {/* Content layer above blobs */}
+      <div className="content-layer flex flex-col min-h-screen">
+        <ConnectionBanner connected={connectionState !== 'disconnected'} />
+
+        <header className="bg-bg-secondary/80 backdrop-blur-xl px-2 py-2 flex justify-between items-center border-b border-border">
+          <div className="flex items-center gap-4">
+            <h1 className="text-base font-semibold">{t('title')}</h1>
+            <LanguageSwitcher />
+            <ThemeSwitcher />
           </div>
-        )}
-      </header>
+          {versions && (
+            <div className="flex items-center gap-4 text-xs text-text-muted">
+              <span>{t('versions.claudeCode')}: {versions.claudeVersion}</span>
+              <span>{t('versions.project')}: v{versions.projectVersion}</span>
+            </div>
+          )}
+        </header>
 
-      {/* Token stats bar chart + ChatUI */}
-      <div className="px-4 py-2 flex gap-4">
-        <div className="flex-1">
-          <StatsBarChart stats={stats} todayStats={todayStats} />
+        {/* Token stats bar chart + ChatUI */}
+        <div className="px-2 py-2 flex gap-2">
+          <div className="flex-1">
+            <StatsBarChart stats={stats} todayStats={todayStats} />
+          </div>
+          <div className="w-96">
+            <ChatUI />
+          </div>
         </div>
-        <div className="w-96">
-          <ChatUI />
-        </div>
+
+        <main className="flex-1 flex gap-2 px-2 pb-2">
+          <section className="flex-1 rounded-xl overflow-hidden relative glass">
+            <div className="absolute inset-0 overflow-y-auto">
+              <RequestHistory requests={requests} loading={loading} />
+            </div>
+          </section>
+          <section className="w-96 flex flex-col gap-4">
+            <div className="glass rounded-xl p-4">
+              <StatusPanel status={{ ...status, history }} />
+            </div>
+            <div className="glass rounded-xl p-4 overflow-y-auto">
+              <ConfigEditor />
+            </div>
+          </section>
+        </main>
       </div>
-
-      <main className="flex-1 flex gap-4 p-4">
-        <section className="flex-1 bg-bg-card rounded-lg overflow-hidden relative">
-          <div className="absolute inset-0 overflow-y-auto">
-            <RequestHistory requests={requests} loading={loading} />
-          </div>
-        </section>
-        <section className="w-96 flex flex-col gap-4">
-          <div className="bg-bg-card rounded-lg p-4">
-            <StatusPanel status={{ ...status, history }} />
-          </div>
-          <div className="bg-bg-card rounded-lg p-4 overflow-y-auto">
-            <ConfigEditor />
-          </div>
-        </section>
-      </main>
     </div>
   )
 }

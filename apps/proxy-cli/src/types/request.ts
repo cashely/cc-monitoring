@@ -15,6 +15,7 @@ export interface RequestSummary {
   statusCode: number
   responseTime: number
   model?: string
+  machineId?: string
   usage?: TokenUsage
 }
 
