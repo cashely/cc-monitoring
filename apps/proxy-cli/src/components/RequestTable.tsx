@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useRef } from 'react'
+import { useState, useMemo, useCallback } from 'react'
 import { Table, TableProps, Button, Checkbox } from 'antd'
 import { GitCompareArrows } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -18,15 +18,22 @@ interface RequestTableProps {
 
 interface TableRowData {
   key: string
+  isSession: boolean
   sessionId?: string
   requestCount?: number
+  timestamp?: string
+  method?: string
+  url?: string
+  duration?: number
+  model?: string
+  statusCode?: number
+  usage?: any
   request?: RequestSummary
   children?: TableRowData[]
 }
 
 const PAGE_SIZE = 100
 
-// Helper to truncate session ID
 function truncateSessionId(sessionId: string, length: number): string {
   return sessionId.length > length ? `${sessionId.slice(0, length)}...` : sessionId
 }
@@ -43,22 +50,18 @@ export function RequestTable({
   const [loadingMore, setLoadingMore] = useState(false)
   const [hasMore, setHasMore] = useState(true)
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
-  const [expandedRowKeys, setExpandedRowKeys] = useState<React.Key[]>([])
-  const prevInitialRequestsRef = useRef<string>('')
 
-  // 当有新请求从 WebSocket 进来时，更新 allRequests (避免不必要的更新)
-  const initialRequestsKey = JSON.stringify(initialRequests.map(r => r.compositeId))
-  if (initialRequestsKey !== prevInitialRequestsRef.current) {
-    prevInitialRequestsRef.current = initialRequestsKey
+  // 合并新请求
+  useMemo(() => {
     setAllRequests(prev => {
       const existingIds = new Set(prev.map(r => r.compositeId))
       const newRequests = initialRequests.filter(r => !existingIds.has(r.compositeId))
       if (newRequests.length === 0) return prev
       return [...newRequests, ...prev]
     })
-  }
+  }, [initialRequests])
 
-  // 构建 antd 原生树形数据结构
+  // 构建树形数据
   const tableData = useMemo((): TableRowData[] => {
     const sessionMap = new Map<string, RequestSummary[]>()
     const displayedRequests = allRequests.slice(0, displayedCount)
@@ -80,10 +83,19 @@ export function RequestTable({
 
       result.push({
         key: `session:${request.sessionId}`,
+        isSession: true,
         sessionId: request.sessionId,
         requestCount: sessionRequests.length,
         children: sessionRequests.map(req => ({
           key: req.compositeId,
+          isSession: false,
+          timestamp: req.timestamp,
+          method: req.method,
+          url: req.path,
+          duration: req.responseTime,
+          model: req.model,
+          statusCode: req.statusCode,
+          usage: req.usage,
           request: req,
         })),
       })
@@ -92,7 +104,6 @@ export function RequestTable({
     return result
   }, [allRequests, displayedCount])
 
-  // 加载更多
   const handleLoadMore = useCallback(async () => {
     if (loadingMore || !hasMore) return
 
@@ -117,14 +128,13 @@ export function RequestTable({
     }
   }, [loadingMore, hasMore, allRequests])
 
-  // 表格列定义
   const columns: TableProps<TableRowData>['columns'] = [
     {
       title: '',
       key: 'checkbox',
       width: 48,
       render: (_, record) => {
-        if (!record.request) return null
+        if (record.isSession) return null
         return (
           <Checkbox
             checked={selectedRowKeys.includes(record.key)}
@@ -148,11 +158,11 @@ export function RequestTable({
       dataIndex: 'timestamp',
       key: 'timestamp',
       width: 160,
-      render: (_, record) => {
-        if (!record.request) return null
+      render: (value, record) => {
+        if (record.isSession) return null
         return (
           <span className="text-sm text-text-muted">
-            {formatTime(record.request.timestamp, 'monthDayTime')}
+            {formatTime(value, 'monthDayTime')}
           </span>
         )
       },
@@ -162,20 +172,20 @@ export function RequestTable({
       dataIndex: 'method',
       key: 'method',
       width: 100,
-      render: (_, record) => {
-        if (record.request) {
+      render: (value, record) => {
+        if (record.isSession && record.sessionId) {
+          return (
+            <span className="text-xs text-text-muted font-mono">
+              {truncateSessionId(record.sessionId, 8)}
+            </span>
+          )
+        }
+        if (!record.isSession && record.request) {
           return (
             <MethodTag
               method={record.request.method}
               statusCode={record.request.statusCode}
             />
-          )
-        }
-        if (record.sessionId) {
-          return (
-            <span className="text-xs text-text-muted font-mono">
-              {truncateSessionId(record.sessionId, 8)}
-            </span>
           )
         }
         return null
@@ -186,18 +196,15 @@ export function RequestTable({
       dataIndex: 'url',
       key: 'url',
       ellipsis: true,
-      render: (_, record) => {
-        if (record.request) {
-          return <span className="text-sm">{record.request.path}</span>
-        }
-        if (record.requestCount !== undefined) {
+      render: (value, record) => {
+        if (record.isSession) {
           return (
             <span className="text-xs text-text-muted">
               {record.requestCount} 条请求
             </span>
           )
         }
-        return null
+        return <span className="text-sm">{value}</span>
       },
     },
     {
@@ -205,11 +212,11 @@ export function RequestTable({
       dataIndex: 'duration',
       key: 'duration',
       width: 80,
-      render: (_, record) => {
-        if (!record.request) return null
+      render: (value, record) => {
+        if (record.isSession) return null
         return (
           <span className="text-xs text-text-muted">
-            {(record.request.responseTime / 1000).toFixed(1)}s
+            {(value / 1000).toFixed(1)}s
           </span>
         )
       },
@@ -219,18 +226,17 @@ export function RequestTable({
       dataIndex: 'model',
       key: 'model',
       width: 120,
-      render: (_, record) => {
-        if (!record.request?.model) return null
-        return <ModelTag model={record.request.model} />
+      render: (value, record) => {
+        if (record.isSession || !value) return null
+        return <ModelTag model={value} />
       },
     },
     {
       title: 'Session ID',
-      dataIndex: 'sessionId',
       key: 'sessionId',
       width: 140,
       render: (_, record) => {
-        if (!record.request) return null
+        if (record.isSession || !record.request) return null
         return (
           <span className="text-xs text-text-muted font-mono" title={record.request.sessionId}>
             {truncateSessionId(record.request.sessionId, 12)}
@@ -243,13 +249,12 @@ export function RequestTable({
       dataIndex: 'statusCode',
       key: 'statusCode',
       width: 80,
-      render: (_, record) => {
-        if (!record.request) return null
-        const statusCode = record.request.statusCode
-        const color = statusCode >= 200 && statusCode < 300 ? 'text-emerald-600' : 'text-red-600'
+      render: (value, record) => {
+        if (record.isSession) return null
+        const color = value >= 200 && value < 300 ? 'text-emerald-600' : 'text-red-600'
         return (
           <span className={`text-sm font-medium ${color}`}>
-            {statusCode}
+            {value}
           </span>
         )
       },
@@ -259,26 +264,16 @@ export function RequestTable({
       key: 'token',
       width: 140,
       render: (_, record) => {
-        if (!record.request) return null
-        return <TokenMetricsCell usage={record.request.usage} />
+        if (record.isSession) return null
+        return <TokenMetricsCell usage={record.usage} />
       },
     },
   ]
 
   const handleRowClick = (record: TableRowData) => {
-    if (record.request) {
+    if (!record.isSession && record.request) {
       onRowClick(record.request)
     }
-  }
-
-  const handleExpand = (expanded: boolean, record: TableRowData) => {
-    setExpandedRowKeys(prev => {
-      if (expanded) {
-        return [...prev, record.key]
-      } else {
-        return prev.filter(k => k !== record.key)
-      }
-    })
   }
 
   return (
@@ -301,17 +296,15 @@ export function RequestTable({
           pagination={false}
           loading={externalLoading}
           expandable={{
-            expandedRowKeys,
-            onExpand: handleExpand,
             defaultExpandAllRows: true,
             indentSize: 24,
           }}
           onRow={(record) => ({
             onClick: () => handleRowClick(record),
-            className: record.request ? 'cursor-pointer hover:bg-bg-hover' : '',
+            className: !record.isSession ? 'cursor-pointer hover:bg-bg-hover' : '',
           })}
           rowClassName={(record) => {
-            if (!record.request && record.sessionId) {
+            if (record.isSession) {
               return 'bg-bg-secondary font-medium'
             }
             return ''
