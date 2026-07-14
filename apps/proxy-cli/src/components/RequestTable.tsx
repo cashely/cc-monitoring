@@ -126,7 +126,6 @@ export function RequestTable({
       dataIndex: 'sessionId',
       key: 'sessionId',
       width: 140,
-      fixed: 'left',
       render: (value: string, _, index: number) => {
         const spanInfo = rowSpanMap.get(value)
         const rowSpan = spanInfo && spanInfo.index === index ? spanInfo.count : 0
@@ -213,7 +212,7 @@ export function RequestTable({
   ]
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="flex flex-col">
       <div className="flex justify-end pb-3 pr-2">
         <Button
           type="primary"
@@ -225,7 +224,7 @@ export function RequestTable({
         </Button>
       </div>
 
-      <div className="flex-1 overflow-auto">
+      <div className="overflow-auto">
         <Table
           dataSource={displayedRequests}
           columns={columns}
