@@ -141,12 +141,19 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
     }
   })
 
-  // REST endpoint for listing all saved requests (summary)
-  fastify.get<{ Querystring: { limit?: string } }>('/ui/api/requests', async (request, reply) => {
+  // REST endpoint for listing all saved requests (summary) with cursor pagination
+  fastify.get<{ Querystring: { limit?: string; before?: string } }>('/ui/api/requests', async (request, reply) => {
     try {
-      const limit = request.query.limit ? Number(request.query.limit) : 1000
-      const summaries = await listRequestDB(limit)
-      return { requests: summaries }
+      const limit = request.query.limit ? Math.max(1, Number(request.query.limit) || 100) : 100
+      const before = request.query.before
+      // Validate before is a valid ISO string if provided
+      if (before && Number.isNaN(new Date(before).getTime())) {
+        return reply.code(400).send({
+          error: 'Invalid before parameter: must be a valid ISO timestamp'
+        })
+      }
+      const result = await listRequestDB(limit, before)
+      return result
     } catch (err: any) {
       request.log.error({ err }, 'Failed to list request files')
       return reply.code(500).send({

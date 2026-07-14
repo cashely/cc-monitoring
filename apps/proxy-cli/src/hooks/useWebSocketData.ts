@@ -70,7 +70,7 @@ export function useWebSocketData(): {
     const [statusData, historyData, requestsData, statsData, todayData] = await Promise.all([
       fetchStatus(),
       fetchStatusHistory(),
-      fetchRequests(),
+      fetchRequests(100),
       fetchStats(computeStatsSince()),
       fetchTodayStats()
     ])

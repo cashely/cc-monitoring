@@ -148,9 +148,15 @@ export async function loadRequestDB(compositeId: string): Promise<RequestData> {
   }
 }
 
-// List all requests (summary, sorted by timestamp desc)
-export async function listRequestDB(limit: number = 1000): Promise<RequestSummary[]> {
+// List requests with cursor pagination (summary, sorted by timestamp desc)
+export async function listRequestDB(
+  limit: number = 1000,
+  before?: string
+): Promise<{ requests: RequestSummary[]; hasMore: boolean }> {
   const db = initDatabase()
+
+  const whereClause = before ? 'WHERE timestamp < ?' : ''
+  const params = before ? [before, limit + 1] : [limit + 1]
 
   const rows = db.prepare(`
     SELECT
@@ -158,30 +164,37 @@ export async function listRequestDB(limit: number = 1000): Promise<RequestSummar
       api_key, proxy_api_key, base_url, model,
       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
     FROM requests
+    ${whereClause}
     ORDER BY timestamp DESC
     LIMIT ?
-  `).all(limit) as any[]
+  `).all(...params) as any[]
 
-  return rows.map(row => ({
-    requestId: row.request_id,
-    sessionId: row.session_id,
-    compositeId: `${row.session_id}:${row.request_id}`,
-    timestamp: row.timestamp,
-    method: row.method,
-    path: row.path,
-    statusCode: row.status_code,
-    responseTime: row.response_time,
-    apiKey: row.api_key,
-    proxyApiKey: row.proxy_api_key,
-    baseUrl: row.base_url,
-    model: row.model,
-    usage: row.input_tokens || row.output_tokens ? {
-      input_tokens: row.input_tokens,
-      output_tokens: row.output_tokens,
-      cache_read_input_tokens: row.cache_read_tokens,
-      cache_creation_input_tokens: row.cache_creation_tokens
-    } : undefined
-  }))
+  const hasMore = rows.length > limit
+  const actualRows = hasMore ? rows.slice(0, -1) : rows
+
+  return {
+    requests: actualRows.map(row => ({
+      requestId: row.request_id,
+      sessionId: row.session_id,
+      compositeId: `${row.session_id}:${row.request_id}`,
+      timestamp: row.timestamp,
+      method: row.method,
+      path: row.path,
+      statusCode: row.status_code,
+      responseTime: row.response_time,
+      apiKey: row.api_key,
+      proxyApiKey: row.proxy_api_key,
+      baseUrl: row.base_url,
+      model: row.model,
+      usage: row.input_tokens || row.output_tokens ? {
+        input_tokens: row.input_tokens,
+        output_tokens: row.output_tokens,
+        cache_read_input_tokens: row.cache_read_tokens,
+        cache_creation_input_tokens: row.cache_creation_tokens
+      } : undefined
+    })),
+    hasMore
+  }
 }
 
 // Clean old requests (time window based, configurable)
