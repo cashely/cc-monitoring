@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo } from 'react'
-import { Table, TableProps, Button, Checkbox } from 'antd'
+import { Table, TableProps, Button, Checkbox, Tag } from 'antd'
 import { GitCompareArrows } from 'lucide-react'
 import { RequestSummary } from '../types/request'
 import { MethodTag } from './MethodTag'
@@ -43,7 +43,32 @@ export function RequestTable({
     })
   }, [initialRequests])
 
-  const displayedRequests = allRequests.slice(0, displayedCount)
+  // 计算每个 session 内的序号（最早的序号最小）
+  const requestsWithSequence = useMemo(() => {
+    const sessionGroups = new Map<string, RequestSummary[]>()
+
+    // 按 sessionId 分组
+    allRequests.forEach(req => {
+      const group = sessionGroups.get(req.sessionId) || []
+      group.push(req)
+      sessionGroups.set(req.sessionId, group)
+    })
+
+    // 为每个分组内的请求按时间排序并添加序号
+    const result = allRequests.map(req => {
+      const group = sessionGroups.get(req.sessionId)!
+      // 按时间正序排列（最早的在前）
+      const sortedGroup = [...group].sort((a, b) =>
+        new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+      )
+      const sequence = sortedGroup.findIndex(r => r.compositeId === req.compositeId) + 1
+      return { ...req, sequence }
+    })
+
+    return result
+  }, [allRequests])
+
+  const displayedRequests = requestsWithSequence.slice(0, displayedCount)
 
   const handleLoadMore = useCallback(async () => {
     if (loadingMore || !hasMore) return
@@ -69,12 +94,13 @@ export function RequestTable({
     }
   }, [loadingMore, hasMore, allRequests])
 
-  const columns: TableProps<RequestSummary>['columns'] = [
+  const columns: TableProps<any>['columns'] = [
     {
       title: '',
       key: 'checkbox',
-      width: 48,
+      width: 40,
       fixed: 'left',
+      align: 'center',
       render: (_, record) => (
         <Checkbox
           checked={selectedRowKeys.includes(record.compositeId)}
@@ -96,11 +122,44 @@ export function RequestTable({
       title: 'Session ID',
       dataIndex: 'sessionId',
       key: 'sessionId',
-      width: 160,
-      render: (value: string) => (
-        <span className="text-xs text-gray-400 font-mono" title={value}>
-          {truncateSessionId(value, 18)}
-        </span>
+      width: 200,
+      render: (value: string, record: any) => (
+        <div className="flex items-center gap-2" style={{ minWidth: 0 }}>
+          <Tag
+            className="flex-shrink-0"
+            style={{
+              width: 20,
+              height: 20,
+              minWidth: 20,
+              padding: 0,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderRadius: '50%',
+              fontSize: 11,
+              fontWeight: 600,
+              border: 'none',
+              background: 'var(--color-secondary)',
+              color: '#fff',
+            }}
+          >
+            {record.sequence}
+          </Tag>
+          <span
+            className="text-xs font-mono"
+            style={{
+              color: 'var(--color-text-muted)',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              maxWidth: 130,
+              display: 'inline-block',
+            }}
+            title={value}
+          >
+            {truncateSessionId(value, 16)}
+          </span>
+        </div>
       ),
     },
     {
@@ -109,17 +168,57 @@ export function RequestTable({
       key: 'timestamp',
       width: 160,
       render: (value: string) => (
-        <span className="text-sm text-gray-400">
+        <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
           {formatTime(value, 'monthDayTime')}
         </span>
       ),
+    },
+    {
+      title: 'Token',
+      key: 'token',
+      width: 140,
+      render: (_: any, record: any) => (
+        <TokenMetricsCell usage={record.usage} />
+      ),
+    },
+    {
+      title: '模型',
+      dataIndex: 'model',
+      key: 'model',
+      width: 180,
+      render: (value: string) => value ? <ModelTag model={value} /> : null,
+    },
+    {
+      title: '耗时',
+      dataIndex: 'responseTime',
+      key: 'responseTime',
+      width: 80,
+      render: (value: number) => (
+        <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+          {(value / 1000).toFixed(1)}s
+        </span>
+      ),
+    },
+    {
+      title: '状态码',
+      dataIndex: 'statusCode',
+      key: 'statusCode',
+      width: 80,
+      render: (value: number) => {
+        const color = value >= 200 && value < 300 ? 'var(--color-success)' : 'var(--color-error)'
+        return (
+          <span className="text-xs font-medium" style={{ color }}>
+            {value}
+          </span>
+        )
+      },
     },
     {
       title: 'Method',
       dataIndex: 'method',
       key: 'method',
       width: 100,
-      render: (_: any, record: RequestSummary) => (
+      render: (_: any, record: any) => (
         <MethodTag
           method={record.method}
           statusCode={record.statusCode}
@@ -131,47 +230,7 @@ export function RequestTable({
       dataIndex: 'path',
       key: 'path',
       ellipsis: true,
-      render: (value: string) => <span className="text-sm text-gray-200">{value}</span>,
-    },
-    {
-      title: '耗时',
-      dataIndex: 'responseTime',
-      key: 'responseTime',
-      width: 80,
-      render: (value: number) => (
-        <span className="text-xs text-gray-400">
-          {(value / 1000).toFixed(1)}s
-        </span>
-      ),
-    },
-    {
-      title: '模型',
-      dataIndex: 'model',
-      key: 'model',
-      width: 180,
-      render: (value: string) => value ? <ModelTag model={value} /> : null,
-    },
-    {
-      title: '状态码',
-      dataIndex: 'statusCode',
-      key: 'statusCode',
-      width: 80,
-      render: (value: number) => {
-        const color = value >= 200 && value < 300 ? 'text-emerald-400' : 'text-red-400'
-        return (
-          <span className={`text-sm font-medium ${color}`}>
-            {value}
-          </span>
-        )
-      },
-    },
-    {
-      title: 'Token',
-      key: 'token',
-      width: 140,
-      render: (_: any, record: RequestSummary) => (
-        <TokenMetricsCell usage={record.usage} />
-      ),
+      render: (value: string) => <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>{value}</span>,
     },
   ]
 
@@ -192,7 +251,7 @@ export function RequestTable({
         tableLayout="auto"
         sticky
         footer={() => (
-          <div className="flex justify-end gap-3 py-4 px-4 border-t border-gray-700">
+          <div className="flex justify-end gap-3 py-4 px-4 border-t" style={{ borderColor: 'var(--color-border)' }}>
             <Button
               type="primary"
               icon={<GitCompareArrows size={16} />}
