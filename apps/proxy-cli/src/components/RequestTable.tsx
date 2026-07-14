@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo } from 'react'
-import { Table, TableProps, Button, Checkbox, Space, ConfigProvider, theme } from 'antd'
+import { Table, TableProps, Button, Checkbox } from 'antd'
 import { GitCompareArrows } from 'lucide-react'
 import { RequestSummary } from '../types/request'
 import { MethodTag } from './MethodTag'
@@ -44,33 +44,6 @@ export function RequestTable({
   }, [initialRequests])
 
   const displayedRequests = allRequests.slice(0, displayedCount)
-
-  // 计算 rowSpan
-  const rowSpanMap = useMemo(() => {
-    const map = new Map<string, { index: number; count: number }>()
-    let lastSessionId: string | null = null
-    let currentCount = 0
-    let currentStartIndex = 0
-
-    displayedRequests.forEach((req, index) => {
-      if (req.sessionId !== lastSessionId) {
-        if (lastSessionId !== null) {
-          map.set(lastSessionId, { index: currentStartIndex, count: currentCount })
-        }
-        lastSessionId = req.sessionId
-        currentCount = 1
-        currentStartIndex = index
-      } else {
-        currentCount++
-      }
-    })
-
-    if (lastSessionId !== null) {
-      map.set(lastSessionId, { index: currentStartIndex, count: currentCount })
-    }
-
-    return map
-  }, [displayedRequests])
 
   const handleLoadMore = useCallback(async () => {
     if (loadingMore || !hasMore) return
@@ -123,19 +96,12 @@ export function RequestTable({
       title: 'Session ID',
       dataIndex: 'sessionId',
       key: 'sessionId',
-      width: 140,
-      render: (value: string, _, index: number) => {
-        const spanInfo = rowSpanMap.get(value)
-        const rowSpan = spanInfo && spanInfo.index === index ? spanInfo.count : 0
-        return {
-          children: (
-            <span className="text-xs text-gray-400 font-mono" title={value}>
-              {truncateSessionId(value, 12)}
-            </span>
-          ),
-          props: { rowSpan },
-        }
-      },
+      width: 160,
+      render: (value: string) => (
+        <span className="text-xs text-gray-400 font-mono" title={value}>
+          {truncateSessionId(value, 18)}
+        </span>
+      ),
     },
     {
       title: '时间',
@@ -182,7 +148,7 @@ export function RequestTable({
       title: '模型',
       dataIndex: 'model',
       key: 'model',
-      width: 120,
+      width: 180,
       render: (value: string) => value ? <ModelTag model={value} /> : null,
     },
     {
@@ -210,61 +176,43 @@ export function RequestTable({
   ]
 
   return (
-    <ConfigProvider
-      theme={{
-        algorithm: theme.darkAlgorithm,
-        token: {
-          colorPrimary: '#3B82F6',
-          borderRadius: 6,
-        },
-        components: {
-          Table: {
-            headerBg: '#1F2937',
-            rowHoverBg: '#374151',
-          },
-        },
-      }}
-    >
-      <div className="flex flex-col h-full">
-        <Table
-          dataSource={displayedRequests}
-          columns={columns}
-          pagination={false}
-          loading={externalLoading}
-          onRow={(record) => ({
-            onClick: () => onRowClick(record),
-            className: 'cursor-pointer',
-          })}
-          rowKey="compositeId"
-          size="small"
-          scroll={{ x: 'max-content', y: 'calc(100vh - 280px)' }}
-          tableLayout="auto"
-          sticky
-          footer={() => (
-            <div className="flex justify-end gap-3 py-4 px-4 bg-gray-900/50 border-t border-gray-700">
+    <div className="flex flex-col">
+      <Table
+        dataSource={displayedRequests}
+        columns={columns}
+        pagination={false}
+        loading={externalLoading}
+        onRow={(record) => ({
+          onClick: () => onRowClick(record),
+          className: 'cursor-pointer',
+        })}
+        rowKey="compositeId"
+        size="small"
+        scroll={{ x: 'max-content', y: 'calc(100vh - 200px)' }}
+        tableLayout="auto"
+        sticky
+        footer={() => (
+          <div className="flex justify-end gap-3 py-4 px-4 border-t border-gray-700">
+            <Button
+              type="primary"
+              icon={<GitCompareArrows size={16} />}
+              disabled={selectedRowKeys.length !== 2}
+              onClick={() => onCompare(selectedRowKeys as string[])}
+            >
+              对比
+            </Button>
+            {hasMore && (
               <Button
-                type="primary"
-                icon={<GitCompareArrows size={16} />}
-                disabled={selectedRowKeys.length !== 2}
-                onClick={() => onCompare(selectedRowKeys as string[])}
-                className="bg-blue-600 hover:bg-blue-500 text-white"
+                loading={loadingMore}
+                onClick={handleLoadMore}
+                variant="outlined"
               >
-                对比
+                加载更多
               </Button>
-              {hasMore && (
-                <Button
-                  loading={loadingMore}
-                  onClick={handleLoadMore}
-                  variant="outlined"
-                  className="border-gray-600 text-gray-300 hover:border-gray-500 hover:text-white"
-                >
-                  加载更多
-                </Button>
-              )}
-            </div>
-          )}
-        />
-      </div>
-    </ConfigProvider>
+            )}
+          </div>
+        )}
+      />
+    </div>
   )
 }

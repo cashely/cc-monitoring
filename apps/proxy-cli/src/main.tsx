@@ -1,5 +1,6 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
+import { ConfigProvider, theme } from 'antd'
 import { App } from './App'
 import './index.css'
 import './i18n'
@@ -14,6 +15,29 @@ if (!rootElement) {
 
 ReactDOM.createRoot(rootElement).render(
   <React.StrictMode>
-    <App />
+    <ConfigProvider
+      theme={{
+        algorithm: theme.darkAlgorithm,
+        token: {
+          colorPrimary: '#3B82F6',
+          borderRadius: 6,
+        },
+        components: {
+          Button: {
+            borderRadius: 6,
+            contentFontSize: 14,
+            controlHeight: 32,
+            controlHeightSM: 24,
+            controlHeightLG: 40,
+          },
+          Table: {
+            headerBg: '#1F2937',
+            rowHoverBg: '#374151',
+          },
+        },
+      }}
+    >
+      <App />
+    </ConfigProvider>
   </React.StrictMode>
 )
