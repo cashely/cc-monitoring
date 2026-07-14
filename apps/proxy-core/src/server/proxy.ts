@@ -28,11 +28,14 @@ interface ResolvedTarget {
   targetPath: string
   apiKey?: string
   model?: string
+  haiku_model?: string
+  sonnet_model?: string
+  opus_model?: string
 }
 
 /**
  * Resolves the proxy target per request:
- * - If a provider with is_default=1 exists in DB, use its base_url + api_key + model (partial replacement)
+ * - If a provider with is_default=1 exists in DB, use its base_url + api_key + tier models (partial replacement)
  * - Otherwise fall back to config.json proxy.target + proxy.apiKey
  *
  * Called per request for hot-swap support (no server restart needed on activation change).
@@ -44,6 +47,9 @@ export function resolveProxyTarget(proxyConfig: ProxyConfig): ResolvedTarget {
   let targetPath: string
   let apiKey: string | undefined = proxyConfig.apiKey
   let model: string | undefined
+  let haiku_model: string | undefined
+  let sonnet_model: string | undefined
+  let opus_model: string | undefined
 
   try {
     // Parse config target as base
@@ -53,8 +59,8 @@ export function resolveProxyTarget(proxyConfig: ProxyConfig): ResolvedTarget {
 
     const db = getDatabase()
     const active = db.prepare(
-      'SELECT base_url, api_key, model FROM providers WHERE is_default = 1 LIMIT 1'
-    ).get() as { base_url: string | null, api_key: string | null, model: string | null } | undefined
+      'SELECT base_url, api_key, model, haiku_model, sonnet_model, opus_model FROM providers WHERE is_default = 1 LIMIT 1'
+    ).get() as { base_url: string | null, api_key: string | null, model: string | null, haiku_model: string | null, sonnet_model: string | null, opus_model: string | null } | undefined
 
     if (active) {
       // Replace base_url only if provided
@@ -69,10 +75,11 @@ export function resolveProxyTarget(proxyConfig: ProxyConfig): ResolvedTarget {
         apiKey = active.api_key
       }
 
-      // Replace model only if provided
-      if (active.model && active.model.trim() !== '') {
-        model = active.model
-      }
+      // Populate tier models for getProxyModel
+      if (active.model && active.model.trim() !== '') model = active.model
+      if (active.haiku_model && active.haiku_model.trim() !== '') haiku_model = active.haiku_model
+      if (active.sonnet_model && active.sonnet_model.trim() !== '') sonnet_model = active.sonnet_model
+      if (active.opus_model && active.opus_model.trim() !== '') opus_model = active.opus_model
     }
   } catch {
     // DB not initialized yet, read error, or URL parse error - fall back to config
@@ -81,7 +88,34 @@ export function resolveProxyTarget(proxyConfig: ProxyConfig): ResolvedTarget {
     targetPath = configUrl.pathname.replace(/\/$/, '')
   }
 
-  return { baseUrl, targetPath, apiKey, model }
+  return { baseUrl, targetPath, apiKey, model, haiku_model, sonnet_model, opus_model }
+}
+
+/**
+ * Selects the proxy model based on the original request model and provider tier config.
+ * - claude-haiku* → haiku_model (fallback: model)
+ * - claude-sonnet* → sonnet_model (fallback: model)
+ * - claude-opus* → opus_model (fallback: model)
+ * - No tier match → model
+ * - All empty → undefined (no replacement)
+ */
+export function getProxyModel(
+  originalModel: string | undefined,
+  tierModels: { haiku_model?: string; sonnet_model?: string; opus_model?: string; model?: string }
+): string | undefined {
+  if (!originalModel) return tierModels.model || undefined
+
+  if (originalModel.startsWith('claude-haiku')) {
+    return tierModels.haiku_model || tierModels.model || undefined
+  }
+  if (originalModel.startsWith('claude-sonnet')) {
+    return tierModels.sonnet_model || tierModels.model || undefined
+  }
+  if (originalModel.startsWith('claude-opus')) {
+    return tierModels.opus_model || tierModels.model || undefined
+  }
+
+  return tierModels.model || undefined
 }
 
 // Extract safe headers (avoid circular reference)
@@ -192,11 +226,12 @@ export async function setupProxy(
     const resolved = resolveProxyTarget(proxyConfig)
     const sessionId = (request.headers['x-claude-code-session-id'] as string) || 'unknown-session'
 
-    // Replace model if provider has one configured
+    // Replace model based on tier matching (getProxyModel)
     const originalModel = request.body?.model
     try {
-      if (resolved.model && request.body && typeof request.body === 'object') {
-        request.body.model = resolved.model
+      const proxyModel = getProxyModel(originalModel, resolved)
+      if (proxyModel && request.body && typeof request.body === 'object') {
+        request.body.model = proxyModel
       }
       const forwardedModel = request.body?.model
       if (originalModel !== forwardedModel) {
