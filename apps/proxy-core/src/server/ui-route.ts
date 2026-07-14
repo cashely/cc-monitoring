@@ -292,9 +292,9 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
       // 判断：如果 sessionId 存在于数据库，用 -r；否则用 --session-id
       const spawnArgs = sessionId
         ? (sessionIdExists(sessionId)
-            ? ['-r', sessionId, '-p', prompt]
-            : ['--session-id', sessionId, '-p', prompt])
-        : ['-p', prompt]
+            ? ['-r', sessionId, '-p', prompt, '--allowedTools', 'Bash,Write,Edit,Read']
+            : ['--session-id', sessionId, '-p', prompt, '--allowedTools', 'Bash,Write,Edit,Read'])
+        : ['-p', prompt, '--allowedTools', 'Bash,Write,Edit,Read']
 
       const child = spawn('claude', spawnArgs, {
         env: { ...process.env }
@@ -349,9 +349,9 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
       // 判断：如果 sessionId 存在于数据库，用 -r；否则用 --session-id
       const spawnArgs = sessionId
         ? (sessionIdExists(sessionId)
-            ? ['-r', sessionId, '-p', prompt]
-            : ['--session-id', sessionId, '-p', prompt])
-        : ['-p', prompt]
+            ? ['-r', sessionId, '-p', prompt, '--allowedTools', 'Bash,Write,Edit,Read']
+            : ['--session-id', sessionId, '-p', prompt, '--allowedTools', 'Bash,Write,Edit,Read'])
+        : ['-p', prompt, '--allowedTools', 'Bash,Write,Edit,Read']
 
       const child = spawn('claude', spawnArgs, {
         env: { ...process.env }
