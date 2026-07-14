@@ -126,7 +126,7 @@ export function RequestDetailModal({
                           </span>
                           <ShikiHighlighter
                             code={JSON.stringify(event, null, 2)}
-                            langjson"
+                            lang="json"
                           />
                         </div>
                       ))}
