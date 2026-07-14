@@ -232,6 +232,28 @@ export function RequestTable({
       ellipsis: true,
       render: (value: string) => <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>{value}</span>,
     },
+    {
+      title: '机器码',
+      dataIndex: 'machineId',
+      key: 'machineId',
+      width: 180,
+      render: (value: string) => (
+        <span
+          className="text-xs font-mono"
+          style={{
+            color: 'var(--color-text-muted)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            maxWidth: 160,
+            display: 'inline-block',
+          }}
+          title={value}
+        >
+          {value || '-'}
+        </span>
+      ),
+    },
   ]
 
   return (

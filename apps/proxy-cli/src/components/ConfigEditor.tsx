@@ -98,17 +98,17 @@ export function ConfigEditor(): JSX.Element {
       </h3>
 
       <div className="mb-4">
-        <h4 className="text-sm font-medium mb-2 text-text-muted">{t('section.server')}</h4>
+        <h4 className="text-xs font-medium mb-2 text-text-muted">{t('section.server')}</h4>
         <div className="space-y-2">
           <GlowCard color={TOKEN_COLORS.input}>
-            <div className="text-sm font-medium text-text-muted mb-1">{t('common:label.address')}</div>
-            <div className="text-text-primary font-mono">
+            <div className="text-xs font-medium text-text-muted mb-1">{t('common:label.address')}</div>
+            <div className="text-text-primary font-mono text-xs">
               http://localhost:9527
             </div>
           </GlowCard>
           <GlowCard color={TOKEN_COLORS.output}>
-            <div className="text-sm font-medium text-text-muted mb-1">{t('common:label.configPath')}</div>
-            <div className="text-text-primary font-mono text-sm break-all">
+            <div className="text-xs font-medium text-text-muted mb-1">{t('common:label.configPath')}</div>
+            <div className="text-text-primary font-mono text-xs break-all">
               {configPath ? configPath.replace(/\/config\.json$/, '') : '~/.cc-monitoring'}
             </div>
           </GlowCard>

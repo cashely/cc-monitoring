@@ -149,7 +149,7 @@ export function ProviderManagerModal({ isOpen, onClose }: ProviderManagerModalPr
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-xs">
             <thead>
               <tr className="border-b border-border">
                 {FIELDS.map(f => (
@@ -167,7 +167,7 @@ export function ProviderManagerModal({ isOpen, onClose }: ProviderManagerModalPr
                         type="text"
                         value={row[f.key]}
                         onChange={(e) => handleFieldChange(rowIndex, f.key, e.target.value)}
-                        className="w-full px-2 py-1 rounded border border-border bg-bg-secondary text-text-primary focus:border-primary focus:outline-none transition-colors text-sm"
+                        className="w-full px-2 py-1 rounded border border-border bg-bg-secondary text-text-primary focus:border-primary focus:outline-none transition-colors text-xs"
                       />
                     </td>
                   ))}
@@ -205,7 +205,7 @@ export function ProviderManagerModal({ isOpen, onClose }: ProviderManagerModalPr
         {validationErrors.length > 0 && (
           <div className="bg-error/10 p-2 mt-4 rounded">
             {validationErrors.map((err, i) => (
-              <div key={i} className="text-error text-sm">{err}</div>
+              <div key={i} className="text-error text-xs">{err}</div>
             ))}
           </div>
         )}

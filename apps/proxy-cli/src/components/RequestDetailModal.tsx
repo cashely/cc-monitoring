@@ -116,7 +116,7 @@ export function RequestDetailModal({
                   <div className="max-h-[500px] overflow-y-auto">
                     <ParsedResponseBlocks events={details.response.events} />
                     <details className="mt-4 border-t border-border pt-2">
-                      <summary className="text-sm font-semibold mb-2 cursor-pointer select-none">
+                      <summary className="text-xs font-semibold mb-2 cursor-pointer select-none">
                         原始 Events ({details.response.events.length})
                       </summary>
                       {details.response.events.map((event, i) => (

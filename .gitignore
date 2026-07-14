@@ -16,6 +16,9 @@ docs/thinks/
 # IDE
 .vscode/
 .idea/
+
+# Claude Code
+.claude/
 *.swp
 *.swo
 *~

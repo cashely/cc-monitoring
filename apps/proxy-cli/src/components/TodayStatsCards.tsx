@@ -32,16 +32,17 @@ export function TodayStatsCards({ today }: Props): JSX.Element {
             <span className="text-xs text-text-muted">{card.label}</span>
             <card.Icon size={14} style={{ color: card.color }} />
           </div>
-          <div className="text-lg font-semibold text-center">
-            <CountUp
-              start={0}
-              end={card.value}
-              duration={1.5}
-              separator=","
-              enableReinitialize={true}
-              preserveValue={true}
-              style={{ color: card.color }}
-            />
+          <div className="flex items-center justify-center h-12">
+            <div className="text-lg font-semibold text-center" style={{ color: card.color }}>
+              <CountUp
+                start={0}
+                end={card.value}
+                duration={1.5}
+                separator=","
+                enableReinitialize={true}
+                preserveValue={true}
+              />
+            </div>
           </div>
         </GlowCard>
       ))}
@@ -52,30 +53,32 @@ export function TodayStatsCards({ today }: Props): JSX.Element {
           <span className="text-xs text-text-muted">{t('today.models')}</span>
           <Boxes size={14} style={{ color: MODEL_COLOR }} />
         </div>
-        {modelEntries.length === 0 ? (
-          <div className="text-sm text-text-muted">{t('today.noModels')}</div>
-        ) : (
-          <div className="flex items-end justify-center gap-1.5 h-12">
-            {modelEntries.map(([model, count]) => (
-              <div key={model} className="flex flex-col items-center justify-end group relative shrink-0 h-full">
-                {/* 竖向柱体 */}
-                <div
-                  className="w-3 rounded-t transition-all duration-300"
-                  style={{ height: `${Math.max((count / maxCount) * 100, 8)}%`, backgroundColor: MODEL_COLOR }}
-                />
-                {/* Tooltip（hover 显示模型名+次数） */}
-                <div
-                  className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2
-                             bg-bg-secondary border border-border rounded px-2 py-1
-                             text-xs text-text-primary whitespace-nowrap
-                             opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10"
-                >
-                  {model}: {count}
+        <div className="h-12">
+          {modelEntries.length === 0 ? (
+            <div className="flex items-center justify-center h-full text-xs text-text-muted">{t('today.noModels')}</div>
+          ) : (
+            <div className="flex items-end justify-center gap-1.5 h-full">
+              {modelEntries.map(([model, count]) => (
+                <div key={model} className="flex flex-col items-center justify-end group relative shrink-0 h-full">
+                  {/* 竖向柱体 */}
+                  <div
+                    className="w-3 rounded-t transition-all duration-300"
+                    style={{ height: `${Math.max((count / maxCount) * 100, 8)}%`, backgroundColor: MODEL_COLOR }}
+                  />
+                  {/* Tooltip（hover 显示模型名+次数） */}
+                  <div
+                    className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2
+                               bg-bg-secondary border border-border rounded px-2 py-1
+                               text-xs text-text-primary whitespace-nowrap
+                               opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10"
+                  >
+                    {model}: {count}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
+              ))}
+            </div>
+          )}
+        </div>
       </GlowCard>
     </div>
   )

@@ -12,6 +12,7 @@ import { writeTextAsSSE, shouldMock } from '../utils/sse-writer.js'
 import { injectTools } from '../utils/tool-injector.js'
 import { parseSSEText, parseUpstreamEvents, findInjectedCall, runInjectLoop } from '../utils/inject-loop.js'
 import { hasEnabledTools } from '../tools/index.js'
+import { getMachineId, getMachineIdSync, preloadMachineId } from '../utils/machine-id.js'
 
 interface ProxyError extends Error {
   code?: string
@@ -158,6 +159,9 @@ export async function setupProxy(
   // Initialize SQLite database
   initDatabase()
 
+  // Preload machine ID
+  await preloadMachineId()
+
   // Start stats aggregation timer (every 5 minutes)
   const statsTimer = setInterval(() => {
     try {
@@ -218,6 +222,7 @@ export async function setupProxy(
         (forwardedAuthHeader?.startsWith('Bearer ') ? forwardedAuthHeader.slice(7) : undefined)
 
       // Log complete request data (Fastify already parsed body)
+      const machineId = getMachineIdSync() ?? undefined
       const requestData: RequestData = {
         requestId: request.id, // Will be updated with cloud x-request-id later
         sessionId,
@@ -226,6 +231,7 @@ export async function setupProxy(
         proxyApiKey,
         baseUrl: resolved.baseUrl,
         model: forwardedModel,
+        machineId,
         request: {
           method: request.method,
           path: request.url,
@@ -327,6 +333,7 @@ export async function setupProxy(
           statusCode: response.status,
           responseTime: Date.now() - startTime,
           model: forwardedModel,
+          machineId,
           usage
         })
 
@@ -396,6 +403,7 @@ export async function setupProxy(
           statusCode: response.status,
           responseTime: Date.now() - startTime,
           model: forwardedModel,
+          machineId,
           usage
         })
         return
@@ -454,6 +462,7 @@ export async function setupProxy(
             statusCode: response.status,
             responseTime: elapsed,
             model: forwardedModel,
+            machineId,
             usage
           })
 
@@ -482,7 +491,8 @@ export async function setupProxy(
         timestamp: new Date().toISOString(),
         statusCode: getErrorStatusCode(error),
         responseTime: Date.now() - startTime,
-        model: originalModel
+        model: originalModel,
+        machineId: getMachineIdSync() ?? undefined
       })
 
       const statusCode = getErrorStatusCode(error)

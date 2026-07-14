@@ -2,6 +2,138 @@
 
 > 一站式解决国内开发者使用 Claude Code 的网络问题，提供完整的请求监控、日志分析、用户管理和系统配置能力。一行命令启动，多界面管理，让 Claude Code 访问无障碍。
 
+## 主题配置
+
+### proxy-cli 主题系统
+
+proxy-cli 采用 Glassmorphism 设计风格，支持**暗黑主题（默认）**和**亮色主题**双主题切换。主题配置位于 `apps/proxy-cli/src/index.css`。
+
+#### CSS 变量参考
+
+所有主题颜色通过 CSS 自定义属性定义，使用时通过 `var(--color-*)` 引用。
+
+##### 暗黑主题（默认）
+
+```css
+/* Base Colors */
+--color-primary: #1E40AF;
+--color-primary-hover: #1E3A8A;
+--color-primary-active: #1E3A8A;
+--color-secondary: #3B82F6;
+--color-accent: #D97706;
+
+/* Backgrounds - Glassmorphism */
+--color-bg-primary: #020617;
+--color-bg-secondary: rgba(15, 23, 42, 0.7);
+--color-bg-card: rgba(15, 23, 42, 0.6);
+--color-bg-hover: rgba(30, 41, 59, 0.8);
+
+/* Text Colors */
+--color-text-primary: #F8FAFC;
+--color-text-secondary: #CBD5E1;
+--color-text-muted: #94A3B8;
+--color-text-disabled: #64748B;
+
+/* Borders & Dividers */
+--color-border: rgba(148, 163, 184, 0.2);
+--color-border-strong: rgba(148, 163, 184, 0.3);
+
+/* Status Colors */
+--color-success: #10B981;
+--color-warning: #F59E0B;
+--color-error: #EF4444;
+--color-info: #06B6D4;
+
+/* Glass Effects */
+--glass-blur: 16px;
+--glass-border: rgba(148, 163, 184, 0.18);
+--glass-shadow: 0 4px 24px -1px rgba(0, 0, 0, 0.4);
+
+/* Ambient Blob Colors */
+--blob-primary: rgba(59, 130, 246, 0.15);
+--blob-secondary: rgba(217, 119, 6, 0.1);
+--blob-accent: rgba(16, 185, 129, 0.08);
+```
+
+##### 亮色主题
+
+```css
+/* Base Colors */
+--color-primary: #1E40AF;
+--color-primary-hover: #2563EB;
+--color-primary-active: #3B82F6;
+--color-secondary: #3B82F6;
+--color-accent: #D97706;
+
+/* Backgrounds - Glassmorphism */
+--color-bg-primary: #F8FAFC;
+--color-bg-secondary: rgba(255, 255, 255, 0.7);
+--color-bg-card: rgba(255, 255, 255, 0.6);
+--color-bg-hover: rgba(241, 245, 249, 0.8);
+
+/* Text Colors */
+--color-text-primary: #020617;
+--color-text-secondary: #475569;
+--color-text-muted: #64748B;
+--color-text-disabled: #94A3B8;
+
+/* Borders & Dividers */
+--color-border: rgba(148, 163, 184, 0.3);
+--color-border-strong: rgba(148, 163, 184, 0.4);
+
+/* Status Colors */
+--color-success: #059669;
+--color-warning: #D97706;
+--color-error: #DC2626;
+--color-info: #0891B2;
+
+/* Glass Effects */
+--glass-border: rgba(148, 163, 184, 0.25);
+--glass-shadow: 0 4px 24px -1px rgba(0, 0, 0, 0.1);
+
+/* Ambient Blob Colors */
+--blob-primary: rgba(59, 130, 246, 0.12);
+--blob-secondary: rgba(217, 119, 6, 0.08);
+--blob-accent: rgba(16, 185, 129, 0.06);
+```
+
+#### 使用规范
+
+1. **颜色引用**：始终使用 CSS 变量而非硬编码颜色值
+   ```tsx
+   // ✅ 正确
+   <span style={{ color: 'var(--color-text-secondary)' }}>Text</span>
+   <div className="bg-bg-primary text-text-primary">Content</div>
+
+   // ❌ 错误
+   <span style={{ color: '#CBD5E1' }}>Text</span>
+   ```
+
+2. **Glassmorphism 效果**：使用 `.glass` 或 `.glass-strong` 工具类
+   ```tsx
+   <div className="glass rounded-xl p-4">Card Content</div>
+   <div className="glass-strong rounded-lg p-3">Stronger Glass Effect</div>
+   ```
+
+3. **字体大小**：正文统一使用 12px，标题可稍大
+   - 正文：`text-xs` (12px)
+   - 小标题：`text-sm` (14px)
+   - 大标题：`text-base` (16px) 或 `text-lg` (18px)
+   - 统计数值：可使用 `text-lg` 或更大以突出显示
+
+4. **Ant Design 配置**：通过 ConfigProvider 统一设置主题 token
+   ```typescript
+   token: {
+     colorPrimary: '#3B82F6',
+     borderRadius: 6,
+     fontSize: 12,
+   }
+   ```
+
+5. **主题切换**：通过添加/移除 `.light` class 到根元素实现
+   - 暗黑主题：无额外 class（默认）
+   - 亮色主题：添加 `.light` class
+
 [![Build Status][build-badge]][build-link]
 [![Test Coverage][coverage-badge]][coverage-link]
 [![License: Apache-2.0][license-badge]][license-link]

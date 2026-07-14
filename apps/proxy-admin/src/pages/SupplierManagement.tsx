@@ -98,21 +98,22 @@ const SupplierManagement = () => {
     <div>
       <div className="mb-6 flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">供应商管理</h1>
-          <p className="text-gray-500">管理AI服务供应商配置</p>
+          <h1 className="text-xl font-bold text-text-primary">供应商管理</h1>
+          <p className="text-xs text-text-muted">管理AI服务供应商配置</p>
         </div>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalVisible(true)}>
           添加供应商
         </Button>
       </div>
 
-      <Card>
+      <Card className="glass">
         <Table
           columns={columns}
           dataSource={suppliers}
           rowKey="id"
           loading={loading}
           bordered={false}
+          size="small"
         />
       </Card>
 
