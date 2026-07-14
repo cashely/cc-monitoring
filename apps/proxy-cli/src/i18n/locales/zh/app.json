@@ -14,7 +14,9 @@
     "compareRetry": "重试",
     "compareClose": "关闭",
     "compareLeft": "左侧",
-    "compareRight": "右侧"
+    "compareRight": "右侧",
+    "loadMore": "加载更多",
+    "detailTitle": "请求详情"
   },
   "today": {
     "inputTokens": "今日输入",

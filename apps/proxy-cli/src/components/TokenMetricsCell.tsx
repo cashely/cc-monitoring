@@ -6,13 +6,9 @@ interface TokenMetricsCellProps {
 }
 
 export function TokenMetricsCell({ usage }: TokenMetricsCellProps): JSX.Element {
-  if (!usage) {
+  if (!usage || (!usage.input_tokens && !usage.output_tokens && !usage.cache_read_input_tokens && !usage.cache_creation_input_tokens)) {
     return <span className="text-text-muted text-xs">--</span>
   }
 
-  return (
-    <div className="flex items-center">
-      <TokenBarChart usage={usage} />
-    </div>
-  )
+  return <TokenBarChart usage={usage} />
 }
