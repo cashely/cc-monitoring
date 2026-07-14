@@ -112,7 +112,7 @@ proxy-cli 采用 Glassmorphism 设计风格，支持**暗黑主题（默认）**
 2. **Glassmorphism 效果**：使用 `.glass` 或 `.glass-strong` 工具类
    ```tsx
    <div className="glass rounded-xl p-4">Card Content</div>
-   <div className="glass-strong rounded-lg p-3">Stronger Glass Effect</div>
+   <div className="glass-strong p-3">Stronger Glass Effect</div>
    ```
 
 3. **字体大小**：正文统一使用 12px，标题可稍大

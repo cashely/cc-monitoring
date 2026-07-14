@@ -4,11 +4,12 @@ import path from 'path'
 import fs from 'fs'
 import { spawn } from 'child_process'
 import { WebSocketServer, WebSocket } from 'ws'
+import { randomUUID } from 'node:crypto'
 import { loadConfig, saveConfig } from '../config/index.js'
 import { getProcessStatus, startProcess, stopProcess, reloadProcess } from '../utils/pm2.js'
 import { getCallerDirname } from '../utils/esm-dirname.js'
 import { getConfigPath, getDisplayPath } from '../utils/paths.js'
-import { loadRequestDB, listRequestDB, type RequestSummary } from '../utils/request-writer.js'
+import { loadRequestDB, listRequestDB, type RequestSummary, sessionIdExists } from '../utils/request-writer.js'
 import { statusHistory } from '../utils/status-history.js'
 import { addDataClient, removeDataClient, pushStatsNotify } from './data-push.js'
 import { getVersionInfo } from '../utils/version.js'
@@ -268,7 +269,7 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
 
     if (stream) {
       // Streaming mode: use SSE
-      const newSessionId = sessionId ?? crypto.randomUUID()
+      const newSessionId = sessionId ?? randomUUID()
 
       reply.hijack()
       const res = reply.raw
@@ -288,9 +289,12 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
         sendSSE('session', newSessionId)
       }
 
+      // 判断：如果 sessionId 存在于数据库，用 -r；否则用 --session-id
       const spawnArgs = sessionId
-        ? ['-r', sessionId, '-p', prompt]
-        : ['--session-id', newSessionId, '-p', prompt]
+        ? (sessionIdExists(sessionId)
+            ? ['-r', sessionId, '-p', prompt]
+            : ['--session-id', sessionId, '-p', prompt])
+        : ['-p', prompt]
 
       const child = spawn('claude', spawnArgs, {
         env: { ...process.env }
@@ -340,11 +344,14 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
       })
     } else {
       // Non-streaming mode: buffer all output
-      const newSessionId = sessionId ?? crypto.randomUUID()
+      const newSessionId = sessionId ?? randomUUID()
 
+      // 判断：如果 sessionId 存在于数据库，用 -r；否则用 --session-id
       const spawnArgs = sessionId
-        ? ['-r', sessionId, '-p', prompt]
-        : ['--session-id', newSessionId, '-p', prompt]
+        ? (sessionIdExists(sessionId)
+            ? ['-r', sessionId, '-p', prompt]
+            : ['--session-id', sessionId, '-p', prompt])
+        : ['-p', prompt]
 
       const child = spawn('claude', spawnArgs, {
         env: { ...process.env }

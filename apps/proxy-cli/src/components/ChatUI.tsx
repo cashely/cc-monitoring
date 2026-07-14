@@ -108,8 +108,8 @@ export function ChatUI(): JSX.Element {
         </div>
       )}
 
-      <div className="px-3 py-3">
-        <div className="glass-strong rounded-lg p-2 flex items-center gap-2">
+      <div className="">
+        <div className="glass-strong p-2 flex items-center gap-2">
           <Tooltip title={t('chat.newConversation')}>
             <Button type="text" icon={<PlusOutlined />} onClick={newConversation} size="small" />
           </Tooltip>

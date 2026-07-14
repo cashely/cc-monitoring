@@ -216,3 +216,12 @@ export async function cleanOldRequestsDB(daysToKeep = 7): Promise<void> {
 
   db.prepare(`DELETE FROM requests WHERE timestamp < ?`).run(cutoff)
 }
+
+// Check if a sessionId exists in the database
+export function sessionIdExists(sessionId: string): boolean {
+  const db = initDatabase()
+  const row = db.prepare(`
+    SELECT 1 FROM requests WHERE session_id = ? LIMIT 1
+  `).get(sessionId)
+  return !!row
+}
