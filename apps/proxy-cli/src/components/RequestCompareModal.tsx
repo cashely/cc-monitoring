@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import { Button } from 'antd'
+import { CloseOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { RequestDetails } from '../types/request'
 import { Tabs } from './Tabs'
@@ -95,25 +97,23 @@ export function RequestCompareModal({ leftId, rightId, onClose }: Props): JSX.El
         className="bg-bg-primary rounded-lg max-w-6xl w-[90vw] max-h-[90vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
-        <header className="flex justify-between items-center p-3 border-b border-border">
+        <header className="flex justify-between items-center p-4 border-b border-border">
           <h2 className="text-base font-semibold">{t('requests.compareTitle')}</h2>
-          <button
-            aria-label={t('requests.compareClose')}
+          <Button
+            type="text"
+            icon={<CloseOutlined />}
             onClick={onClose}
-            className="text-text-muted hover:text-text-primary px-3 py-1 rounded hover:bg-bg-hover"
-          >
-            ✕
-          </button>
+          />
         </header>
 
         {(state.errorLeft || state.errorRight) && (
-          <div className="p-3 bg-error/10 text-error text-sm">
+          <div className="p-4 bg-error/10 text-error">
             {state.errorLeft && <div>{t('requests.compareLeft')}: {t('requests.compareLoadFailed')} - {state.errorLeft}</div>}
             {state.errorRight && <div>{t('requests.compareRight')}: {t('requests.compareLoadFailed')} - {state.errorRight}</div>}
           </div>
         )}
 
-        <div className="flex-1 overflow-hidden p-3">
+        <div className="flex-1 overflow-hidden p-4">
           <Tabs
             tabs={tabs}
             defaultTab="reqHeaders"

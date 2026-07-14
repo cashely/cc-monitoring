@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react'
+import { Button } from 'antd'
+import { CloseOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { RequestDetails } from '../types/request'
 import { Tabs } from './Tabs'
@@ -56,13 +58,11 @@ export function RequestDetailModal({
       >
         <header className="flex justify-between items-center p-4 border-b border-border">
           <h2 className="text-base font-semibold">{t('requests.detailTitle') || '请求详情'}</h2>
-          <button
-            aria-label="Close"
+          <Button
+            type="text"
+            icon={<CloseOutlined />}
             onClick={onClose}
-            className="text-text-muted hover:text-text-primary px-3 py-1 rounded hover:bg-bg-hover"
-          >
-            ✕
-          </button>
+          />
         </header>
 
         {loading && (
@@ -126,7 +126,7 @@ export function RequestDetailModal({
                           </span>
                           <ShikiHighlighter
                             code={JSON.stringify(event, null, 2)}
-                            lang="json"
+                            langjson"
                           />
                         </div>
                       ))}
