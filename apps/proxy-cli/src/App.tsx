@@ -28,12 +28,12 @@ export function App(): JSX.Element {
 
         <header className="bg-bg-secondary/80 backdrop-blur-xl px-2 py-2 flex justify-between items-center border-b border-border">
           <div className="flex items-center gap-2">
-            <h1 className="text-base font-semibold relative">
+            <h1 className="text-base font-semibold">
               {t('title')}
               {versions && (
-                <span className="absolute -top-1.5 right-0 text-[10px] px-1 py-0 rounded bg-accent/20 text-accent font-medium">
+                <sup className="text-[10px] px-1 rounded bg-accent/20 text-accent font-medium ml-0.5">
                   {versions.projectVersion}
-                </span>
+                </sup>
               )}
             </h1>
           </div>
