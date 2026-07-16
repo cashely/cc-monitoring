@@ -1,8 +1,6 @@
 # @cc-monitoring/proxy-core
 
-Claude Code 代理 + 监控 CLI。Fastify 应用层转发 + PM2 守护进程 + Web 管理面板 + 完整请求记录。
-
-一站式解决国内网络访问 Claude Code 的问题，同时提供请求日志、Token 统计、供应商切换、SSE 流式抓包等运维能力。
+Claude Code 代理工具 + Token 消耗监控面板。一行命令启动代理，实时追踪每次请求的模型、Token 用量和响应状态。
 
 [![npm version](https://img.shields.io/npm/v/@cc-monitoring/proxy-core.svg)](https://www.npmjs.com/package/@cc-monitoring/proxy-core)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
@@ -27,7 +25,7 @@ ccm start
 ccm ui
 
 # 3. 把 Claude Code 的 ANTHROPIC_BASE_URL 指向本地代理
-export ANTHROPIC_BASE_URL=http://localhost:3000
+export ANTHROPIC_BASE_URL=http://localhost:9527
 ```
 
 首次运行会在 `~/.cc-monitoring/` 生成配置文件和数据库：
@@ -67,20 +65,21 @@ ccm config set proxy.target https://xxx   # 修改上游地址
 
 ```json
 {
-  "server": { "port": 3000, "host": "localhost" },
+  "server": { "port": 9527, "host": "localhost" },
   "proxy": {
-    "target": "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
-    "changeOrigin": true,
-    "rewritePrefix": ""
+    "target": "https://ark.cn-beijing.volces.com/api/coding",
+    "changeOrigin": true
   },
-  "logging": { "level": "info", "file": "logs/proxy.log" },
-  "auth": { "token": "" }
+  "logging": { "level": "info", "file": "logs/proxy.log", "maxSize": "10m", "interval": "1d", "compress": true },
+  "storage": { "type": "sqlite", "path": "logs/proxy.db", "maxDays": 7 }
 }
 ```
 
+> `logs/` 路径相对于 config 所在目录解析，实际存 `~/.cc-monitoring/logs/` 下。
+
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `server.port` | number (1-65535) | 监听端口，默认 3000 |
+| `server.port` | number (1-65535) | 监听端口，默认 9527 |
 | `server.host` | string | 监听主机 |
 | `proxy.target` | URL | 上游 AI 供应商 API |
 | `proxy.changeOrigin` | boolean | 是否重写 Origin 头 |
@@ -92,36 +91,13 @@ ccm config set proxy.target https://xxx   # 修改上游地址
 
 ## Web 管理面板
 
-`ccm ui` 或访问 `http://localhost:3000/ui`：
+`ccm ui` 或访问 `http://localhost:9527/ui`：
 
 - **状态监控**：CPU / 内存 / 运行时间 / 重启次数（5s 刷新）
 - **实时日志**：WebSocket 推流、级别过滤、关键字搜索
 - **请求历史**：完整 payload + SSE events，Token 消耗、耗时统计
 - **配置编辑**：可视化改 `config.json`，Zod 实时校验
 - **供应商管理**：多供应商配置，一键切换 baseUrl / apiKey / model
-
-## 架构要点
-
-**应用层转发**（Controller + Fetch + SSE Pipe），非透明代理：
-
-```
-Claude Code
-   ↓ POST /v1/messages
-Fastify（解析 body）
-   ↓ saveRequest（记录完整 payload）
-fetch → 上游 API
-   ↓ Web ReadableStream
-reply.hijack() + Readable.fromWeb().pipe(reply.raw)
-   ↓ 原样 SSE 转发
-Claude Code
-```
-
-为什么不用透明代理：`@fastify/http-proxy` 内部消费 request stream，无法同时完成「记录 body + 转发 SSE + 未来鉴权/统计」。HTTP stream 只能消费一次。
-
-**关键处理**：
-- Web Stream → Node Stream：`Readable.fromWeb(response.body)`
-- 头处理：删 `host`（阿里云 404）、`content-length`（长度变化），保留 `anthropic-version` / `x-api-key` / `accept: text/event-stream`
-- SSE 记录：`nodeStream.on('end')` 落盘完整 events 数组
 
 ## 环境变量
 
