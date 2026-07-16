@@ -2,7 +2,7 @@
 
 > 探索目标：分析 proxy 最近 20 条请求/响应数据，找出 Anthropic Messages API 的请求格式、分类、数据结构规律，评估「在 proxy 转发给真实大模型前注入自定义 tool，命中后内部循环再调大模型」方案的可行性。
 >
-> 数据来源：`logs/proxy.db` 的 `requests` 表（`request_body` / `response_events` 字段）。
+> 数据来源：`~/.cc-monitoring/logs/proxy.db` 的 `requests` 表（`request_body` / `response_events` 字段）。
 > 探索日期：2026-07-03。
 
 ---

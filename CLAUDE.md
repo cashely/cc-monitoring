@@ -151,8 +151,6 @@ Claude Code → Fastify (解析) → saveRequest → fetch → Aliyun
 ### Project Structure
 ```
 cc-monitoring/
-├── config.json           # 运行时配置（根目录）
-├── logs/                 # 日志目录
 ├── apps/
 │   ├── proxy-core/       # @cc-monitoring/cli-core
 │   │   ├── src/
@@ -179,7 +177,7 @@ cc-monitoring/
 ```
 
 ### Configuration Schema
-根目录 `config.json`（Zod 校验，`apps/proxy-core/src/config/schema.ts`）：
+运行时配置存 `~/.cc-monitoring/config.json`（Zod 校验，`apps/proxy-core/src/config/schema.ts`）。日志和 SQLite 也存 `~/.cc-monitoring/` 下，项目根目录不含运行时数据文件。
 ```typescript
 {
   server: { port, host },
@@ -214,7 +212,7 @@ cc-monitoring/
 - **Admin**: Vitest + @testing-library/react
 
 ## Important Files
-- `config.json`：运行时配置
+- `~/.cc-monitoring/config.json`：运行时配置（项目外）
 - `apps/proxy-core/src/server/proxy.ts`：Proxy 转发核心
 - `apps/proxy-core/src/server/ui-route.ts`：UI API + WebSocket + 静态资源
 - `apps/proxy-core/src/server/providers-route.ts`：供应商 REST API
@@ -229,7 +227,7 @@ cc-monitoring/
 1. **ESM dirname**: `utils/esm-dirname.ts` 计算 `__dirname` 等价物
 2. **PM2 ESM**: `createRequire(import.meta.url)` 加载 CJS 包
 3. **ecosystem.config.cjs**: `.cjs` 扩展名（全局 `"type": "module"`）
-4. **Root config.json**：根目录配置，方便 CLI 运行
+4. **Data dir**: 运行时数据（config.json、logs、proxy.db）存 `~/.cc-monitoring/`，项目根目录不含运行时数据
 5. **Type casts**: `PinoLike = any`（Fastify/pino 类型不匹配）
 6. **Providers separate storage**: 供应商配置存 SQLite 而非 config.json，避免配置膨胀，使用全量替换保存模式
 7. **Monorepo 结构**：三个应用独立部署，共享公共工具包

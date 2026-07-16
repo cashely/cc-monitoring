@@ -5,7 +5,6 @@
 - `README.md`
 - `package.json`
 - `pnpm-workspace.yaml`
-- `config.json`
 - `tsconfig.base.json`
 - `apps/proxy-core/package.json`
 - `apps/proxy-cli/package.json`
@@ -32,8 +31,6 @@ cc-monitoring/
 ├── packages/
 │   └── utils/          # 通用工具函数（@cc/utils）
 ├── docs/               # 本目录
-├── config.json         # 根级运行时配置（如未使用 ~/.cc-monitoring/config.json）
-├── logs/               # 日志与 SQLite 数据目录
 ├── pnpm-workspace.yaml # workspace 定义（apps/* + packages/*）
 ├── tsconfig.base.json  # 共享 TS 配置
 └── package.json        # 根 script + 便捷 CLI 别名
