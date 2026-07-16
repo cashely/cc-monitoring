@@ -7,7 +7,6 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  Legend,
 } from 'recharts'
 import { useTranslation } from 'react-i18next'
 import { StatsData, TodayStats, HourlyEntry } from '../types/stats'
@@ -32,11 +31,29 @@ interface StatsBarChartProps {
   todayStats: TodayStats
 }
 
+type MetricKey = 'input' | 'output' | 'cache'
+
+const METRICS: { key: MetricKey; nameKey: string; color: string }[] = [
+  { key: 'input', nameKey: 'inputTokens', color: TOKEN_COLORS.input },
+  { key: 'output', nameKey: 'outputTokens', color: TOKEN_COLORS.output },
+  { key: 'cache', nameKey: 'cacheTokens', color: TOKEN_COLORS.cacheRead },
+]
+
 export function StatsBarChart({ stats, todayStats }: StatsBarChartProps): JSX.Element {
   const { t } = useTranslation('app')
   const { theme } = useTheme()
   const [viewMode, setViewMode] = useState<ViewMode>('hour')
+  const [visibleMetrics, setVisibleMetrics] = useState<Set<MetricKey>>(new Set(METRICS.map(m => m.key)))
   const chartTheme = theme === 'dark' ? DARK_CHART_THEME : LIGHT_CHART_THEME
+
+  const toggleMetric = (key: MetricKey) => {
+    setVisibleMetrics(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
 
   const generateTimeScale = (mode: ViewMode) => {
     const now = new Date()
@@ -150,12 +167,37 @@ export function StatsBarChart({ stats, todayStats }: StatsBarChartProps): JSX.El
             }}
             labelStyle={{ color: chartTheme.tooltipText }}
           />
-          <Legend className="text-xs" />
-          <Bar dataKey="input" fill={TOKEN_COLORS.input} name={t('inputTokens')} />
-          <Bar dataKey="output" fill={TOKEN_COLORS.output} name={t('outputTokens')} />
-          <Bar dataKey="cache" fill={TOKEN_COLORS.cacheRead} name={t('cacheTokens')} />
+          {METRICS.filter(m => visibleMetrics.has(m.key)).map(m => (
+            <Bar key={m.key} dataKey={m.key} fill={m.color} name={t(m.nameKey)} />
+          ))}
         </BarChart>
       </ResponsiveContainer>
+
+      {/* 自定义 Legend：点击切换指标 */}
+      <div className="flex items-center justify-center gap-4 mt-2">
+        {METRICS.map(m => {
+          const visible = visibleMetrics.has(m.key)
+          return (
+            <button
+              key={m.key}
+              onClick={() => toggleMetric(m.key)}
+              className="flex items-center gap-1.5 text-xs transition-all cursor-pointer"
+              style={{ opacity: visible ? 1 : 0.4 }}
+            >
+              <span
+                className="inline-block w-3 h-3 rounded-sm"
+                style={{
+                  backgroundColor: visible ? m.color : '#6B7280',
+                  textDecoration: visible ? 'none' : 'line-through',
+                }}
+              />
+              <span style={{ textDecoration: visible ? 'none' : 'line-through', color: visible ? chartTheme.tooltipText : '#6B7280' }}>
+                {t(m.nameKey)}
+              </span>
+            </button>
+          )
+        })}
+      </div>
 
       <p className="text-xs text-text-muted mt-2">
         {t('lastUpdated')}: {formatTime(stats.lastUpdated)}
