@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react'
 import { Button, Tooltip } from 'antd'
 import { DatabaseZap, RefreshCw } from 'lucide-react'
+import { ApiOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { fetchConfig, controlProcess } from '../api'
 import { ProviderManagerModal } from './ProviderManagerModal'
+import { McpManagerPanel } from './McpManagerPanel'
 import { GlowCard } from './GlowCard'
 import { TOKEN_COLORS } from './chart-theme'
 
@@ -13,6 +15,7 @@ export function ConfigEditor(): JSX.Element {
   const [messageType, setMessageType] = useState<'success' | 'error' | 'restarting'>('success')
   const [isRestarting, setIsRestarting] = useState(false)
   const [isProviderModalOpen, setIsProviderModalOpen] = useState(false)
+  const [isMcpPanelOpen, setIsMcpPanelOpen] = useState(false)
   const [configPath, setConfigPath] = useState<string | null>(null)
 
   useEffect(() => {
@@ -94,6 +97,12 @@ export function ConfigEditor(): JSX.Element {
               onClick={() => setIsProviderModalOpen(true)}
             />
           </Tooltip>
+          <Tooltip title="MCP Servers">
+            <Button
+              icon={<ApiOutlined />}
+              onClick={() => setIsMcpPanelOpen(true)}
+            />
+          </Tooltip>
         </div>
       </h3>
 
@@ -128,6 +137,10 @@ export function ConfigEditor(): JSX.Element {
       <ProviderManagerModal
         isOpen={isProviderModalOpen}
         onClose={() => setIsProviderModalOpen(false)}
+      />
+      <McpManagerPanel
+        isOpen={isMcpPanelOpen}
+        onClose={() => setIsMcpPanelOpen(false)}
       />
     </div>
   )

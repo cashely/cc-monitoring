@@ -1,0 +1,55 @@
+{
+  "heading": "MCP 服务器管理",
+  "label": {
+    "name": "名称",
+    "transportType": "传输类型",
+    "command": "命令",
+    "args": "参数",
+    "env": "环境变量",
+    "url": "URL",
+    "headers": "请求头",
+    "enabled": "启用",
+    "status": "状态",
+    "toolCount": "工具数",
+    "tools": "工具列表",
+    "action": "操作"
+  },
+  "transportType": {
+    "stdio": "STDIO",
+    "sse": "SSE",
+    "streamableHttp": "Streamable HTTP"
+  },
+  "status": {
+    "connected": "已连接",
+    "disconnected": "断开",
+    "connecting": "连接中",
+    "notConnected": "未连接",
+    "disabled": "已禁用"
+  },
+  "action": {
+    "add": "添加服务器",
+    "edit": "编辑",
+    "delete": "删除",
+    "reconnect": "重连",
+    "close": "关闭",
+    "save": "保存",
+    "saving": "保存中...",
+    "toggleEnabled": "切换启用"
+  },
+  "message": {
+    "createdSuccess": "服务器创建成功",
+    "updatedSuccess": "服务器更新成功",
+    "deletedSuccess": "服务器删除成功",
+    "reconnecting": "正在重连...",
+    "reconnectSuccess": "重连成功",
+    "networkError": "网络错误",
+    "confirmDelete": "确认删除此 MCP 服务器？"
+  },
+  "modal": {
+    "addTitle": "添加 MCP 服务器",
+    "editTitle": "编辑 MCP 服务器",
+    "transportHint": "选择传输类型后填写对应配置"
+  },
+  "empty": "暂无 MCP 服务器配置",
+  "refresh": "刷新"
+}
