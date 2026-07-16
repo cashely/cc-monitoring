@@ -39,7 +39,7 @@ export function App(): JSX.Element {
             {versions && (
               <span className="text-xs text-text-muted">
                 {t('versions.claudeCode')}: {versions.claudeVersion}
-                <span className="ml-1 text-text-muted/60">#{versions.machineId.slice(0, 8)}</span>
+                <span className="ml-1 text-text-muted/60">#{(versions.machineId ?? '').slice(0, 8)}</span>
               </span>
             )}
             <LanguageSwitcher />
