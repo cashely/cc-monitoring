@@ -117,7 +117,7 @@ export interface InjectLoopResult {
 }
 
 /**
- * 内部循环：命中已启用 tool -> 执行 exec -> 追加对话 -> 再调上游 -> 直到 end_turn。
+ * SSE 内部循环：命中已启用 tool -> 执行 exec -> 追加对话 -> 再调上游 -> 直到 end_turn。
  * opts.body 会被原地追加 messages。
  *
  * @param opts.events 首次上游响应事件（已确认命中注入 tool）
@@ -140,7 +140,7 @@ export async function runInjectLoop(opts: {
       return { text: collectText(parsed), iterations, stoppedByLimit: false }
     }
 
-    const tool = findEnabledTool(call.name!)! // findInjectedCall 已保证存在
+    const tool = findEnabledTool(call.name!)!
     const result = await tool.exec(call.input)
     opts.body.messages.push({ role: 'assistant', content: blocksToAssistantContent(parsed.blocks) })
     opts.body.messages.push({
@@ -154,4 +154,54 @@ export async function runInjectLoop(opts: {
   }
 
   return { text: collectText(parsed) || '(内部循环达到最大轮次)', iterations, stoppedByLimit: true }
+}
+
+export interface JsonInjectLoopResult {
+  finalBody: any
+  iterations: number
+  stoppedByLimit: boolean
+}
+
+/**
+ * JSON 内部循环：非流式请求中命中 MCP tool -> 执行 exec -> 追加对话 -> 再调上游 -> 直到 end_turn。
+ * 与 SSE 版 runInjectLoop 对称，但处理 parsed JSON response body 而非 SSE event 数组。
+ *
+ * @param opts.initialBody 首次上游 JSON 响应（已确认命中 MCP tool）
+ * @param opts.requestBody 请求体（messages 会被原地追加）
+ * @param opts.callUpstream 用给定 body 再次调上游，返回 parsed JSON body
+ * @param opts.maxIterations 死循环护栏
+ */
+export async function runJsonInjectLoop(opts: {
+  initialBody: any
+  requestBody: any
+  callUpstream: (body: any) => Promise<any>
+  maxIterations?: number
+}): Promise<JsonInjectLoopResult> {
+  const maxIterations = opts.maxIterations ?? 3
+  let lastResponse = opts.initialBody
+  let iterations = 0
+
+  while (iterations < maxIterations) {
+    const toolCalls = (lastResponse.content || []).filter((b: any) => b.type === 'tool_use')
+    const hitCall = toolCalls.find((b: any) => findEnabledTool(b.name))
+    if (!hitCall || lastResponse.stop_reason !== 'tool_use') break
+
+    const tool = findEnabledTool(hitCall.name)!
+    const result = await tool.exec(hitCall.input)
+
+    opts.requestBody.messages.push({ role: 'assistant', content: lastResponse.content })
+    opts.requestBody.messages.push({
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: hitCall.id, content: result }]
+    })
+
+    lastResponse = await opts.callUpstream(opts.requestBody)
+    iterations++
+  }
+
+  const stoppedByLimit = iterations >= maxIterations &&
+    lastResponse.stop_reason === 'tool_use' &&
+    (lastResponse.content || []).some((b: any) => b.type === 'tool_use' && findEnabledTool(b.name))
+
+  return { finalBody: lastResponse, iterations, stoppedByLimit }
 }
