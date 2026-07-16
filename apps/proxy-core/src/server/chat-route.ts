@@ -78,6 +78,7 @@ export async function setupChatRoute(
       extractSafeHeaders(request.headers),
       resolved.apiKey
     )
+    forwardHeaders['x-chat-session-id'] = sessionId
 
     // Extract API keys for recording
     const authHeader = request.headers['authorization'] as string | undefined
