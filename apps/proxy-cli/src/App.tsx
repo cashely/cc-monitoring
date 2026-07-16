@@ -27,17 +27,24 @@ export function App(): JSX.Element {
         <ConnectionBanner connected={connectionState !== 'disconnected'} />
 
         <header className="bg-bg-secondary/80 backdrop-blur-xl px-2 py-2 flex justify-between items-center border-b border-border">
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
             <h1 className="text-base font-semibold">{t('title')}</h1>
+            {versions && (
+              <span className="text-xs px-1.5 py-0.5 rounded bg-accent/20 text-accent font-medium">
+                v{versions.projectVersion}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {versions && (
+              <span className="text-xs text-text-muted">
+                {t('versions.claudeCode')}: {versions.claudeVersion}
+                <span className="ml-1 text-text-muted/60">#{versions.machineId.slice(0, 8)}</span>
+              </span>
+            )}
             <LanguageSwitcher />
             <ThemeSwitcher />
           </div>
-          {versions && (
-            <div className="flex items-center gap-4 text-xs text-text-muted">
-              <span>{t('versions.claudeCode')}: {versions.claudeVersion}</span>
-              <span>{t('versions.project')}: v{versions.projectVersion}</span>
-            </div>
-          )}
         </header>
 
         {/* Token stats bar chart + ChatUI */}
