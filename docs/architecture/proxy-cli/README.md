@@ -15,7 +15,7 @@
 1. **状态监控** — 顶部 CPU/内存折线图 + 连接状态 banner
 2. **Token 统计** — 今日实时卡片 + 24h/30d 柱状图
 3. **请求历史** — 按 session 分组的请求列表，展开看 Headers/Body/Events，双选对比
-4. **配置与供应商** — 显示监听地址/配置路径 + 重启按钮 + 供应商管理弹窗
+4. **配置与供应商** — 显示监听地址/配置路径 + 重启按钮 + 供应商管理弹窗 + MCP server 管理
 
 ## 目录布局
 
@@ -29,13 +29,14 @@ apps/proxy-cli/
     ├── App.tsx          # 布局：Header + StatsBarChart + RequestHistory + StatusPanel + ConfigEditor
     ├── index.css        # Tailwind 入口
     ├── i18n/
-    │   ├── index.ts     # i18next 初始化，6 命名空间 × 2 语言
+    │   ├── index.ts     # i18next 初始化，7 命名空间 × 2 语言
     │   └── locales/
-    │       ├── zh/*.json (common/app/status/log/config/providers)
+    │       ├── zh/*.json (common/app/status/log/config/providers/mcp)
     │       └── en/*.json
     ├── api/
     │   ├── index.ts     # REST 端点封装 + 转发 providers
-    │   └── providers.ts # 供应商 REST
+    │   ├── providers.ts # 供应商 REST
+    │   └── mcp.ts       # MCP server 管理 REST
     ├── hooks/
     │   ├── index.ts     # barrel
     │   ├── useConfig.ts # /ui/api/config 一次拉
@@ -46,12 +47,12 @@ apps/proxy-cli/
     │   ├── StatusPanel.tsx / StatusLineChart.tsx / ConnectionBanner.tsx
     │   ├── StatsBarChart.tsx / TodayStatsCards.tsx / TokenBarChart.tsx / chart-theme.ts
     │   ├── RequestHistory.tsx / RequestCard.tsx / RequestCompareModal.tsx / DiffPanel.tsx / ParsedResponseBlocks.tsx
-    │   ├── ConfigEditor.tsx / ProviderManagerModal.tsx
+    │   ├── ConfigEditor.tsx / ProviderManagerModal.tsx / McpManagerPanel.tsx
     │   ├── Tabs.tsx / MethodTag.tsx / ModelTag.tsx / GlowCard.tsx / ShikiHighlighter.tsx / LanguageSwitcher.tsx
     ├── utils/
     │   ├── parse-events.ts / format-time.ts / format-number.ts
     ├── types/
-    │   ├── config.ts / log.ts / providers.ts / request.ts / stats.ts / status.ts / version.ts / index.ts
+    │   ├── config.ts / log.ts / providers.ts / request.ts / stats.ts / status.ts / version.ts / mcp.ts / index.ts
     └── test/setup.ts
 ```
 

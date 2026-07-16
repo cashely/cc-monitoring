@@ -31,7 +31,8 @@ flowchart TB
   START --> LOG[createLogger]
   START --> FASTIFY[Fastify + hooks]
   FASTIFY --> UI[setupUiRoutes]
-  FASTIFY --> PROXY[setupProxy]
+  FASTIFY --> PROXY[setupProxy<br/>init MCP + preloadMachineId]
+  FASTIFY --> CHAT[setupChatRoute<br/>MCP-enhanced endpoint]
   FASTIFY --> LISTEN[listen host:port]
 ```
 
@@ -59,7 +60,7 @@ import '../dist/cli/index.js'
 
 ## `src/server/index.ts` — 服务端引导
 
-`apps/proxy-core/src/server/index.ts:11-40`：
+`apps/proxy-core/src/server/index.ts:11-42`：
 
 ```ts
 export async function createServer(): Promise<FastifyInstance> {
@@ -69,8 +70,9 @@ export async function createServer(): Promise<FastifyInstance> {
 
   const fastify = Fastify({ logger, trustProxy: true })
   fastify.register(requestIdMiddleware)
-  await setupUiRoutes(fastify)   // 必须先于 setupProxy，否则 /ui/* 会被 /v1/* 通配
+  await setupUiRoutes(fastify)        // 必须先于 setupProxy，否则 /ui/* 会被 /v1/* 通配
   await setupProxy(fastify, config.proxy)
+  await setupChatRoute(fastify, config.proxy)  // MCP-enhanced chat endpoint
   return fastify
 }
 
@@ -184,7 +186,7 @@ sequenceDiagram
   CMD->>PM2: startProcess(ecosystemPath)
   PM2->>D: pm2 connect + start
   D->>S: fork dist/server/index.js
-  S->>S: createServer → setupUi → setupProxy
+  S->>S: createServer → setupUi → setupProxy → setupChatRoute
   S->>S: listen host:port
   Note over S: init SQLite 4 版 schema
   CMD->>N: waitForOnline (轮询 pm2 list)

@@ -9,9 +9,10 @@ import { pushNewRequest } from './data-push.js'
 import { initDatabase } from '../utils/db.js'
 import { resolveProxyTarget, getProxyModel, filterForwardHeaders, extractSafeHeaders } from './proxy.js'
 import { injectMcpTools } from '../utils/tool-injector.js'
-import { runInjectLoop, parseSSEText, parseUpstreamEvents, findInjectedCall, runJsonInjectLoop } from '../utils/inject-loop.js'
+import { runInjectLoop, parseSSEText, parseUpstreamEvents, findInjectedCall, runJsonInjectLoop, runStreamingInjectLoop } from '../utils/inject-loop.js'
 import { findEnabledTool } from '../tools/index.js'
-import { writeTextAsSSE, shouldMock } from '../utils/sse-writer.js'
+import { writeSSEEvent, writeTextAsSSE, shouldMock } from '../utils/sse-writer.js'
+import { SSEStreamProcessor } from '../utils/sse-stream-processor.js'
 import { getMachineId, getMachineIdSync, preloadMachineId } from '../utils/machine-id.js'
 
 interface ChatRequest extends FastifyRequest {
@@ -291,133 +292,24 @@ export async function setupChatRoute(
       return
     }
 
-    // === SSE response (streaming) ===
-    if (injected && isSSE && response.body) {
-      // Buffer full stream to detect tool_use
-      const fullText = await response.text()
-      const events = parseSSEText(fullText)
-      requestData.response!.events = events
-
-      const parsed = parseUpstreamEvents(events)
-      const hitInjected = findInjectedCall(parsed) && parsed.stopReason === 'tool_use'
-
-      reply.hijack()
-
-      if (!hitInjected) {
-        // No tool hit — replay buffered SSE as-is with session ID
-        const sseHeaders = { ...Object.fromEntries(response.headers), 'x-chat-session-id': sessionId }
-        reply.raw.writeHead(response.status, sseHeaders)
-        reply.raw.end(fullText)
-      } else {
-        // Tool hit — run inject loop
-        request.log.info(`[chat] SSE tool hit, entering loop: ${cloudRequestId}`)
-        const loop = await runInjectLoop({
-          events,
-          body: request.body,
-          callUpstream: async (b) => {
-            const r = await fetch(targetUrlStr, {
-              method: 'POST',
-              headers: forwardHeaders,
-              body: JSON.stringify(b)
-            })
-            const loopSseText = await r.text()
-            const loopEvents = parseSSEText(loopSseText)
-
-            // Record each loop iteration as a separate request
-            const loopRequestId = r.headers.get('x-request-id') || `loop_${request.id}_${Date.now()}`
-            const loopData: RequestData = {
-              requestId: loopRequestId,
-              sessionId,
-              timestamp: new Date().toISOString(),
-              apiKey,
-              proxyApiKey,
-              baseUrl: resolved.baseUrl,
-              model: forwardedModel,
-              machineId,
-              request: { method: 'POST', path: '/api/chat', headers: forwardHeaders, body: b },
-              response: {
-                statusCode: r.status,
-                headers: Object.fromEntries(r.headers),
-                events: loopEvents,
-                completedAt: new Date().toISOString()
-              }
-            }
-            await saveRequestDB(sessionId, loopRequestId, loopData)
-            const loopUsage = extractTokenUsage(loopData.response!.events)
-            pushNewRequest({
-              requestId: loopRequestId,
-              sessionId,
-              compositeId: `${sessionId}:${loopRequestId}`,
-              method: 'POST',
-              path: '/api/chat',
-              timestamp: loopData.timestamp,
-              statusCode: r.status,
-              responseTime: 0,
-              model: forwardedModel,
-              machineId,
-              baseUrl: resolved.baseUrl,
-              usage: loopUsage
-            })
-
-            return loopEvents
-          }
-        })
-        reply.raw.writeHead(200, {
-          'content-type': 'text/event-stream',
-          'cache-control': 'no-cache',
-          'connection': 'keep-alive',
-          'x-chat-session-id': sessionId
-        })
-        writeTextAsSSE(reply.raw, loop.text, `msg_chat_${cloudRequestId}`)
-        reply.raw.end()
-        request.log.info(`[chat] SSE loop done: ${cloudRequestId} (${loop.iterations} iter, limit=${loop.stoppedByLimit})`)
-      }
-
-      requestData.response!.completedAt = new Date().toISOString()
-      await saveRequestDB(sessionId, cloudRequestId, requestData)
-
-      const usage = extractTokenUsage(requestData.response!.events)
-      pushNewRequest({
-        requestId: cloudRequestId,
-        sessionId,
-        compositeId: `${sessionId}:${cloudRequestId}`,
-        method: request.method,
-        path: request.url,
-        timestamp: requestData.timestamp,
-        statusCode: response.status,
-        responseTime: Date.now() - startTime,
-        model: forwardedModel,
-        machineId,
-        baseUrl: resolved.baseUrl,
-        usage
-      })
-      return
-    }
-
-    // === SSE passthrough (no injection or no tool hit path not taken) ===
-    if (response.body) {
+    // === SSE response (streaming — unified path) ===
+    if (isSSE && response.body) {
       reply.hijack()
       reply.raw.writeHead(response.status, { ...Object.fromEntries(response.headers), 'x-chat-session-id': sessionId })
 
+      const processor = new SSEStreamProcessor(reply.raw)
       const nodeStream = Readable.fromWeb(response.body as any)
-      let sseEvents: any[] = []
 
       nodeStream.on('data', (chunk: Buffer) => {
-        reply.raw.write(chunk)
-        // Parse SSE events for recording
-        const text = chunk.toString()
-        for (const line of text.split('\n')) {
-          if (line.startsWith('data:')) {
-            const d = line.slice(5).trim()
-            if (d && d !== '[DONE]') {
-              try { sseEvents.push(JSON.parse(d)) } catch { /* skip */ }
-            }
-          }
-        }
+        // SSEStreamProcessor.processChunk 同时转发到 reply.raw + 增量解析
+        processor.processChunk(chunk)
       })
 
       nodeStream.on('end', async () => {
-        requestData.response!.events = sseEvents
+        processor.flushLeftover()
+
+        // 保存原始请求到 DB
+        requestData.response!.events = processor.events
         requestData.response!.completedAt = new Date().toISOString()
         await saveRequestDB(sessionId, cloudRequestId, requestData)
 
@@ -437,7 +329,88 @@ export async function setupChatRoute(
           usage
         })
 
-        request.log.info(`[chat] stream completed: ${cloudRequestId} ${response.status} (${Date.now() - startTime}ms, ${sseEvents.length} events)`)
+        request.log.info(`[chat] stream completed: ${cloudRequestId} ${response.status} (${Date.now() - startTime}ms, ${processor.events.length} events)`)
+
+        // 检测注入的 MCP tool_use → 发 proxy_status 信号 + 跑 streaming inject loop
+        if (processor.hasInjectedToolUse()) {
+          const injectedCall = findInjectedCall(processor.getParsedUpstream())
+          // 通知客户端：proxy 正在代行 tool，同连接上还有续接数据
+          writeSSEEvent(reply.raw, { type: 'proxy_status', status: 'tool_executing', tool: injectedCall?.name })
+
+          request.log.info(`[chat] SSE tool hit, entering streaming inject loop: ${cloudRequestId}`)
+
+          await runStreamingInjectLoop({
+            initialParsed: processor.getParsedUpstream(),
+            body: request.body,
+            callUpstream: async (b) => {
+              const r = await fetch(targetUrlStr, {
+                method: 'POST',
+                headers: forwardHeaders,
+                body: JSON.stringify(b)
+              })
+              const loopRequestId = r.headers.get('x-request-id') || `loop_${request.id}_${Date.now()}`
+              return { response: r, requestId: loopRequestId }
+            },
+            streamAndParse: async (loopResponse) => {
+              // 流式转发 loop 迭代的 SSE 到同一 reply.raw
+              const loopProcessor = new SSEStreamProcessor(reply.raw)
+              const loopStream = Readable.fromWeb(loopResponse.body as any)
+
+              loopStream.on('data', (chunk: Buffer) => loopProcessor.processChunk(chunk))
+
+              return new Promise<{ processor: SSEStreamProcessor, statusCode: number }>((resolve, reject) => {
+                loopStream.on('end', () => {
+                  loopProcessor.flushLeftover()
+                  resolve({ processor: loopProcessor, statusCode: loopResponse.status })
+                })
+                loopStream.on('error', (err: Error) => {
+                  request.log.error({ err }, `[chat] loop stream error`)
+                  reject(err)
+                })
+              })
+            },
+            sessionId,
+            saveIterationDB: async (loopRequestId, loopProcessor, loopStatusCode, loopBody) => {
+              const loopData: RequestData = {
+                requestId: loopRequestId,
+                sessionId,
+                timestamp: new Date().toISOString(),
+                apiKey,
+                proxyApiKey,
+                baseUrl: resolved.baseUrl,
+                model: forwardedModel,
+                machineId,
+                request: { method: 'POST', path: '/api/chat', headers: forwardHeaders, body: loopBody },
+                response: {
+                  statusCode: loopStatusCode,
+                  events: loopProcessor.events,
+                  completedAt: new Date().toISOString()
+                }
+              }
+              await saveRequestDB(sessionId, loopRequestId, loopData)
+              const loopUsage = extractTokenUsage(loopProcessor.events)
+              pushNewRequest({
+                requestId: loopRequestId,
+                sessionId,
+                compositeId: `${sessionId}:${loopRequestId}`,
+                method: 'POST',
+                path: '/api/chat',
+                timestamp: loopData.timestamp,
+                statusCode: loopStatusCode,
+                responseTime: 0,
+                model: forwardedModel,
+                machineId,
+                baseUrl: resolved.baseUrl,
+                usage: loopUsage
+              })
+            },
+            raw: reply.raw
+          })
+
+          request.log.info(`[chat] SSE streaming inject loop done: ${cloudRequestId}`)
+        }
+
+        reply.raw.end()
       })
 
       nodeStream.on('error', (err: Error) => {

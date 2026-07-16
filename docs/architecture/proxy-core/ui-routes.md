@@ -9,7 +9,8 @@
 
 `setupUiRoutes(fastify)`（`ui-route.ts:18`）在 `setupProxy` 之前注册，避免 `/ui/*` 被通配的 `/v1/*` 吞掉。它挂载：
 
-- REST 端点 9 条（含供应商 API 由 `providers-route.ts` 补充）
+- REST 端点 9 条 + 供应商 API（`providers-route.ts`）+ MCP 管理 API（`mcp-route.ts`）
+- Exec API（`ui-route.ts` 内联）
 - 两个 WebSocket 通道（`/ui/api/logs/stream`、`/ui/api/ws`）
 - 静态资源（`/ui/`）
 
@@ -28,6 +29,12 @@
 | POST | `/ui/api/control` | **是** | start/stop/restart 进程 |
 | GET | `/ui/api/providers` | 否 | 供应商列表 |
 | POST | `/ui/api/providers` | **是** | 批量保存（destructive replace） |
+| GET | `/ui/api/mcp/servers` | 否 | MCP server 列表（含连接状态） |
+| POST | `/ui/api/mcp/servers` | **是** | 创建 MCP server |
+| PATCH | `/ui/api/mcp/servers/:id` | **是** | 更新 MCP server（触发 reconnect） |
+| DELETE | `/ui/api/mcp/servers/:id` | **是** | 删除 MCP server（先 disconnect） |
+| GET | `/ui/api/mcp/tools` | 否 | 已发现的 MCP tool 列表 |
+| POST | `/ui/api/mcp/servers/:id/reconnect` | **是** | 手动 reconnect MCP server |
 | GET | `/ui` | 否 | 返回 index.html |
 | GET | `/ui/**` | 否 | 静态资源（wildcard） |
 
@@ -92,6 +99,30 @@
 - 其它 → 400
 
 `restart` 延迟的目的与 config POST 相同：让本次响应先落地，再让 PM2 接手。
+
+### MCP Server 管理 API
+
+`mcp-route.ts` 提供 6 个端点管理 MCP server 配置与连接。
+
+**GET /ui/api/mcp/servers**：列出所有 MCP server + 实时连接状态。`listMcpServers(db)` 返回 DB 行，`mcpManager.getConnectionsInfo()` 提供 status + toolCount，两表 join。
+
+**POST /ui/api/mcp/servers**：创建新 server。认证 required。`createMcpServer(db, input)` 写 DB + `mcpManager.addServer(created)` 连接。
+
+**PATCH /ui/api/mcp/servers/:id**：更新 server。认证 required。`updateMcpServer(db, id, partial)` 合并更新 + `mcpManager.reconnectServer(id)` 重建连接。
+
+**DELETE /ui/api/mcp/servers/:id**：删除 server。认证 required。先 `mcpManager.removeServer(id)` 断连接，再 `deleteMcpServer(db, id)` 清 DB。
+
+**GET /ui/api/mcp/tools**：列出所有已发现 MCP tool（从 `mcpManager.getMcpTools()` 读缓存）。返回 `{ tools }`（name + description + input_schema）。
+
+**POST /ui/api/mcp/servers/:id/reconnect**：手动 reconnect。认证 required。`mcpManager.reconnectServer(id)`。
+
+### Exec API
+
+`ui-route.ts` 内联注册 `POST /ui/api/exec`。认证 required。让 Claude Code 通过 proxy 执行本地命令。
+
+请求体：`{ tool: 'claude', prompt: string, stream?: boolean, sessionId?: string, allowedTools?: string[] }`。
+
+响应：stream=true 时 SSE 流式输出 Claude Code 执行结果；stream=false 时 JSON。
 
 ## checkAuth
 

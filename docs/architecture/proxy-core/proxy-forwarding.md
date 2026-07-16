@@ -1,18 +1,32 @@
-# proxy-core / 代理转发
+# proxy-core / 代理转发（`/v1/*` 纯代理路径）
 
 ## 本文档覆盖的源文件
 
-- `apps/proxy-core/src/server/proxy.ts:1-487`
-- `apps/proxy-core/src/utils/sse-writer.ts`
+- `apps/proxy-core/src/server/proxy.ts:1-457`
+
+> **注意**：`/v1/*` 现为纯代理路径，不做请求体修改（除 model tier rewrite）、不做 tool 注入、不做 mock 拦截。增强型代理路径 `/api/chat` 见 [chat-api.md](./chat-api.md)。
+
+## 与 `/api/chat` 的分工
+
+| 能力 | `/v1/*` | `/api/chat` |
+|---|---|---|
+| 请求体修改 | 仅 model tier rewrite | model rewrite + MCP tool 注入 |
+| 响应处理 | 透传原样（JSON/SSE pipe） | SSE 流式转发 + inject loop 续接 |
+| Session 管理 | 从 header 读 `x-claude-code-session-id` | 生成/复用 `x-chat-session-id`，支持 resume |
+| Tool 注入 | 无 | `injectMcpTools`（MCP 动态 tool only） |
+| Mock 拦截 | 无 | `shouldMock`（PoC 测试） |
+| DB 记录 | 单条（原始请求） | 多条（原始 + 每次 loop 迭代独立记录） |
 
 ## 顶层结构
 
-`setupProxy(fastify, proxyConfig)`（`proxy.ts:142-486`）注册一个 `fastify.all('/v1/*', ...)`。函数在服务启动时执行一次，主要做四件事：
+`setupProxy(fastify, proxyConfig)`（`proxy.ts:186-228`）注册一个 `fastify.all('/v1/*', ...)`。函数在服务启动时执行一次，主要做五件事：
 
 1. `initDatabase()`
-2. 启动 `aggregateStats` 定时器（5 分钟一次；启动时立即跑一次）
-3. `fastify.addHook('onClose', ...)`：关服时 `clearInterval` + `closeDatabase()`
-4. 注册请求 handler
+2. `mcpManager.init()`：初始化 MCP server 连接（seed config + connect enabled servers）
+3. `preloadMachineId()`：预加载 machine ID
+4. 启动 `aggregateStats` 定时器（5 分钟一次；启动时立即跑一次）
+5. `fastify.addHook('onClose', ...)`：关服时 `clearInterval` + `mcpManager.close()` + `closeDatabase()`
+6. 注册请求 handler
 
 请求 handler 是本文的核心。
 
@@ -26,134 +40,102 @@ Fastify 生态里有透明代理插件，但项目最早使用后遇到了矛盾
 
 HTTP stream 只能被消费一次，于是切到「应用层转发」：Fastify 让 body 先被解析成 JSON，业务代码用 `fetch()` 主动发起上游请求，响应体用 `Readable.fromWeb().pipe(reply.raw)` 转发。
 
-## Handler 五分支
+## Handler 三分支（纯代理）
+
+`/v1/*` 不注入 tool、不做 mock、不进入 inject loop——只做纯转发 + 记录。
 
 ```mermaid
 flowchart TD
   START([POST/GET/... /v1/*]) --> RESOLVE[resolveProxyTarget]
-  RESOLVE --> HEADER[filterForwardHeaders]
-  HEADER --> LOG[cleanOldRequestsDB, saveRequestDB fills request part]
+  RESOLVE --> MODEL[getProxyModel tier rewrite]
+  MODEL --> HEADER[extractSafeHeaders → filterForwardHeaders]
+  HEADER --> DATA[组装 requestData + machineId]
+  DATA --> LOG[cleanOldRequestsDB]
 
-  LOG --> D1{shouldMock body}
-  D1 -- 是 --> MOCK[writeTextAsSSE 合成回写<br/>不上上游]
-  D1 -- 否 --> D2{hasEnabledTools + body.tools 非空}
-  D2 -- 是 --> INJ[injectTools 追加 tools 末尾]
-  D2 -- 否 --> FETCH
-  INJ --> FETCH[fetch targetUrl]
+  LOG --> FETCH[fetch targetUrl]
 
   FETCH --> CT{content-type}
   CT -- application/json --> BR1["JSON 分支<br/>response.text() + reply.code().send()"]
-  CT -- text/event-stream + injected --> BR2["缓冲 + tool 循环分支<br/>见 tool-injection.md"]
-  CT -- text/event-stream + 未注入 --> BR3["常规 SSE pipe<br/>Readable.fromWeb.pipe(reply.raw)"]
+  CT -- text/event-stream --> BR2["SSE pipe 分支<br/>Readable.fromWeb.pipe(reply.raw)<br/>边转发边解析 data: 行"]
+  FETCH --> CATCH[catch → error 分支]
 
-  MOCK --> END([返回])
-  BR1 --> SAVE
-  BR2 --> SAVE
-  BR3 --> STREAM_END[on 'end' → save + push]
-  SAVE[saveRequestDB + pushNewRequest] --> END
+  BR1 --> SAVE[saveRequestDB + pushNewRequest]
+  BR2 --> STREAM_END[on 'end' → save + push]
+  CATCH --> PUSH_ERR[pushNewRequest(error record)]
+  SAVE --> END([返回])
   STREAM_END --> END
+  PUSH_ERR --> END_ERR([返回错误 JSON])
 ```
 
-分支的公用部分见下面 [公用步骤](#公用步骤)，五个分支分别见后续小节。
+公用部分见下面 [公用步骤](#公用步骤)，三个分支分别见后续小节。
 
 ## 公用步骤
 
 ### `resolveProxyTarget(proxyConfig)`
 
-`proxy.ts:40-84`。每次请求同步查一次 `providers WHERE is_default = 1 LIMIT 1`。better-sqlite3 是同步 API，单行 SELECT 微秒级，无需缓存。
+`proxy.ts:40-88`。每次请求同步查一次 `providers WHERE is_default = 1 LIMIT 1`。better-sqlite3 是同步 API，单行 SELECT 微秒级，无需缓存。
 
 策略：
 
 - 起始值 = 从 `config.proxy.target` 解析出 `baseUrl` + `targetPath`，`apiKey = config.proxy.apiKey`
 - 若激活的 provider 有 `base_url` 且非空 → 覆盖 baseUrl/targetPath
 - 若 `api_key` 非空 → 覆盖 apiKey
-- 若 `model` 非空 → 记入返回值（供后续替换请求体 model）
+- 若 `model / haiku_model / sonnet_model / opus_model` 非空 → 记入返回值（供 `getProxyModel` 按 tier 替换）
 - 任何异常（DB 未初始化 / URL 解析失败）→ fallback 只用 config
 
-返回 `{ baseUrl, targetPath, apiKey?, model? }`。
+返回 `{ baseUrl, targetPath, apiKey?, model?, haiku_model?, sonnet_model?, opus_model? }`。
+
+### `getProxyModel(originalModel, tierModels)`
+
+`proxy.ts:98-115`。根据请求的原始 model 和 provider tier 配置选择替换 model：
+
+```ts
+claude-haiku*   → haiku_model (fallback: model)
+claude-sonnet*  → sonnet_model (fallback: model)
+claude-opus*    → opus_model (fallback: model)
+其它            → model
+所有为空        → undefined (不替换)
+```
+
+例如：provider `sonnet_model = "glm-5.1"` → 请求 `model = "claude-sonnet-4-6"` 被改写为 `glm-5.1`。
+
+### `extractSafeHeaders(headers)`
+
+`proxy.ts:117-128`。Fastify 的 `request.headers` 是 `Record<string, unknown>`（值可能是 string[]），直接传给 `filterForwardHeaders` 会产生 circular reference 或类型问题。`extractSafeHeaders` 把所有值转为 `string`（数组 join `, `），生成干净的 `Record<string, string>`。
 
 ### 请求元数据组装
 
-`proxy.ts:181-232`：
+`proxy.ts:234-290`：
 
 - `sessionId = headers['x-claude-code-session-id'] || 'unknown-session'`
-- 原始 model 备份到 `originalModel`；provider 有 model 时替换 `request.body.model`（原地修改，因为 handler 后面还要 `JSON.stringify(request.body)` 转发）
-- `filterForwardHeaders(headers, resolved.apiKey)`：删 host/content-length；有 provider key 则覆盖 `x-api-key` 和 `authorization`
+- `getProxyModel(originalModel, resolved)` 替换 model（原地修改 `request.body.model`）
+- `extractSafeHeaders(request.headers)` → `filterForwardHeaders(safeHeaders, resolved.apiKey)`：删 host/content-length/x-req-key；有 provider key 则覆盖 `x-api-key` 和 `authorization`
 - 从 Authorization / x-api-key 头提取客户端原 apiKey；从 filtered 后的 headers 提取实际发给上游的 proxyApiKey
-- 组装 `RequestData`：request 部分立即填齐，response 部分先占位（`statusCode: 0, events: []`）
+- `machineId = getMachineIdSync() ?? undefined`
+- 组装 `RequestData`：request 部分立即填齐（含 machineId, baseUrl），response 部分先占位（`statusCode: 0, events: []`）
 
 ### 记录与清理
 
 - `cleanOldRequestsDB(maxDays)`：每次请求都跑一次 DELETE（`maxDays=0` 时函数直接 return）
 - `request.log.info(...)` 打印请求摘要
 
-## 分支 1：MOCK
+## 分支 1：JSON 响应
 
-`proxy.ts:239-254`：
-
-```ts
-if (shouldMock(request.body)) {
-  reply.hijack()
-  reply.raw.writeHead(200, { 'content-type': 'text/event-stream', ... })
-  writeTextAsSSE(reply.raw, '[PoC] 这是 proxy 构造的合成响应，未经过真实大模型。', `msg_poc_${request.id}`)
-  reply.raw.end()
-  return
-}
-```
-
-- `shouldMock(body)`（`sse-writer.ts:50-68`）：向后扫描 `messages` 找最后一条 `role === 'user'`，若 content 是字符串或 block 数组中的 text 块含 `__MOCK__` → true
-- `reply.hijack()`：告诉 Fastify 不接管响应，用户自己控制 `reply.raw`（Node HTTP 原生 socket）
-- `writeTextAsSSE`：按 Anthropic 事件骨架输出 `message_start` → `content_block_start` → `content_block_delta` → `content_block_stop` → `message_delta` → `message_stop`（详见 [tool-injection.md](./tool-injection.md#合成-sse-writer)）
-- **注意**：MOCK 分支既不 fetch 上游，也不写数据库、不 push；仅日志一行
-
-## 分支 2：JSON 响应
-
-`proxy.ts:296-333`。当上游返回 `content-type: application/json`（通常是错误响应或非流式）：
+`proxy.ts:324-362`。当上游返回 `content-type: application/json`（通常是错误响应或非流式）：
 
 - `const responseBody = await response.text()`
 - 尝试 `JSON.parse(responseBody)`；成功则把整个 body 作为单一 event `push` 到 `events` 数组；失败则 push `{ raw: responseBody }`
 - 更新 `requestData.response.statusCode / headers / completedAt`
 - `saveRequestDB` 写库
 - `extractTokenUsage` 提取 usage（从 events 中找 `type === 'message_delta'`）
-- `pushNewRequest` 广播
+- `pushNewRequest` 广播（含 machineId, baseUrl）
 - `reply.code(response.status).headers(...).send(responseBody)` 原样返回给客户端
 
 优点：完整错误信息进库，方便调试云端 429/401/500。
 
-## 分支 3：SSE + Tool 注入
+## 分支 2：SSE pipe（默认路径）
 
-`proxy.ts:338-394`。**只有 tool 被注入且响应是 SSE 时才走**。为什么要缓冲：无法边流边判断模型是否命中了注入的 tool（要看到 `stop_reason: tool_use` 才能确定）。
-
-- `const fullText = await response.text()`：一次性收全流
-- `parseSSEText(fullText)`：切行 → `data:` 行 → `JSON.parse`，存到 events 数组
-- `parseUpstreamEvents(events)`：重建有序 content blocks + stop_reason + usage
-- `findInjectedCall(parsed)`：找命中的 tool_use 块（其 `name` 在 registry 的 `enabledTools` 中）
-
-**未命中**（`hitInjected === false`）：
-
-- `reply.raw.writeHead(response.status, response.headers)`
-- `reply.raw.end(fullText)`：字节级原样回放缓冲的整个上游响应，客户端无感知
-
-**命中**：进入 `runInjectLoop`（详见 [tool-injection.md](./tool-injection.md)）：
-
-```ts
-const loop = await runInjectLoop({
-  events,
-  body: request.body,
-  callUpstream: async (b) => {
-    const r = await fetch(targetUrlStr, { method: request.method, headers: forwardHeaders, body: JSON.stringify(b) })
-    return parseSSEText(await r.text())
-  }
-})
-reply.raw.writeHead(200, { 'content-type': 'text/event-stream', ... })
-writeTextAsSSE(reply.raw, loop.text, `msg_inject_${cloudRequestId}`)
-```
-
-写库/推送在最后共同分支执行（`proxy.ts:377-393`）。
-
-## 分支 4：SSE + 未注入（默认路径）
-
-`proxy.ts:396-457`。零缓冲：
+`proxy.ts:364-426`。零缓冲，纯转发：
 
 ```ts
 reply.hijack()
@@ -162,11 +144,13 @@ const nodeStream = Readable.fromWeb(response.body as any)
 
 nodeStream.on('data', (chunk) => {
   // 边转发边解析 data: 行到 requestData.response.events
+  // 管道转发：chunk → reply.raw（客户端实时收到）
+  // 解析：提取 data: 行 JSON → push events[]
 })
 nodeStream.on('end', async () => {
   requestData.response.completedAt = new Date().toISOString()
   await saveRequestDB(...)
-  pushNewRequest(...)
+  pushNewRequest(...)  // 含 machineId, baseUrl
 })
 nodeStream.pipe(reply.raw)
 ```
@@ -197,9 +181,9 @@ for (const line of lines) {
 
 **已知边界**：如果一个 `data: {...}` 事件跨 chunk 被截断，当前实现会解析失败（`JSON.parse` 抛错被 catch 吞掉）。数据库里丢一条 event 但不影响客户端流转发。项目里另有 `SSEAccumulator`（`utils/sse-accumulator.ts`）是完整的 Transform 流，但在 `proxy.ts` 当前路径中**未启用**。
 
-## 分支 5：错误分支
+## 分支 3：Error
 
-`proxy.ts:459-485`：
+`proxy.ts:428-456`：
 
 - 上游 `fetch` 抛错时命中
 - `getErrorStatusCode`：`ECONNREFUSED` / `ENOTFOUND` → 502；`ETIMEDOUT` → 504；其它 → 500
@@ -209,7 +193,9 @@ for (const line of lines) {
 
 ## 关键决策
 
+- **纯代理设计**：`/v1/*` 不做任何请求体修改（除 model tier rewrite）、不注入 tool、不做 mock。所有增强逻辑放在 `/api/chat`。这让 `/v1/*` 成为零风险路径——客户端用它时 proxy 完全透明
 - **`reply.hijack()` 的语义**：Fastify 停止管你，包括路由响应、日志钩子、`onSend` hook。之后你必须自己 `reply.raw.end()`，否则连接挂着
 - **重新序列化 body**：`fetch` 的 body 用 `JSON.stringify(request.body)`。这意味着如果客户端发送的 JSON 有非语义变化（空格、字段顺序），代理会「格式化」它。对语义无影响，但会影响某些希望做 body hash 的场景
 - **URL 拼接**：`targetUrlStr = baseUrl + targetPath + request.url`。例如 `baseUrl='https://ark.cn-beijing.volces.com'` + `targetPath='/api/coding'` + `request.url='/v1/messages'` = `https://ark.cn-beijing.volces.com/api/coding/v1/messages`。因此 provider 的 base_url 应写成含 API 前缀的形式
-- **一次请求两次 `Date.now()`**：`startTime` 在 handler 入口；SSE 分支的 `elapsed` 在 `end` 事件；同步分支（JSON/MOCK）在 `send` 前。都体现 handler 视角的耗时
+- **一次请求两次 `Date.now()`**：`startTime` 在 handler 入口；SSE 分支的 `elapsed` 在 `end` 事件；同步分支（JSON）在 `send` 前。都体现 handler 视角的耗时
+- **Tier model fallback 链**：`getProxyModel` 按 tier 映射，每个 tier 优先用专属 model（`haiku_model / sonnet_model / opus_model`），无专属 model 时 fallback 到通用 `model`，再 fallback 到不替换
