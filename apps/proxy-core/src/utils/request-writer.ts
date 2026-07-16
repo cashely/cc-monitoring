@@ -1,4 +1,5 @@
 import { initDatabase, getDatabase } from './db.js'
+import { parseUpstreamEvents } from './inject-loop.js'
 
 export interface RequestData {
   requestId: string
@@ -224,4 +225,70 @@ export function sessionIdExists(sessionId: string): boolean {
     SELECT 1 FROM requests WHERE session_id = ? LIMIT 1
   `).get(sessionId)
   return !!row
+}
+
+// Load session history for multi-turn chat resume
+// Returns the last request's messages + assistant response, to prepend to new messages
+export function loadSessionHistory(sessionId: string): { messages: any[], system?: any } | null {
+  const db = initDatabase()
+
+  // Get the last completed request for this session
+  const row = db.prepare(`
+    SELECT request_body, response_events
+    FROM requests
+    WHERE session_id = ? AND completed_at IS NOT NULL AND status_code = 200
+    ORDER BY timestamp DESC
+    LIMIT 1
+  `).get(sessionId) as { request_body: string | null, response_events: string | null } | undefined
+
+  if (!row) return null
+
+  let requestBody: any = null
+  try {
+    requestBody = row.request_body ? JSON.parse(row.request_body) : null
+  } catch { return null }
+
+  let responseEvents: any[] = []
+  try {
+    responseEvents = row.response_events ? JSON.parse(row.response_events) : []
+  } catch { /* empty */ }
+
+  if (!requestBody?.messages) return null
+
+  // Rebuild conversation: previous messages from request_body + assistant response from response_events
+  const messages = [...requestBody.messages]
+
+  // Extract assistant content from response events
+  // For JSON responses, the first event is the full response with .content
+  // For SSE responses, need to parse content blocks
+  const firstEvent = responseEvents[0]
+  if (firstEvent?.type === 'message' && firstEvent?.content) {
+    // JSON (non-streaming) response
+    messages.push({ role: 'assistant', content: firstEvent.content })
+  } else if (responseEvents.length > 1) {
+    // SSE response — rebuild content blocks from events
+    const parsed = parseUpstreamEvents(responseEvents)
+    const assistantContent: any[] = []
+    for (const block of parsed.blocks) {
+      if (block.type === 'text' && block.text) {
+        assistantContent.push({ type: 'text', text: block.text })
+      } else if (block.type === 'tool_use') {
+        assistantContent.push({ type: 'tool_use', id: block.id, name: block.name, input: block.input })
+      }
+    }
+    // Find tool_result blocks in subsequent events
+    for (const event of responseEvents) {
+      if (event?.type === 'tool_result' || (event?.role === 'user' && Array.isArray(event?.content))) {
+        messages.push({ role: 'user', content: event.content })
+      }
+    }
+    if (assistantContent.length > 0) {
+      messages.push({ role: 'assistant', content: assistantContent })
+    }
+  }
+
+  return {
+    messages,
+    system: requestBody.system || requestBody.system_prompt
+  }
 }

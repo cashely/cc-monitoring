@@ -6,6 +6,7 @@ import { configureDbPath } from '../utils/db.js'
 import { getCurrentModuleUrl } from '../utils/esm-dirname.js'
 import { setupProxy } from './proxy.js'
 import { setupUiRoutes } from './ui-route.js'
+import { setupChatRoute } from './chat-route.js'
 import { requestIdMiddleware } from './middleware/request-id.js'
 
 export async function createServer(): Promise<FastifyInstance> {
@@ -23,6 +24,7 @@ export async function createServer(): Promise<FastifyInstance> {
   fastify.register(requestIdMiddleware)
   await setupUiRoutes(fastify)  // UI routes registered BEFORE proxy to avoid being proxied
   await setupProxy(fastify, config.proxy)
+  await setupChatRoute(fastify, config.proxy)  // MCP-enhanced chat endpoint
 
   return fastify
 }

@@ -1,6 +1,5 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { Readable } from 'stream'
-import { fileURLToPath } from 'url'
 import { ProxyConfig } from '../types/config.js'
 import { loadConfig } from '../config/index.js'
 import { saveRequestDB, extractTokenUsage, type RequestData } from '../utils/request-writer.js'
@@ -8,10 +7,7 @@ import { cleanOldRequestsDB } from '../utils/request-writer.js'
 import { pushNewRequest } from './data-push.js'
 import { initDatabase, closeDatabase, getDatabase } from '../utils/db.js'
 import { aggregateStats } from '../utils/stats-aggregator.js'
-import { writeTextAsSSE, shouldMock } from '../utils/sse-writer.js'
-import { injectTools } from '../utils/tool-injector.js'
-import { parseSSEText, parseUpstreamEvents, findInjectedCall, runInjectLoop } from '../utils/inject-loop.js'
-import { hasEnabledTools } from '../tools/index.js'
+import { mcpManager } from '../utils/mcp-manager.js'
 import { getMachineId, getMachineIdSync, preloadMachineId } from '../utils/machine-id.js'
 
 interface ProxyError extends Error {
@@ -119,7 +115,7 @@ export function getProxyModel(
 }
 
 // Extract safe headers (avoid circular reference)
-function extractSafeHeaders(headers: Record<string, unknown>): Record<string, string> {
+export function extractSafeHeaders(headers: Record<string, unknown>): Record<string, string> {
   const safeHeaders: Record<string, string> = {}
   for (const [key, value] of Object.entries(headers)) {
     if (typeof value === 'string' || typeof value === 'number') {
@@ -132,7 +128,7 @@ function extractSafeHeaders(headers: Record<string, unknown>): Record<string, st
 }
 
 // Filter headers for forwarding (remove problematic ones, replace API key if configured)
-function filterForwardHeaders(
+export function filterForwardHeaders(
   headers: Record<string, string>,
   proxyApiKey?: string
 ): Record<string, string> {
@@ -143,16 +139,21 @@ function filterForwardHeaders(
   delete filtered['content-length']
   delete filtered['x-req-key']
 
-  // Replace API key if proxy key is configured
+  // Inject or replace API key when proxy key is available
   if (proxyApiKey) {
-    // Only replace existing headers, don't add new ones
-    if ('x-api-key' in filtered) {
+    const hasApiKey = 'x-api-key' in filtered
+    const hasAuth = 'authorization' in filtered || 'Authorization' in filtered
+
+    if (hasApiKey) {
+      // Replace existing x-api-key
       filtered['x-api-key'] = proxyApiKey
-    }
-    if ('authorization' in filtered || 'Authorization' in filtered) {
-      // Use the same case as the original header
+    } else if (hasAuth) {
+      // Replace existing authorization
       const key = 'authorization' in filtered ? 'authorization' : 'Authorization'
       filtered[key] = `Bearer ${proxyApiKey}`
+    } else {
+      // No auth header in request → inject x-api-key from provider
+      filtered['x-api-key'] = proxyApiKey
     }
   }
 
@@ -193,6 +194,13 @@ export async function setupProxy(
   // Initialize SQLite database
   initDatabase()
 
+  // Initialize MCP connections (after DB is ready)
+  try {
+    await mcpManager.init()
+  } catch (err) {
+    console.error('MCP manager init failed:', err)
+  }
+
   // Preload machine ID
   await preloadMachineId()
 
@@ -212,9 +220,10 @@ export async function setupProxy(
     console.error('Initial stats aggregation failed:', err)
   }
 
-  // Cleanup database and timer on server close
+  // Cleanup database, MCP connections, and timer on server close
   fastify.addHook('onClose', async () => {
     clearInterval(statsTimer)
+    await mcpManager.close()
     closeDatabase()
   })
 
@@ -283,39 +292,9 @@ export async function setupProxy(
 
       request.log.info(`request logged: ${request.id} ${request.method} ${request.url}`)
 
-      // [PoC] 魔法词拦截：最新 user message 含 __MOCK__ 时，不转发上游，
-      // 直接构造合成 SSE 流返回，验证客户端能否将其识别为正常回答。
-      if (shouldMock(request.body)) {
-        reply.hijack()
-        reply.raw.writeHead(200, {
-          'content-type': 'text/event-stream',
-          'cache-control': 'no-cache',
-          'connection': 'keep-alive'
-        })
-        writeTextAsSSE(
-          reply.raw,
-          '[PoC] 这是 proxy 构造的合成响应，未经过真实大模型。',
-          `msg_poc_${request.id}`
-        )
-        reply.raw.end()
-        request.log.info(`[PoC] mock intercepted: ${request.id}`)
-        return
-      }
-
       // Build target URL correctly
       // request.url = '/v1/messages' -> should become '/apps/anthropic/v1/messages'
       const targetUrlStr = `${resolved.baseUrl}${resolved.targetPath}${request.url}`
-
-      // Tool 注入：存在启用 tool 时，向主对话请求的 tools 末尾注入自定义 tool。
-      // 无启用 tool 时完全不进此分支，走下方原 pipe 路径（零影响）。
-      let injectedNames: string[] = []
-      if (hasEnabledTools()) {
-        injectedNames = injectTools(request.body)
-        if (injectedNames.length) {
-          request.log.info(`[inject] tools injected: ${injectedNames.join(',')} (${request.id})`)
-        }
-      }
-      const injected = injectedNames.length > 0
 
       request.log.info(`forwarding to: ${targetUrlStr}`)
 
@@ -350,7 +329,6 @@ export async function setupProxy(
           const jsonBody = JSON.parse(responseBody)
           requestData.response!.events!.push(jsonBody)
         } catch {
-          // Not valid JSON, record as raw text
           requestData.response!.events!.push({ raw: responseBody })
         }
 
@@ -380,69 +358,6 @@ export async function setupProxy(
         reply.code(response.status)
         reply.headers(Object.fromEntries(response.headers))
         reply.send(responseBody)
-        return
-      }
-
-      // 条件缓冲：注入生效且为 SSE 时，收完整流检测是否命中已启用 tool。
-      // 命中 -> 内部循环 -> 合成 SSE 回写；未命中 -> 原样回放缓冲字节。
-      // 未注入时完全不进此分支，走下方原有 pipe 路径（零影响）。
-      if (injected && isSSE && response.body) {
-        const fullText = await response.text()
-        const events = parseSSEText(fullText)
-        requestData.response!.events = events
-
-        const parsed = parseUpstreamEvents(events)
-        const hitInjected = findInjectedCall(parsed) && parsed.stopReason === 'tool_use'
-
-        reply.hijack()
-
-        if (!hitInjected) {
-          // 未命中：原样回放上游缓冲字节，客户端无感知
-          reply.raw.writeHead(response.status, Object.fromEntries(response.headers))
-          reply.raw.end(fullText)
-        } else {
-          // 命中：进入内部循环，代行「执行 tool -> 追加对话 -> 再调上游」
-          request.log.info(`[inject] tool hit, entering loop: ${cloudRequestId}`)
-          const loop = await runInjectLoop({
-            events,
-            body: request.body,
-            callUpstream: async (b) => {
-              const r = await fetch(targetUrlStr, {
-                method: request.method,
-                headers: forwardHeaders,
-                body: JSON.stringify(b)
-              })
-              return parseSSEText(await r.text())
-            }
-          })
-          reply.raw.writeHead(200, {
-            'content-type': 'text/event-stream',
-            'cache-control': 'no-cache',
-            'connection': 'keep-alive'
-          })
-          writeTextAsSSE(reply.raw, loop.text, `msg_inject_${cloudRequestId}`)
-          reply.raw.end()
-          request.log.info(`[inject] loop done: ${cloudRequestId} (${loop.iterations} iter, limit=${loop.stoppedByLimit})`)
-        }
-
-        requestData.response!.completedAt = new Date().toISOString()
-        await saveRequestDB(sessionId, cloudRequestId, requestData)
-
-        const usage = extractTokenUsage(requestData.response!.events)
-        pushNewRequest({
-          requestId: cloudRequestId,
-          sessionId,
-          compositeId: `${sessionId}:${cloudRequestId}`,
-          method: request.method,
-          path: request.url,
-          timestamp: requestData.timestamp,
-          statusCode: response.status,
-          responseTime: Date.now() - startTime,
-          model: forwardedModel,
-          machineId,
-          baseUrl: resolved.baseUrl,
-          usage
-        })
         return
       }
 
