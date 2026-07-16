@@ -1,6 +1,6 @@
 import ReactMarkdown from 'react-markdown'
 import { parseEvents } from '../utils/parse-events'
-import { ShikiHighlighter } from './ShikiHighlighter'
+import { JsonHighlighter } from './JsonHighlighter'
 
 interface Props {
   events: any[]
@@ -46,7 +46,7 @@ export function ParsedResponseBlocks({ events }: Props): JSX.Element {
               <div className="text-purple-700 dark:text-purple-400 font-medium mb-1">
                 {tool.name} <span className="text-xs opacity-60">({tool.id})</span>
               </div>
-              <ShikiHighlighter
+              <JsonHighlighter
                 code={JSON.stringify(tool.input, null, 2)}
                 lang="json"
               />

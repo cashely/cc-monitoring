@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { RequestSummary, RequestDetails, TokenUsage } from '../types/request'
-import { ShikiHighlighter } from './ShikiHighlighter'
+import { JsonHighlighter } from './JsonHighlighter'
 import { Tabs } from './Tabs'
 import { TokenBarChart } from './TokenBarChart'
 import { MethodTag } from './MethodTag'
@@ -132,7 +132,7 @@ export function RequestCard({
               defaultTab="reqHeaders"
               children={{
                 reqHeaders: details.request.headers ? (
-                  <ShikiHighlighter
+                  <JsonHighlighter
                     code={JSON.stringify(details.request.headers, null, 2)}
                     lang="json"
                   />
@@ -140,7 +140,7 @@ export function RequestCard({
                   <span className="text-text-muted">无数据</span>
                 ),
                 reqBody: details.request.body ? (
-                  <ShikiHighlighter
+                  <JsonHighlighter
                     code={JSON.stringify(details.request.body, null, 2)}
                     lang="json"
                   />
@@ -148,7 +148,7 @@ export function RequestCard({
                   <span className="text-text-muted">无数据</span>
                 ),
                 resHeaders: details.response?.headers ? (
-                  <ShikiHighlighter
+                  <JsonHighlighter
                     code={JSON.stringify(details.response.headers, null, 2)}
                     lang="json"
                   />
@@ -168,7 +168,7 @@ export function RequestCard({
                             <span className="text-text-muted text-xs block mb-1">
                               #{i + 1} {event.type ?? 'unknown'}
                             </span>
-                            <ShikiHighlighter
+                            <JsonHighlighter
                               code={JSON.stringify(event, null, 2)}
                               lang="json"
                             />
