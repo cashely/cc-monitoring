@@ -31,7 +31,7 @@ export function App(): JSX.Element {
             <h1 className="text-base font-semibold relative">
               {t('title')}
               {versions && (
-                <span className="absolute -top-1.5 -right-2 text-[10px] px-1 py-0 rounded bg-accent/20 text-accent font-medium">
+                <span className="absolute -top-1.5 right-0 text-[10px] px-1 py-0 rounded bg-accent/20 text-accent font-medium">
                   {versions.projectVersion}
                 </span>
               )}
@@ -41,7 +41,7 @@ export function App(): JSX.Element {
             {versions && (
               <span className="text-xs text-text-muted">
                 {t('versions.claudeCode')}: {versions.claudeVersion}
-                <span className="ml-1 text-text-muted/60">机器码:{versions.machineId ?? ''}</span>
+                <span className="ml-1 text-text-muted">机器码: {versions.machineId ?? ''}</span>
               </span>
             )}
             <LanguageSwitcher />
