@@ -1,15 +1,13 @@
 {
   "name": "@cc-monitoring/proxy-core",
   "version": "0.1.4",
-  "description": "Claude Code 代理 + 监控 CLI（Fastify 代理服务器 + PM2 守护 + Web UI + 请求记录）",
+  "description": "Claude Code 代理工具 + Token 消耗监控面板",
   "keywords": [
-    "claude",
-    "claude-code",
-    "anthropic",
-    "proxy",
-    "monitoring",
-    "cli",
-    "fastify"
+    "claude-code-proxy",
+    "claude-code-dashboard",
+    "dashboard",
+    "agent-proxy",
+    "agent-dashboard"
   ],
   "author": "cashely",
   "license": "Apache-2.0",
