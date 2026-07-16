@@ -150,7 +150,7 @@ Claude Code 直接访问 Anthropic API 在国内网络环境下受限。CC Monit
 - **双 Web UI 管理面板**：
   - **Proxy 管理面板** -- 状态监控、日志查看、请求历史、配置编辑、供应商管理
   - **系统管理后台** -- 用户管理、权限控制、全局监控、系统配置
-- **Zod 配置校验** -- 启动前自动校验 config.json，错误配置不会上线
+- **Zod 配置校验** -- 启动前自动校验 `~/.cc-monitoring/config.json`，错误配置不会上线
 - **认证保护** -- 配置修改 API 支持 Bearer Token 认证，防止未授权改动
 - **多供应商支持** -- 同时管理多个 AI 供应商配置，支持一键切换
 - **请求统计** -- 统计请求次数、Token 消耗、成功率等核心指标
@@ -169,7 +169,7 @@ pnpm build
 pnpm start
 ```
 
-服务器启动后监听 `http://localhost:3000`。将 Claude Code 的 API endpoint 配置为这个地址即可开始使用。
+服务器启动后监听 `http://localhost:9527`。将 Claude Code 的 API endpoint 配置为这个地址即可开始使用。
 
 ```bash
 # 验证代理是否正常工作
@@ -187,8 +187,6 @@ pnpm test-connection
 ├── packages/              # 公共包目录
 │   └── utils/             # 通用工具函数（跨项目复用）
 ├── docs/                  # 文档目录
-├── config.json            # 运行时配置
-├── logs/                  # 日志目录
 ├── package.json
 ├── pnpm-workspace.yaml
 └── tsconfig.base.json
@@ -274,11 +272,11 @@ pnpm ui
 # 安装依赖
 pnpm install
 
-# 同时启动 Core（端口 3000） + Proxy UI（端口 3001）
+# 同时启动 Core + Proxy UI
 pnpm dev
 
 # 单独启动各应用
-pnpm dev:proxy-core       # Core 开发模式（tsx 热重载，端口 3000）
+pnpm dev:proxy-core       # Core 开发模式（tsx 热重载）
 pnpm dev:proxy-cli        # Proxy UI 开发模式（Vite HMR，端口 3001）
 pnpm dev:proxy-admin      # Admin UI 开发模式（Vite HMR，端口 3002）
 ```
@@ -301,26 +299,32 @@ pnpm preview:proxy-admin  # 预览 Admin UI 生产构建
 ```
 
 ## 配置
-配置文件位于项目根目录 `config.json`，启动时通过 Zod schema 强制校验。校验失败则服务器不会启动。
+运行时配置存 `~/.cc-monitoring/config.json`，启动时通过 Zod schema 强制校验。校验失败则服务器不会启动。首次运行自动写入默认配置。
+
+> `logging.file` 和 `storage.path` 中 `logs/` 是相对路径，以 config 所在目录为基准解析，实际存储在 `~/.cc-monitoring/logs/` 下。
 
 ### 配置结构
 ```json
 {
   "server": {
-    "port": 3000,
+    "port": 9527,
     "host": "localhost"
   },
   "proxy": {
-    "target": "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
-    "changeOrigin": true,
-    "rewritePrefix": ""
+    "target": "https://ark.cn-beijing.volces.com/api/coding",
+    "changeOrigin": true
   },
   "logging": {
     "level": "info",
-    "file": "logs/proxy.log"
+    "file": "logs/proxy.log",
+    "maxSize": "10m",
+    "interval": "1d",
+    "compress": true
   },
-  "auth": {
-    "token": "optional"
+  "storage": {
+    "type": "sqlite",
+    "path": "logs/proxy.db",
+    "maxDays": 7
   }
 }
 ```
@@ -328,7 +332,7 @@ pnpm preview:proxy-admin  # 预览 Admin UI 生产构建
 ### 配置项说明
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
-| `server.port` | `number` (1-65535) | 是 | `3000` | 代理服务器监听端口 |
+| `server.port` | `number` (1-65535) | 是 | `9527` | 代理服务器监听端口 |
 | `server.host` | `string` | 是 | `localhost` | 代理服务器监听主机 |
 | `proxy.target` | `string` (URL) | 是 | -- | 阿里云中转 API 地址 |
 | `proxy.changeOrigin` | `boolean` | 是 | `true` | 是否修改请求 Origin 头 |
@@ -352,7 +356,7 @@ pnpm preview:proxy-admin  # 预览 Admin UI 生产构建
 ## Web UI 管理面板
 
 ### Proxy 管理面板
-通过 `pnpm ui` 命令或直接访问 `http://localhost:3000/ui` 打开。
+通过 `pnpm ui` 命令或直接访问 `http://localhost:9527/ui` 打开。
 
 面板包含四个核心区域：
 **状态监控 (StatusPanel)** -- 实时显示服务器运行状态，每 5 秒刷新：
@@ -384,95 +388,13 @@ pnpm preview:proxy-admin  # 预览 Admin UI 生产构建
 - 需要认证 Token（如果配置了 `auth.token`）
 
 ### 系统管理后台
-通过 `pnpm admin` 命令或直接访问 `http://localhost:3000/admin` 打开。
+通过 `pnpm admin` 命令或直接访问 `http://localhost:9527/admin` 打开。
 
 后台包含用户管理、权限控制、全局监控等企业级功能：
 - **用户管理**：用户列表、创建/编辑/删除用户、角色分配
 - **权限控制**：基于角色的访问控制（RBAC）、权限分配
 - **全局监控**：系统级请求统计、性能指标、异常告警
 - **系统配置**：全局参数配置、供应商管理、日志配置
-
-## 架构
-项目采用 pnpm monorepo 结构，分为 Core、Proxy UI、Admin UI 三个独立应用，共享公共工具包。
-
-### Proxy 转发架构
-**应用层转发**（Controller + Fetch + SSE Pipe），而非 @fastify/http-proxy 透明代理。
-
-#### 为什么不用透明代理？
-早期版本使用 `@fastify/http-proxy` 透明代理模式，但遇到核心矛盾：
-**问题**：透明代理模式下无法同时满足：
-- ✓ 记录完整请求 payload（model、messages、tools、MCP 参数）
-- ✓ 原样转发 SSE stream（不干扰流式响应）
-- ✓ 未来扩展（Token统计、用户鉴权、Prompt审计）
-
-**原因**：
-- `@fastify/http-proxy` 内部控制 request stream
-- 任何读取 body 的操作都会消耗 stream
-- HTTP stream 只能被消费一次
-
-#### 正确架构：应用层转发
-当前采用 **Controller + Fetch + SSE Pipe** 架构：
-```typescript
-fastify.post('/v1/*', async (request, reply) => {
-  const payload = request.body  // Fastify 已解析
-  
-  // 记录完整请求
-  await saveRequest({
-    headers: request.headers,
-    body: payload  // model, messages, tools, max_tokens, etc.
-  })
-  
-  // 应用层转发
-  const response = await fetch(targetUrl, {
-    method: 'POST',
-    headers: filteredHeaders,
-    body: JSON.stringify(payload)
-  })
-  
-  // SSE stream 转发
-  reply.hijack()
-  reply.raw.writeHead(response.status, response.headers)
-  
-  // Web Stream → Node Stream
-  Readable.fromWeb(response.body).pipe(reply.raw)
-})
-```
-
-#### 请求流程
-```
-Claude Code Client
-       |
-       | POST /v1/messages
-       | Headers: x-api-key, anthropic-version, accept
-       | Body: { model, messages, tools, max_tokens }
-       |
-       v
-  Fastify Server
-       |
-       |-- 1. Fastify 自动解析 body → JSON object
-       |-- 2. saveRequest({ headers, body })  ✓ 完整记录
-       |-- 3. filterForwardHeaders()  删除 host/content-length
-       |
-       v
-  fetch(targetUrl)  应用层转发
-       |
-       |-- Headers: x-api-key, anthropic-version, accept (原样透传)
-       |-- Body: JSON.stringify(payload)  重新序列化
-       |
-       v
-  Aliyun API
-       |
-       |-- Response: SSE stream (Web ReadableStream)
-       |
-       v
-  reply.hijack()  接管响应
-       |
-       |-- Readable.fromWeb(response.body)  Web → Node Stream
-       |-- pipe(reply.raw)  SSE 原样流向客户端
-       |
-       v
-  Claude Code Client  ✓ 流式响应正常
-```
 
 ## 环境变量配置
 
@@ -592,7 +514,7 @@ UI 包测试覆盖：组件渲染、交互逻辑、自定义 hooks、API 调用�
 
 ## 常见问题
 **Q: 启动时报配置校验错误**
-确保 `config.json` 符合 Zod schema。所有必填字段不能缺失，`server.port` 必须在 1-65535 范围内，`proxy.target` 必须是合法 URL。用 `pnpm config` 查看当前配置。
+确保 `~/.cc-monitoring/config.json` 符合 Zod schema。所有必填字段不能缺失，`server.port` 必须在 1-65535 范围内，`proxy.target` 必须是合法 URL。用 `pnpm config` 查看当前配置。
 
 **Q: 代理转发返回 502**
 用 `pnpm test-connection` 检查与目标 API 的连通性。常见原因：网络不可达、DNS 无法解析、阿里云服务端点变更。
@@ -601,10 +523,10 @@ UI 包测试覆盖：组件渲染、交互逻辑、自定义 hooks、API 调用�
 配置了 `auth.token` 但请求未携带 `Authorization` 头。请求时添加 `Bearer <token>` 头，或通过环境变量 `UI_AUTH_TOKEN` 设置 Token。
 
 **Q: 日志面板没有数据**
-检查 `logging.file` 配置的路径是否存在且可读。项目根目录已创建 `logs/` 文件夹。
+检查 `logging.file` 配置的路径是否存在且可读。日志文件默认存 `~/.cc-monitoring/logs/` 下。
 
 **Q: 本地开发时 Proxy UI 无法连接到 API**
-确保 proxy-core 服务已启动（端口 3000），proxy-cli 的 `VITE_API_BASE` 配置正确。
+确保 proxy-core 服务已启动（端口 9527），proxy-cli 的 `VITE_API_BASE` 配置正确。
 
 ## 贡献
 1. Fork 本仓库
