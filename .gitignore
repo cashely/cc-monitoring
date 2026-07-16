@@ -29,7 +29,11 @@ Thumbs.db
 
 # Logs
 logs/
+apps/proxy-core/logs/
 *.log
+
+# Runtime config (lives in ~/.cc-monitoring)
+config.json
 npm-debug.log*
 pnpm-debug.log*
 yarn-debug.log*

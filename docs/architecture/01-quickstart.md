@@ -10,7 +10,6 @@
 - `apps/proxy-cli/vite.config.ts`
 - `apps/proxy-admin/vite.config.ts`
 - `apps/proxy-admin/src/vite-env.d.ts`
-- `config.json`
 
 ## 环境要求
 
@@ -53,7 +52,7 @@ pnpm start           # PM2 守护启动代理服务器
 
 | 服务 | 默认端口 | 来源 |
 |---|---|---|
-| proxy-core（生产） | 9527 | `config.json` 的 `server.port` |
+| proxy-core（生产） | 9527 | `~/.cc-monitoring/config.json` 的 `server.port` |
 | proxy-cli（开发） | Vite 默认 | `apps/proxy-cli/vite.config.ts`，`/ui/api` 反代到 `http://localhost:3000` |
 | proxy-admin（开发） | 3000 | `apps/proxy-admin/vite.config.ts:21` |
 
@@ -120,6 +119,8 @@ pnpm test                 # 全量测试（pnpm -r test）
   "auth":    { "token": "..." }
 }
 ```
+
+> `logging.file` 和 `storage.path` 中 `logs/` 是**相对于 config 所在目录**的路径，实际存储在 `~/.cc-monitoring/logs/` 下，项目根目录不含这些文件。
 
 - `logging.file` 和 `storage.path` 是相对路径时，以 config 所在目录为基准解析（`config/index.ts:23-30`）
 - `storage.maxDays = 0` 表示保留全部历史（`request-writer.ts:189-193`）
