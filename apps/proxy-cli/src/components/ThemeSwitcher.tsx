@@ -10,10 +10,9 @@ export function ThemeSwitcher(): JSX.Element {
     <button
       onClick={toggleTheme}
       title={t('theme.toggle')}
-      className="flex items-center gap-1 px-2 py-1 rounded border border-border bg-bg-secondary text-text-primary text-sm hover:bg-bg-hover"
+      className="flex items-center justify-center w-8 h-8 rounded border border-border bg-bg-secondary text-text-primary text-sm hover:bg-bg-hover"
     >
       {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
-      {theme === 'dark' ? t('theme.light') : t('theme.dark')}
     </button>
   )
 }

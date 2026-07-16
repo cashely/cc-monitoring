@@ -3,6 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { getCallerDirname } from './esm-dirname.js'
+import { getMachineIdSync } from './machine-id.js'
 
 /**
  * 获取项目版本（从 proxy-core 自身 package.json）
@@ -95,9 +96,11 @@ export function getClaudeVersion(): string {
 /**
  * 获取版本信息（合并返回）
  */
-export function getVersionInfo(): { projectVersion: string; claudeVersion: string } {
+export function getVersionInfo(): { projectVersion: string; claudeVersion: string; machineId: string } {
+  const machineId = getMachineIdSync() ?? 'unknown'
   return {
     projectVersion: getProjectVersion(),
-    claudeVersion: getClaudeVersion()
+    claudeVersion: getClaudeVersion(),
+    machineId,
   }
 }
