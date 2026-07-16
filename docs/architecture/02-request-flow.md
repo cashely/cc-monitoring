@@ -4,17 +4,22 @@
 
 - `apps/proxy-core/src/server/index.ts`
 - `apps/proxy-core/src/server/proxy.ts`
+- `apps/proxy-core/src/server/chat-route.ts`
 - `apps/proxy-core/src/server/middleware/request-id.ts`
 - `apps/proxy-core/src/server/data-push.ts`
 - `apps/proxy-core/src/utils/request-writer.ts`
 - `apps/proxy-core/src/utils/sse-writer.ts`
 - `apps/proxy-core/src/utils/tool-injector.ts`
 - `apps/proxy-core/src/utils/inject-loop.ts`
+- `apps/proxy-core/src/utils/sse-stream-processor.ts`
+- `apps/proxy-core/src/utils/machine-id.ts`
 - `apps/proxy-cli/src/hooks/useWebSocketData.ts`
 
 本文用一次业务请求串起整个系统，具体到各分支的实现请转到对应深入文档。
 
 ## 一次业务请求经过什么
+
+系统有两条业务路径：`/v1/*`（纯代理）和 `/api/chat`（MCP 增强）。下面用 mermaid 展示 `/api/chat` 的完整流程（`/v1/*` 更简单，见 [proxy-forwarding.md](./proxy-core/proxy-forwarding.md)）。
 
 ```mermaid
 sequenceDiagram
@@ -22,51 +27,78 @@ sequenceDiagram
   actor CC as Claude Code
   participant F as Fastify (proxy-core)
   participant M as request-id middleware
-  participant P as setupProxy handler
+  participant CH as setupChatRoute handler
   participant R as resolveProxyTarget
-  participant TI as injectTools
+  participant GM as getProxyModel
+  participant TI as injectMcpTools
   participant DB as SQLite
+  participant SP as SSEStreamProcessor
+  participant IL as runStreamingInjectLoop
   participant UP as 上游 API
   participant PUSH as pushNewRequest (data-push)
   participant WS as WebSocket clients
   participant UI as proxy-cli 面板
 
-  CC->>F: POST /v1/messages<br/>headers + JSON body
+  CC->>F: POST /api/chat<br/>headers + JSON body
   F->>M: onRequest hook
   M-->>F: request.id = x-request-id | nanoid(12)
-  F->>P: 匹配 /v1/*
-  P->>R: 解析 provider（SQLite is_default=1）
-  R-->>P: {baseUrl, targetPath, apiKey?, model?}
-  P->>P: body.model = provider.model?（如提供）
-  P->>P: filterForwardHeaders（去 host/content-length；覆盖 x-api-key）
-  P->>DB: cleanOldRequestsDB(maxDays)（每次请求都触发）
+  F->>CH: 匹配 /api/chat
 
-  alt user message 含 __MOCK__
-    P-->>CC: reply.hijack() + 合成 SSE（sse-writer）
-    Note over P: [PoC] 不上上游，直接返回构造流
-  else 存在启用 tool
-    P->>TI: injectTools(body)（body.tools 末尾追加）
-    P->>UP: fetch(baseUrl + targetPath + request.url)
-    UP-->>P: response（可能是 SSE 或 JSON）
-    alt SSE + 命中已启用 tool
-      P->>UP: runInjectLoop（多次 fetch，模型 tool_use → exec → 追加对话）
-      P-->>CC: 合成 SSE 文本回写（writeTextAsSSE）
-    else SSE + 未命中
-      P-->>CC: 原样回放缓冲的字节
-    end
-  else 常规
-    P->>UP: fetch(baseUrl + targetPath + request.url)
-    UP-->>P: SSE / JSON
-    alt JSON 响应
-      P-->>CC: 收全再一次性 reply
-    else SSE 响应（默认）
-      P-->>CC: Readable.fromWeb(response.body).pipe(reply.raw)
-      Note over P,CC: 边流边解析 data: 行，累积 events
+  CH->>CH: 生成/复用 sessionId<br/>x-chat-session-id header
+  alt session resume（providedSessionId 存在）
+    CH->>DB: loadSessionHistory(providedSessionId)
+    DB-->>CH: history.messages + history.system
+    CH->>CH: prepend 历史 messages 到 body
+  end
+
+  CH->>R: 解析 provider（SQLite is_default=1）
+  R-->>CH: {baseUrl, targetPath, apiKey?, model?, haiku_model?, sonnet_model?, opus_model?}
+  CH->>GM: getProxyModel(originalModel, tierModels)
+  GM-->>CH: proxyModel 或 undefined
+  CH->>CH: body.model = proxyModel（如有）
+
+  CH->>TI: injectMcpTools(body)（仅 MCP tools，不含 probe/curl）
+  TI-->>CH: injectedNames[]
+  CH->>CH: filterForwardHeaders + 注入 x-chat-session-id
+  CH->>DB: cleanOldRequestsDB(maxDays)
+
+  alt shouldMock(body) — PoC
+    CH-->>CC: reply.hijack() + writeTextAsSSE 合成 SSE
+  else 正常转发
+    CH->>UP: fetch(baseUrl + targetPath + /v1/messages)
+    UP-->>CH: response（JSON 或 SSE）
+
+    alt JSON 响应 + injected + tool_use
+      CH->>IL: runJsonInjectLoop（JSON body 内部循环）
+      IL-->>CH: {finalBody, iterations}
+      CH->>DB: saveRequestDB（原始 + 每次迭代独立记录）
+      CH-->>CC: reply.code(200) + x-chat-session-id header
+    else JSON 响应（常规）
+      CH->>DB: saveRequestDB
+      CH-->>CC: reply.code(status) + _sessionId + x-chat-session-id header
+    else SSE 响应（核心路径）
+      CH->>CH: reply.hijack + writeHead + x-chat-session-id
+      CH->>SP: SSEStreamProcessor(reply.raw)
+      UP-->>SP: SSE stream
+      SP-->>CC: processChunk → 实时转发原始 SSE
+      SP->>SP: 增量解析 → events[] + contentBlocks + stopReason
+      SP->>DB: stream end → saveRequestDB（第 1 条记录）
+      SP->>PUSH: pushNewRequest
+
+      alt hasInjectedToolUse()
+        CH->>CC: writeSSEEvent(proxy_status)
+        CH->>IL: runStreamingInjectLoop（流式续接到同一 reply.raw）
+        loop 每次迭代（max 3）
+          IL->>UP: callUpstream(body)
+          UP-->>CC: streamAndParse → 流式转发 loop SSE
+          IL->>DB: saveIterationDB（独立记录）
+        end
+      end
+
+      CH->>CH: reply.raw.end()
     end
   end
 
-  P->>DB: saveRequestDB(sessionId, cloudRequestId, requestData)<br/>写 requests 表全字段
-  P->>PUSH: pushNewRequest({summary + usage})
   PUSH-->>WS: broadcast type=request action=new
   WS-->>UI: 前端 useWebSocketData 收到消息
   UI->>UI: 去重 + 排序 + 截取前 1000
@@ -78,72 +110,119 @@ sequenceDiagram
 ### 请求 ID
 
 - Fastify `onRequest` 钩子（`middleware/request-id.ts:5-12`）优先取 `x-request-id` 头；缺则 `nanoid(12)`
-- 上游返回后从响应头 `x-request-id` 取云端 ID（`proxy.ts:283`），覆盖 `requestData.requestId`
+- 上游返回后从响应头 `x-request-id` 取云端 ID，覆盖 `requestData.requestId`
 - 前端用「`sessionId:requestId`」的 `compositeId` 唯一标识一条请求（`request-writer.ts:168`）
 
 ### 会话 ID
 
-- 来自客户端头 `x-claude-code-session-id`（`proxy.ts:181`）
-- 无值时统一记为 `'unknown-session'`
+- `/v1/*`：来自客户端头 `x-claude-code-session-id`，无值时记 `'unknown-session'`
+- `/api/chat`：来自客户端头 `x-chat-session-id`，无值时 server 生成 UUID。生成的 sessionId 注入到 `forwardHeaders`（上游始终能看到），并通过 response header `x-chat-session-id` 返回给客户端
+
+### Session Resume
+
+`/api/chat` 独有能力。当客户端带 `x-chat-session-id` 且 DB 中有历史记录：
+
+- `loadSessionHistory(sessionId)` 从 SQLite 加载该 session 的历史 messages + system prompt
+- 历史 messages prepend 到当前请求的 messages 前面
+- system prompt 仅在当前请求未提供时 carry over
 
 ### API Key 双记录
 
 - `apiKey`：客户端原始 Bearer / `x-api-key`
 - `proxyApiKey`：实际转发给上游的 key（若 `resolved.apiKey` 存在则用它，否则透传客户端）
 
-两者都写入 `requests` 表，便于审计（`proxy.ts:200-211`）。
+两者都写入 `requests` 表，便于审计。
 
-### Model 覆盖
+### Model 覆盖（Tier Rewrite）
 
-- provider 表 `model` 非空时，请求体 `body.model` 会被就地改写（`proxy.ts:186-192`）
-- 日志会打印 `model rewrite: <old> -> <new>`
+- `getProxyModel(originalModel, resolved)` 按 tier 映射替换：
+  - `claude-haiku*` → `haiku_model`（fallback: `model`）
+  - `claude-sonnet*` → `sonnet_model`（fallback: `model`）
+  - `claude-opus*` → `opus_model`（fallback: `model`）
+  - 其它 → `model`
+  - 所有为空 → 不替换
+- `/v1/*` 和 `/api/chat` 都使用 `getProxyModel`
+
+### machineId
+
+- `getMachineIdSync()` 返回基于 hostname 的稳定标识（`machine-id.ts`）
+- 写入 `requestData.machineId` 和 `requests` 表 `machine_id` 列
+- 用于区分多台机器的请求记录
 
 ### Header 过滤
 
-`filterForwardHeaders`（`proxy.ts:100-117`）：
+`filterForwardHeaders`（`proxy.ts:131-161`）：
 
 - 删掉 `host`（上游会 404）
 - 删掉 `content-length`（body 已重新序列化，长度变了）
-- 若 provider 有 `api_key`，同时覆盖 `x-api-key` 与 `authorization: Bearer <k>`
+- 删掉 `x-req-key`
+- 若 provider 有 `api_key`，覆盖 `x-api-key` 与 `authorization: Bearer <k>`
+- `/api/chat` 还注入 `x-chat-session-id` 到 forwardHeaders
 
-## 五条响应分支
+##两条路径的响应分支
 
-`setupProxy` 内部按顺序判断，只走中间的一条：
+### `/v1/*` 三分支（纯代理）
 
 ```mermaid
 flowchart TD
-  START([请求进入]) --> MOCK{"user message 含 __MOCK__？"}
-  MOCK -- 是 --> M[合成 SSE 直接返回<br/>writeTextAsSSE]
-  M --> DONE([写库 skip / 立即结束])
-
-  MOCK -- 否 --> INJ{hasEnabledTools() 且 body.tools 非空？}
-  INJ -- 是 --> INJTOOL[injectTools 追加到 tools 末尾]
-  INJ -- 否 --> FETCH[fetch 上游]
-  INJTOOL --> FETCH
+  START([POST /v1/*]) --> RESOLVE[resolveProxyTarget + getProxyModel]
+  RESOLVE --> HEADER[extractSafeHeaders → filterForwardHeaders]
+  HEADER --> FETCH[fetch 上游]
 
   FETCH --> CT{"content-type"}
-  CT -- application/json --> JSON[一次读完 response.text<br/>reply.code + send]
-  CT -- text/event-stream + 已注入 --> BUF[response.text 缓冲全流]
-  BUF --> HIT{parseUpstreamEvents 命中<br/>注入 tool 且 stop_reason=tool_use？}
-  HIT -- 否 --> REPLAY[reply.raw.end(fullText)<br/>字节级原样回放]
-  HIT -- 是 --> LOOP[runInjectLoop<br/>tool.exec → 追加对话 → fetch]
-  LOOP --> SYNTH[writeTextAsSSE 合成结果]
+  CT -- application/json --> JSON[response.text<br/>save + reply.code.send]
+  CT -- text/event-stream --> PIPE["reply.hijack + Readable.fromWeb.pipe(reply.raw)<br/>边转发边解析 data: 行"]
+  FETCH --> CATCH[catch → error]
+  CATCH --> ERR[pushNewRequest(error) → reply.code.send]
 
-  CT -- text/event-stream + 未注入 --> PIPE["reply.hijack + Readable.fromWeb(response.body).pipe(reply.raw)"]
-  PIPE --> STREAM[边转发边解析 data: 行]
-
-  JSON --> SAVE[saveRequestDB]
-  REPLAY --> SAVE
-  SYNTH --> SAVE
-  STREAM --> SAVE
-  SAVE --> PUSH[pushNewRequest → WebSocket 广播]
-  PUSH --> DONE
+  JSON --> END([返回])
+  PIPE --> END2[stream end → save + push → 返回]
+  ERR --> END3([返回错误])
 ```
 
-- MOCK：`proxy.ts:239-254`（`shouldMock` in `sse-writer.ts:50-68`）
-- JSON：`proxy.ts:296-333`
-- 注入命中/未命中缓冲：`proxy.ts:338-394`
-- 常规 SSE pipe：`proxy.ts:396-457`
+### `/api/chat` 分支（MCP 增强代理）
+
+```mermaid
+flowchart TD
+  START([POST /api/chat]) --> VALID{body 有 model + messages?}
+  VALID -- 否 --> 400[400 invalid_request]
+  VALID -- 是 --> SESSION[生成/复用 sessionId]
+
+  SESSION --> RESUME{x-chat-session-id 存在?}
+  RESUME -- 是 --> HISTORY[loadSessionHistory prepend]
+  RESUME -- 否 --> MODEL
+
+  HISTORY --> MODEL[getProxyModel tier rewrite]
+  MODEL --> INJECT[injectMcpTools MCP-only]
+  INJECT --> HEADER[filterForwardHeaders + x-chat-session-id]
+  HEADER --> MOCK{shouldMock?}
+  MOCK -- 是 --> MOCK_RESP[writeTextAsSSE 合成返回]
+
+  MOCK -- 否 --> FETCH[fetch 上游 /v1/messages]
+  FETCH --> CT{"content-type"}
+
+  CT -- application/json --> JSON_PATH[JSON 分支]
+  CT -- text/event-stream --> SSE_PATH[SSE 分支]
+
+  SSE_PATH --> PHASE1[Phase 1: SSEStreamProcessor<br/>边转发边增量解析]
+  PHASE1 --> STREAM_END[stream end → save DB 第 1 条]
+  STREAM_END --> HIT{hasInjectedToolUse?}
+  HIT -- 否 --> CLOSE[reply.raw.end]
+
+  HIT -- 是 --> PROXY_STATUS[writeSSEEvent proxy_status]
+  PROXY_STATUS --> LOOP[Phase 2: runStreamingInjectLoop]
+  LOOP --> LOOP_ITER{迭代: exec tool → fetch → stream forward → save DB}
+  LOOP_ITER --> NEXT{还有 tool_use?}
+  NEXT -- 否 --> CLOSE
+  NEXT -- 是 --> LOOP_ITER
+
+  MOCK_RESP --> END([返回])
+  JSON_PATH --> END2([返回 JSON + sessionId])
+  CLOSE --> END3([返回 SSE])
+```
+
+- `/v1/*` 纯代理：JSON（`proxy.ts:324-362`）、SSE pipe（`proxy.ts:364-426`）、Error（`proxy.ts:428-456`）
+- `/api/chat` 增强代理：详见 [chat-api.md](./proxy-core/chat-api.md)
 
 细节请转到 [proxy-core/proxy-forwarding.md](./proxy-core/proxy-forwarding.md)。
 
@@ -152,7 +231,7 @@ flowchart TD
 无论哪条分支，最后都会：
 
 1. 计算 `responseTime = Date.now() - startTime`（SSE 用 `end` 事件时刻）
-2. `saveRequestDB(sessionId, cloudRequestId, requestData)`：`INSERT OR REPLACE INTO requests` 完整字段（含 headers/body/events 都 JSON.stringify）
+2. `saveRequestDB(sessionId, cloudRequestId, requestData)`：`INSERT OR REPLACE INTO requests` 完整字段（含 headers/body/events/machine_id/base_url 都 JSON.stringify）
 3. `extractTokenUsage`：从 `message_delta` 事件的 `usage` 提取 Token（`request-writer.ts:50-54`）
 4. `pushNewRequest`：向 `data-push.ts` 的 `dataClients` 集合广播 JSON
 
@@ -172,10 +251,14 @@ flowchart TD
     "statusCode": 200,
     "responseTime": 3421,
     "model": "auto",
+    "machineId": "hostname-hash",
+    "baseUrl": "https://ark.cn-beijing.volces.com",
     "usage": { "input_tokens": ..., "output_tokens": ..., "cache_read_input_tokens": ..., "cache_creation_input_tokens": ... }
   }
 }
 ```
+
+**`/api/chat` 的 DB 记录特点**：一条请求可能产生 1~N 条记录。第 1 条保存原始 SSE events（与客户端收到的完全一致），每次 inject loop 迭代有独立 DB 记录。所有记录共享同一 `sessionId`。
 
 ## 面板端消费
 
@@ -200,6 +283,8 @@ flowchart TD
 | 日志 | 独立通道 `/ui/api/logs/stream` | — |
 | 配置 | REST only | `GET /ui/api/config` |
 | 供应商 | REST only | `GET /ui/api/providers` |
+| MCP servers | REST only | `GET /ui/api/mcp/servers` |
+| MCP tools | REST only | `GET /ui/api/mcp/tools` |
 
 首帧数据来自 `refreshAll()`（`useWebSocketData.ts:61-75`）并发 5 个 REST；WebSocket 建连后接管增量。
 
@@ -212,8 +297,9 @@ flowchart TD
 
 ## 相关文档
 
-- 五分支代码级说明 → [proxy-core/proxy-forwarding.md](./proxy-core/proxy-forwarding.md)
-- Tool 注入循环细节 → [proxy-core/tool-injection.md](./proxy-core/tool-injection.md)
+- `/v1/*` 纯代理路径 → [proxy-core/proxy-forwarding.md](./proxy-core/proxy-forwarding.md)
+- `/api/chat` 增强代理路径 → [proxy-core/chat-api.md](./proxy-core/chat-api.md)
+- Tool 注入 + MCP → [proxy-core/tool-injection.md](./proxy-core/tool-injection.md)
 - 供应商 `resolveProxyTarget` → [proxy-core/providers.md](./proxy-core/providers.md)
 - UI 端 REST/WebSocket 端点表 → [proxy-core/ui-routes.md](./proxy-core/ui-routes.md)
 - 面板消费 → [proxy-cli/data-hooks.md](./proxy-cli/data-hooks.md)

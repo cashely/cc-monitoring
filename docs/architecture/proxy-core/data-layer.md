@@ -34,6 +34,7 @@ graph LR
   V1 --> V2["v2: providers"]
   V2 --> V3["v3: ADD is_default"]
   V3 --> V4["v4: rebuild providers<br/>去掉 NOT NULL"]
+  V4 --> V5["v5: machine_id + mcp_servers"]
 ```
 
 `initDatabase()` 中的 4 个 `if (currentVersion < N)` 顺序应用，每次成功后 `INSERT OR REPLACE INTO schema_version` 更新版本号。冷启动新库会一次跑完 v1→v4；旧库按需增量。
@@ -124,6 +125,30 @@ CREATE UNIQUE INDEX idx_providers_name ON providers(name);
 
 条件触发，重复运行安全。
 
+### v5：`applySchemaV5`
+
+两步：
+
+1. **`machine_id` 列**：`PRAGMA table_info(requests)` 检测 `machine_id` 列是否存在，缺失则 `ALTER TABLE requests ADD COLUMN machine_id TEXT` + 创建索引 `idx_requests_machine_id`
+2. **`mcp_servers` 表**：
+
+```sql
+CREATE TABLE IF NOT EXISTS mcp_servers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT UNIQUE NOT NULL,
+  transport_type TEXT NOT NULL,    -- 'stdio' | 'sse' | 'streamable-http'
+  command TEXT,                     -- stdio transport 的命令
+  args TEXT,                        -- JSON array string
+  env TEXT,                         -- JSON object string
+  url TEXT,                         -- HTTP transport 的 URL
+  headers TEXT,                     -- JSON object string (auth headers)
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_name ON mcp_servers(name);
+```
+
 ## ER 图
 
 ```mermaid
@@ -141,6 +166,7 @@ erDiagram
     text proxy_api_key
     text base_url
     text model
+    text machine_id
     int input_tokens
     int output_tokens
     int cache_read_tokens
@@ -175,9 +201,22 @@ erDiagram
     text created_at
     text updated_at
   }
+  MCP_SERVERS {
+    int id PK
+    text name UK
+    text transport_type
+    text command
+    text args
+    text env
+    text url
+    text headers
+    int enabled
+    text created_at
+    text updated_at
+  }
 ```
 
-`STATS` 与 `REQUESTS` 无外键，靠 `stats-aggregator.ts` 定时 UPSERT 维持一致性。`PROVIDERS` 独立表，`REQUESTS.base_url` 只是快照，不是 FK。
+`STATS` 与 `REQUESTS` 无外键，靠 `stats-aggregator.ts` 定时 UPSERT 维持一致性。`PROVIDERS` 独立表，`REQUESTS.base_url` 只是快照，不是 FK。`MCP_SERVERS` 独立表，与 `PROVIDERS` 无关联——MCP server 是 tool provider，不是 API provider。
 
 ## `request-writer.ts` 三大函数
 

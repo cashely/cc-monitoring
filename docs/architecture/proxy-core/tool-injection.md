@@ -1,4 +1,4 @@
-# proxy-core / Tool 注入
+# proxy-core / Tool 注入 + MCP 动态 Tool
 
 ## 本文档覆盖的源文件
 
@@ -7,27 +7,41 @@
 - `apps/proxy-core/src/tools/registry.ts`
 - `apps/proxy-core/src/tools/curl.tool.ts`
 - `apps/proxy-core/src/tools/probe.tool.ts`
+- `apps/proxy-core/src/tools/mcp-bridge.ts`
 - `apps/proxy-core/src/utils/tool-injector.ts`
 - `apps/proxy-core/src/utils/inject-loop.ts`
+- `apps/proxy-core/src/utils/sse-stream-processor.ts`
 - `apps/proxy-core/src/utils/sse-writer.ts`
-- `apps/proxy-core/src/server/proxy.ts:260-394`
+- `apps/proxy-core/src/utils/mcp-manager.ts`
+- `apps/proxy-core/src/utils/mcp-db.ts`
+- `apps/proxy-core/src/server/chat-route.ts`
 
 ## 概念
 
-「Tool 注入」= 在 proxy 转发前把一些**自定义 tool** 追加到请求体的 `tools` 数组末尾。上游模型可能调用这些 tool；proxy 检测到命中后**在后端本地执行 exec**，把结果作为 `tool_result` 追加到对话，然后再次调用上游，直到模型给出最终文本，最后合成 SSE 回写给客户端。
+「Tool 注入」= 在 proxy 转发前把一些 **tool** 追加到请求体的 `tools` 数组末尾。上游模型可能调用这些 tool；proxy 检测到命中后**在后端本地执行 exec**，把结果作为 `tool_result` 追加到对话，然后再次调用上游，直到模型给出最终文本。
 
-对客户端（Claude Code）而言，这次调用看起来像一次普通的文本响应；实际上 proxy 已经代替客户端完成了若干轮工具调用。
+**注入路径分工**：
+
+| 路径 | 注入方式 | 说明 |
+|---|---|---|
+| `/v1/*` | 无注入 | 纯代理，不做任何请求体修改 |
+| `/api/chat` | `injectMcpTools` | 仅注入 MCP 动态 tool（不含 probe/curl） |
+
+对客户端而言，`/api/chat` 的 SSE 响应看起来像一次正常的流式响应；实际上 proxy 可能已经代替客户端完成了若干轮 MCP tool 调用，续接到同一 SSE 连接上。
 
 设计目标见 `docs/thinks/tool-plugin-injection-plan.md`（用户历史设计文档）。
 
-## 三层结构
+## 四层结构
 
 ```
-tools/registry.ts    →   注册表 ALL_TOOLS
-tools/*.tool.ts      →   单个 tool 定义（name + description + input_schema + enabled + exec）
-utils/tool-injector  →   在请求发送前追加到 body.tools
-utils/inject-loop    →   命中后的内部循环
-utils/sse-writer     →   合成 SSE 回写
+mcp-manager + mcp-db → MCP server 连接管理（发现 tool）
+mcp-bridge           → MCP tool → InjectableTool 转换（name prefix + exec 代理）
+tools/registry.ts    → 注册表 ALL_TOOLS（静态） + mcpManager.getMcpTools()（动态）
+tools/*.tool.ts      → 单个 tool 定义（name + description + input_schema + enabled + exec）
+utils/tool-injector  → injectMcpTools：在 /api/chat 发送前追加 MCP tools
+utils/inject-loop    → 命中后的内部循环（3 种：SSE buffered / SSE streaming / JSON）
+sse-stream-processor → 流式 SSE 增量解析 + 转发
+utils/sse-writer     → 合成 SSE 回写（mock / 旧版 buffered loop）
 ```
 
 ## `InjectableTool` 接口
@@ -87,29 +101,61 @@ PoC 验证工具。把 `enabled` 改成 `true` 后端到端跑一遍：
 
 给模型一个能拉本地服务的能力（本机 API 探测、开发调试）。响应文本截断到 2000 字符，避免灌爆上下文。
 
-## 注册表 `registry.ts`
+## 注册表 `registry.ts` — 静态 + 动态
 
 ```ts
-const ALL_TOOLS: InjectableTool[] = [probeTool, curlTool]
+const ALL_TOOLS: InjectableTool[] = [probeTool, curlTool]  // 静态本地 tool
 
-export function enabledTools(): InjectableTool[]  { return ALL_TOOLS.filter(t => t.enabled) }
-export function hasEnabledTools(): boolean        { return ALL_TOOLS.some(t => t.enabled) }
+function allKnownTools(): InjectableTool[] {
+  return [...ALL_TOOLS, ...mcpManager.getMcpTools()]  // 动态合并 MCP tools
+}
+
+export function enabledTools(): InjectableTool[]  { return allKnownTools().filter(t => t.enabled) }
+export function hasEnabledTools(): boolean        { return allKnownTools().some(t => t.enabled) }
 export function findEnabledTool(name): InjectableTool | undefined
 ```
 
-新增 tool：`tools/xxx.tool.ts` 导出 `InjectableTool` → 在 `ALL_TOOLS` 添一行 → 决定 `enabled` 初值。
+新增本地 tool：`tools/xxx.tool.ts` 导出 `InjectableTool` → 在 `ALL_TOOLS` 添一行 → 决定 `enabled` 初值。
+
+MCP tool 通过 `mcpManager.getMcpTools()` 动态合并——连接时发现，断开时消失。每次 `enabledTools()` / `hasEnabledTools()` / `findEnabledTool()` 调用都含当前已连接 MCP server 的 tool。
 
 `tools/index.ts` 是 barrel：`export { enabledTools, hasEnabledTools, findEnabledTool } from './registry.js'` + `export type { InjectableTool, ToolInputSchema } from './types.js'`。
 
-## `injectTools(body)`
+## MCP Tool Bridge (`mcp-bridge.ts`)
 
-`utils/tool-injector.ts:17-32`：
+`mcpToolToInjectable(mcpTool, serverName, client)` 把 MCP SDK 发现的 tool 转为 `InjectableTool`：
 
 ```ts
-if (!Array.isArray(body?.tools) || body.tools.length === 0) return []
+const prefixedName = `mcp__${serverName}__${mcpTool.name}`
+
+return {
+  name: prefixedName,
+  description: mcpTool.description || '',
+  input_schema: mcpTool.inputSchema,
+  enabled: true,
+  async exec(input) {
+    const result = await client.callTool({ name: mcpTool.name, arguments: input })  // 原始 name，无 prefix
+    // 从 result.content[] 提取 text 块，join 为字符串返回
+  }
+}
+```
+
+**Name prefix 设计**：`mcp__<serverName>__<toolName>` 避免 MCP tool 与本地 tool（probe/curl）name 冲突。`exec()` 调 `client.callTool` 时用**原始 name**（无 prefix），因为 MCP server 只认自己的 name。
+
+**exec 代理**：不是本地执行，而是远程调 MCP server。MCP server 返回 `content[]`（text 块 + 其它块），bridge 把 text 块 join 成字符串返回给 inject loop。
+
+## `injectMcpTools(body)` — MCP-only 注入
+
+`utils/tool-injector.ts:14-31`。仅用于 `/api/chat`。
+
+```ts
+if (!Array.isArray(body?.tools)) {
+  body.tools = []  // 裸请求也能用 MCP tool — 自动创建 tools 数组
+}
 
 const injected: string[] = []
-for (const tool of enabledTools()) {
+for (const tool of mcpManager.getMcpTools()) {  // 仅 MCP tools，不含 probe/curl
+  if (!tool.enabled) continue
   if (body.tools.some(t => t?.name === tool.name)) continue   // 幂等
   body.tools.push({ name: tool.name, description: tool.description, input_schema: tool.input_schema })
   injected.push(tool.name)
@@ -119,112 +165,125 @@ return injected
 
 ### 关键约束
 
-- **仅对主对话生效**：`body.tools` 非空数组才注入。辅助请求（子任务、抽取式请求）通常无 tools 字段，不动它避免破坏原有 model 约束
-- **追加到末尾**：Anthropic 按 `tools → system → messages` 顺序算前缀哈希，往中间或前面插会连带击穿 system prompt cache。追加末尾只让 tools 段末端缓存失效
+- **仅注入 MCP tools**：`mcpManager.getMcpTools()` 只返回当前已连接 MCP server 的 tool，不含 probe/curl。这是 `/api/chat` 的设计决策——MCP tool 是用户自配置的业务 tool，probe/curl 是开发调试 tool
+- **裸请求也能注入**：`body.tools` 不存在时自动创建空数组，让没有 tools 字段的请求也能使用 MCP tool（`/v1/*` 的旧 `injectTools` 要求 `body.tools` 非空才注入）
+- **追加到末尾**：Anthropic 按 `tools → system → messages` 顺序算前缀哈希，追加末尾只让 tools 段末端缓存失效
 - **幂等**：已存在同名 tool 就跳过
 - **仅写三件套**：exec/enabled 是本地状态，模型不需要知道
 
-## `hasEnabledTools()` 是分支门槛
+## `hasEnabledTools()` 是 `/v1/*` 的零影响保障
 
-`proxy.ts:263-269`：
+若 registry 中所有 tool 的 `enabled: false`（例如 probe 默认关、MCP server 断连），`hasEnabledTools()` return false，`/v1/*` 的转发路径完全等同纯代理——**零性能影响**。
+
+但 `/api/chat` **始终调用 `injectMcpTools`**，不依赖 `hasEnabledTools()` 判断。即使当前无 MCP tool 连接，`injectMcpTools` 也只是返回空数组（`injected = false`），代码正常执行。
+
+## 三种内部循环
+
+### `runInjectLoop`（SSE buffered — 旧版）
+
+`inject-loop.ts:129-159`。用于旧版 `/v1/*` 注入路径（现已移除）。保留供参考。
+
+流程：缓冲上游 SSE 全文 → 解析 → 检测命中 → 循环（exec tool → 追加对话 → callUpstream）→ 合成 SSE 回写。
+
+返回 `{ text, iterations, stoppedByLimit }`。`text` 是最终模型输出，由 `writeTextAsSSE` 合成到客户端。
+
+### `runStreamingInjectLoop`（SSE streaming — `/api/chat` 用）
+
+`inject-loop.ts:175-227`。**核心路径**——不缓冲，直接流式转发到同一 `reply.raw`。
 
 ```ts
-let injectedNames: string[] = []
-if (hasEnabledTools()) {
-  injectedNames = injectTools(request.body)
-  ...
-}
-const injected = injectedNames.length > 0
-```
-
-若 registry 中所有 tool 的 `enabled: false`（例如 probe 默认关、curl 也关掉），`hasEnabledTools()` 直接 return false，`injected` 永远是 false，转发路径完全等同于「常规 SSE pipe」——**零性能影响**。这是「零影响」的关键设计：不启用 tool 时代码路径与旧版一致。
-
-## 内部循环 `runInjectLoop`
-
-只在**响应是 SSE 且检测到注入 tool 命中**时启用。`utils/inject-loop.ts:127-157`：
-
-```ts
-export async function runInjectLoop(opts: {
-  events: any[]
+export async function runStreamingInjectLoop(opts: {
+  initialParsed: ParsedUpstream
   body: any
-  callUpstream: (body) => Promise<any[]>
+  callUpstream: (body) => Promise<{ response: Response, requestId: string }>
+  streamAndParse: (response) => Promise<{ processor: SSEStreamProcessor, statusCode: number }>
+  sessionId: string
+  saveIterationDB: (requestId, processor, statusCode, requestBody) => Promise<void>
+  raw: ServerResponse
   maxIterations?: number    // 默认 3
-}): Promise<InjectLoopResult>
+}): Promise<StreamingInjectLoopResult>
 ```
 
 流程：
 
 ```mermaid
 stateDiagram-v2
-  [*] --> Parse: parseUpstreamEvents(events)
-  Parse --> Check: findInjectedCall + stop_reason=tool_use?
-  Check --> Exec: 命中 & 未超轮次
-  Check --> Return: 未命中或 end_turn
-  Exec --> Append: body.messages.push({role:assistant, content:blocks})<br/>body.messages.push({role:user, content:[{type:tool_result, tool_use_id, content:result}]})
-  Append --> Upstream: callUpstream(body)
-  Upstream --> Parse: parseUpstreamEvents(newEvents)
-  Parse --> Check
-  Return --> [*]: {text, iterations, stoppedByLimit}
-  Check --> LimitReturn: 命中 & 到达轮次上限
-  LimitReturn --> [*]: text = "内部循环达到最大轮次"
+  [*] --> Check: findInjectedCall + stop_reason=tool_use?
+  Check --> Exec: 命中 & raw 未 destroy
+  Check --> Return: 未命中或 end_turn → {iterations}
+  Exec --> Append: body.messages.push(assistant + tool_result)
+  Append --> Upstream: callUpstream(body) → {response, requestId}
+  Upstream --> StreamParse: streamAndParse → SSEStreamProcessor<br/>流式转发到 raw
+  StreamParse --> Save: saveIterationDB → 独立 DB 记录
+  Save --> Check
+  Return --> [*]
 ```
 
-### 每步解析
+**与旧版 `runInjectLoop` 的核心区别**：
 
-1. `parseUpstreamEvents(events)`（`inject-loop.ts:43-87`）：从 SSE 事件流重建 `blocks[]` + `stopReason` + `usage`
-   - `content_block_start` → 建 block（记 type/id/name/init text 或 input）
-   - `content_block_delta` → 累加：`text_delta` 到 `text`；`thinking_delta` 到 `text`（同一容器，简化）；`input_json_delta` 到 `input` 字符串
-   - `message_delta` → 更新 `stopReason` 和 `usage`
-2. 最后把 `tool_use` block 的 `input` 字符串 JSON.parse 成对象（失败降级 `{}`）
-3. `findInjectedCall(parsed)`：找 `type === 'tool_use'` 且 `findEnabledTool(name)` 存在的 block
-4. 若无命中 or `stopReason !== 'tool_use'` → 结束，返回累积文本
-5. 命中且未超轮次：
-   - `tool.exec(call.input)` 得到 result 字符串
-   - `body.messages.push({role:'assistant', content: blocksToAssistantContent(blocks)})`
-   - `body.messages.push({role:'user', content: [{type:'tool_result', tool_use_id: call.id, content: result}]})`
-   - `callUpstream(body)` 再调一次上游
-   - 迭代
-6. 超轮次 → 返回 `text || '(内部循环达到最大轮次)'`, `stoppedByLimit: true`
+| | runInjectLoop（旧） | runStreamingInjectLoop（新） |
+|---|---|---|
+| 上游响应处理 | `await response.text()` 全量缓冲 | `SSEStreamProcessor` 流式转发 |
+| 客户端看到 | 合成 SSE（仅 text，`writeTextAsSSE`） | 原始 SSE（thinking + text + tool_use） |
+| DB 记录 | 原始 events 存第 1 条，loop 结果合并 | 原始 + 每次迭代独立记录 |
+| 返回值 | `{ text, iterations }` | `{ iterations }`（text 已实时流到客户端） |
+| 连接模式 | 缓冲完毕后一次性 `reply.raw.end()` | 同连接续接，`reply.raw.end()` 在最后 |
+| 客户端断连检测 | 无 | `raw.destroyed` 每次迭代前检查 |
+
+### `runJsonInjectLoop`（JSON — `/api/chat` 用）
+
+`inject-loop.ts:244-277`。处理非流式 JSON 响应中的 tool_use。
+
+```ts
+export async function runJsonInjectLoop(opts: {
+  initialBody: any
+  requestBody: any
+  callUpstream: (body) => Promise<any>  // 返回 parsed JSON body
+  maxIterations?: number
+}): Promise<JsonInjectLoopResult>
+```
+
+与 SSE streaming 版对称，但处理 parsed JSON response body 而非 SSE events。返回 `{ finalBody, iterations, stoppedByLimit }`。
 
 ### `blocksToAssistantContent`
 
-`inject-loop.ts:97-104`。只把 `text` 和 `tool_use` 块转成 API 格式，**跳过 thinking 块**——thinking 有 signature 校验（Anthropic 的 extended thinking API），把它塞回请求会引发不一致。用户可读文本被合并到 `text` 块。
+`inject-loop.ts:99-106`。三种 loop 共用——只把 `text` 和 `tool_use` 块转成 API 格式，**跳过 thinking 块**（Anthropic extended thinking 有 signature 校验）。
 
 ### `maxIterations = 3`
 
-护栏：tool 描述可能诱导模型反复调用同一 tool（例如 curl 说不清楚参数时）。3 轮后强制退出。
+三种 loop 共用护栏：tool 描述可能诱导模型反复调用同一 tool。3 轮后强制退出。
 
-## 缓冲检测（在 `proxy.ts` 内）
+## 缓冲检测 → 流式检测（`/api/chat` 用 SSEStreamProcessor）
 
-`proxy.ts:338-394`：
+`/v1/*` 不再有缓冲检测（纯代理）。`/api/chat` 的 SSE 路径统一处理：
 
-```ts
-if (injected && isSSE && response.body) {
-  const fullText = await response.text()
-  const events = parseSSEText(fullText)
-  requestData.response!.events = events
+1. **Phase 1**：`SSEStreamProcessor` 边转发原始 SSE 边增量解析，客户端实时收到与上游完全一致的流
+2. **Stream end**：`processor.hasInjectedToolUse()` 检测命中（`stopReason === 'tool_use'` + `findInjectedCall` 找到注入 tool）
+3. **Phase 2**（命中时）：发 `proxy_status` SSE 事件 + `runStreamingInjectLoop` 流式续接
 
-  const parsed = parseUpstreamEvents(events)
-  const hitInjected = findInjectedCall(parsed) && parsed.stopReason === 'tool_use'
+**不再缓冲上游响应**——这是与旧版的关键区别。旧版用 `await response.text()` 全量缓冲再检测；新版用 `SSEStreamProcessor` 实时解析，stream end 后检测。客户端始终收到原始 SSE（零延迟）。
 
-  reply.hijack()
+### SSEStreamProcessor
 
-  if (!hitInjected) {
-    reply.raw.writeHead(response.status, Object.fromEntries(response.headers))
-    reply.raw.end(fullText)     // 字节级原样回放
-  } else {
-    const loop = await runInjectLoop({ events, body: request.body, callUpstream })
-    reply.raw.writeHead(200, { 'content-type': 'text/event-stream', ... })
-    writeTextAsSSE(reply.raw, loop.text, `msg_inject_${cloudRequestId}`)
-    reply.raw.end()
-  }
-  ...
-}
+`sse-stream-processor.ts`：
+
+```
+SSEStreamProcessor
+├── raw: ServerResponse              // reply.raw，用于转发 chunk
+├── events: any[]                    // 解析出的 JSON 事件（供 DB 记录）
+├── contentBlocks: Map<number, ParsedBlock>  // 增量累积的 content block 状态
+├── stopReason: string               // 从 message_delta 捕获
+├── usage: any                       // 从 message_delta 捕获
+├── leftover: string                 // 跨 chunk 的不完整行缓冲
+│
+├── processChunk(chunk)              // raw.write(chunk) + 解析 data: 行 + processEvent
+├── flushLeftover()                  // stream end 后处理残留行
+├── processEvent(e)                  // 增量更新 contentBlocks/stopReason
+├── getParsedUpstream()              // 从累积状态构建 ParsedUpstream
+└── hasInjectedToolUse()             // stopReason=tool_use + findInjectedCall
 ```
 
-- 缓冲成本：一次响应完整占内存（对大响应有压力）
-- 未命中：字节级回放，客户端无感知
-- 命中：合成 SSE 只发一次文本，中间的 tool 调用序列不透传给客户端
+`processEvent` 逻辑与 `parseUpstreamEvents` 完全一致，改为逐事件调用。跨 chunk 行边界通过 `leftover` 缓冲处理。
 
 ## 合成 SSE `sse-writer.ts`
 
@@ -247,15 +306,18 @@ message_stop
 
 ## 与前端的关系
 
-前端**不知道**这次响应经历了几轮 tool 调用。请求历史面板里看到的是：
+前端**不知道** `/api/chat` 的 SSE 响应经历了几轮 tool 调用。请求历史面板里看到的是：
 
-- 请求 body 含原始 messages + 前端未见过的 tools 追加（`request_body` 字段保存的是原始 body，注入的 tools 也被写入——因为 `saveRequestDB` 保存的是修改后的对象）
-- `response_events` 是**首次**上游响应的 events；后续 tool 循环调用不再保存
-- `usage` 也只反映首次响应
+- `/v1/*` 请求：单条记录（原始请求 + events）
+- `/api/chat` 请求：可能 1~N 条记录（第 1 条 = 原始 SSE，第 2~N 条 = inject loop 迭代）
+- 所有记录共享同一 `sessionId`，通过 `compositeId = sessionId:requestId` 关联
+- `response_events` 与客户端实际收到的一致（原始 SSE 透传）
 
-这是当前实现的取舍：数据库里保存的是完整的第一次上游对话；tool 循环的内部消耗对客户端不可见，也对面板不可见。
+`/api/chat` 的 inject loop 迭代独立记录到 DB——与旧版（合并到第 1 条）不同，面板可以看到每次 tool 调用的详情。
 
 ## 相关文档
 
-- `proxy.ts` 五分支中的 tool 注入分支 → [proxy-forwarding.md](./proxy-forwarding.md#分支-3sse--tool-注入)
-- MOCK 分支使用同一 `sse-writer.ts` → [proxy-forwarding.md](./proxy-forwarding.md#分支-1mock)
+- `/api/chat` 的 tool 注入流程 → [chat-api.md](./chat-api.md)
+- `/v1/*` 纯代理路径 → [proxy-forwarding.md](./proxy-forwarding.md)
+- MCP server 管理 → [ui-routes.md](./ui-routes.md#mcp-server-管理-api)
+- 供应商 tier model → [providers.md](./providers.md)

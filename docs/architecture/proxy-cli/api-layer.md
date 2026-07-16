@@ -4,6 +4,7 @@
 
 - `apps/proxy-cli/src/api/index.ts`
 - `apps/proxy-cli/src/api/providers.ts`
+- `apps/proxy-cli/src/api/mcp.ts`
 
 前端与 proxy-core 唯一通信手段（除 WebSocket）就是这里的 REST 封装。全部用原生 `fetch`，无 axios。
 
@@ -95,7 +96,62 @@ const res = await fetch(`${API_BASE}/stats/today?since=${encodeURIComponent(midn
 
 ```ts
 export { fetchProviders, saveProviders } from './providers'
+export { fetchMcpServers, createMcpServer, updateMcpServer, deleteMcpServer, reconnectMcpServer, fetchMcpTools } from './mcp'
 ```
+
+## `api/mcp.ts` — MCP Server 管理接口
+
+### `fetchMcpServers`
+
+```ts
+GET /ui/api/mcp/servers  →  { servers: McpServerWithStatus[] }
+```
+
+每个 server 包含实时连接状态（connected/disconnected/connecting/not_connected/disabled）和 toolCount。
+
+### `createMcpServer(server: McpServerInput)`
+
+```ts
+POST /ui/api/mcp/servers
+Body: { server: McpServerInput }
+→ { success: boolean, server?: McpServerWithStatus, error?: string }
+```
+
+认证 required。McpServerInput 含 name, transport_type (stdio/sse/streamable-http), command, args, env, url, headers, enabled。
+
+### `updateMcpServer(id, input)`
+
+```ts
+PATCH /ui/api/mcp/servers/:id
+Body: Partial<McpServerInput>
+→ { success: boolean, server?: McpServerWithStatus, error?: string }
+```
+
+认证 required。更新后触发 mcpManager.reconnectServer。
+
+### `deleteMcpServer(id)`
+
+```ts
+DELETE /ui/api/mcp/servers/:id  →  { success: boolean, error?: string }
+```
+
+认证 required。先 disconnect 再清 DB。
+
+### `reconnectMcpServer(id)`
+
+```ts
+POST /ui/api/mcp/servers/:id/reconnect  →  { success: boolean, error?: string }
+```
+
+认证 required。手动重建连接。
+
+### `fetchMcpTools`
+
+```ts
+GET /ui/api/mcp/tools  →  { tools: McpTool[] }
+```
+
+列出所有已发现 MCP tool（name + description + input_schema）。
 
 ## `api/providers.ts` — 供应商接口
 
@@ -136,6 +192,8 @@ Destructive 全量替换。写接口，需要 Bearer 认证（但目前前端**�
 | 今日实时 | GET `/ui/api/stats/today` | `request` 消息到达时主动 GET |
 | 配置 | GET/POST `/ui/api/config` | 无 |
 | 供应商 | GET/POST `/ui/api/providers` | 无 |
+| MCP servers | GET/POST/PATCH/DELETE `/ui/api/mcp/servers` | 无 |
+| MCP tools | GET `/ui/api/mcp/tools` | 无 |
 | 进程控制 | POST `/ui/api/control` | 无 |
 | 日志 | 无 | `/ui/api/logs/stream` 专用通道 |
 

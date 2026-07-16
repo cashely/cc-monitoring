@@ -1,4 +1,6 @@
+import type { ServerResponse } from 'http'
 import { findEnabledTool } from '../tools/index.js'
+import type { SSEStreamProcessor } from './sse-stream-processor.js'
 
 /**
  * 内部循环（后端）——命中注入 tool 后，proxy 代行「执行 tool -> 追加对话 -> 再调上游」，
@@ -154,6 +156,74 @@ export async function runInjectLoop(opts: {
   }
 
   return { text: collectText(parsed) || '(内部循环达到最大轮次)', iterations, stoppedByLimit: true }
+}
+
+/**
+ * SSE 流式注入循环：命中已启用 tool → 执行 exec → 追加对话 → 再调上游 → 新 SSE 流式转发到同一 reply.raw。
+ * 每次迭代作为独立 DB 记录。客户端实时看到续接 SSE。
+ *
+ * 与 runInjectLoop 的区别：
+ * - 不缓冲上游响应，直接流式转发
+ * - 不返回合成 text，客户端已实时收到原始 SSE
+ * - 每次迭代用 SSEStreamProcessor 边转发边解析
+ */
+export interface StreamingInjectLoopResult {
+  iterations: number
+  stoppedByLimit: boolean
+}
+
+export async function runStreamingInjectLoop(opts: {
+  initialParsed: ParsedUpstream
+  body: any
+  callUpstream: (body: any) => Promise<{ response: Response, requestId: string }>
+  streamAndParse: (response: Response) => Promise<{ processor: SSEStreamProcessor, statusCode: number }>
+  sessionId: string
+  saveIterationDB: (requestId: string, processor: SSEStreamProcessor, statusCode: number, requestBody: any) => Promise<void>
+  raw: ServerResponse
+  maxIterations?: number
+}): Promise<StreamingInjectLoopResult> {
+  const maxIterations = opts.maxIterations ?? 3
+  let parsed = opts.initialParsed
+  let iterations = 0
+
+  while (iterations < maxIterations) {
+    if (opts.raw.destroyed) break
+
+    const call = findInjectedCall(parsed)
+    if (!call || parsed.stopReason !== 'tool_use') {
+      return { iterations, stoppedByLimit: false }
+    }
+
+    // 执行注入的 tool
+    const tool = findEnabledTool(call.name!)!
+    const result = await tool.exec(call.input)
+
+    // 追加 assistant + tool_result 消息
+    opts.body.messages.push({ role: 'assistant', content: blocksToAssistantContent(parsed.blocks) })
+    opts.body.messages.push({
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: call.id, content: result }]
+    })
+
+    // 调上游，获取流式响应
+    const { response, requestId } = await opts.callUpstream(opts.body)
+
+    // 流式转发到客户端 + 增量解析
+    const { processor, statusCode } = await opts.streamAndParse(response)
+
+    // 保存这次迭代到 DB
+    await opts.saveIterationDB(requestId, processor, statusCode, opts.body)
+
+    parsed = processor.getParsedUpstream()
+    processor.flushLeftover()
+    iterations++
+  }
+
+  const stoppedByLimit = iterations >= (opts.maxIterations ?? 3) &&
+    parsed.stopReason === 'tool_use' &&
+    !!findInjectedCall(parsed)
+
+  return { iterations, stoppedByLimit }
 }
 
 export interface JsonInjectLoopResult {
