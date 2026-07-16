@@ -33,13 +33,25 @@ export function RequestTable({
   const [hasMore, setHasMore] = useState(true)
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
 
-  // 合并新请求
+  // 合并新请求（处理 pending→completed 替换）
   useMemo(() => {
     setAllRequests(prev => {
-      const existingIds = new Set(prev.map(r => r.compositeId))
+      // 如果新请求中有 pendingId，先删 prev 中对应的 pending 行
+      const pendingIdsToRemove = new Set(
+        initialRequests.filter(r => r.pendingId).map(r => r.pendingId!)
+      )
+      let base = pendingIdsToRemove.size > 0
+        ? prev.filter(r => !pendingIdsToRemove.has(r.compositeId))
+        : prev
+
+      const existingIds = new Set(base.map(r => r.compositeId))
       const newRequests = initialRequests.filter(r => !existingIds.has(r.compositeId))
-      if (newRequests.length === 0) return prev
-      return [...newRequests, ...prev]
+      if (newRequests.length === 0 && pendingIdsToRemove.size === 0) return prev
+
+      // 新请求 + 保留的旧请求，按 timestamp 倒序
+      const merged = [...newRequests, ...base]
+      const sorted = merged.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+      return sorted
     })
   }, [initialRequests])
 
