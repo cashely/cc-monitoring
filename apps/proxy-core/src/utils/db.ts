@@ -67,6 +67,11 @@ export function initDatabase(): Database.Database {
     db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (5)').run()
   }
 
+  if (currentVersion < 6) {
+    applySchemaV6(db)
+    db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (6)').run()
+  }
+
   return db
 }
 
@@ -222,6 +227,25 @@ export function applySchemaV5(db: Database.Database) {
   }
   // Create index for machine_id
   db.exec(`CREATE INDEX IF NOT EXISTS idx_requests_machine_id ON requests(machine_id)`)
+}
+
+export function applySchemaV6(db: Database.Database) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS mcp_servers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT UNIQUE NOT NULL,
+      transport_type TEXT NOT NULL CHECK(transport_type IN ('stdio', 'sse', 'streamable-http')),
+      command TEXT,
+      args TEXT,
+      env TEXT,
+      url TEXT,
+      headers TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `)
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_name ON mcp_servers(name)')
 }
 
 export function closeDatabase() {

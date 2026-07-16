@@ -15,6 +15,7 @@ import { addDataClient, removeDataClient, pushStatsNotify } from './data-push.js
 import { getVersionInfo } from '../utils/version.js'
 import { getStatsData, getTodayStats } from '../utils/stats-aggregator.js'
 import { setupProvidersRoutes } from './providers-route.js'
+import { setupMcpRoutes } from './mcp-route.js'
 import { checkAuth } from './auth.js'
 
 // Exec API types
@@ -37,6 +38,9 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
 
   // Mount providers API routes
   await setupProvidersRoutes(fastify, config)
+
+  // Mount MCP server management routes
+  await setupMcpRoutes(fastify, config)
 
   // Create WebSocket server for log streaming (bypass @fastify/websocket issues)
   const wss = new WebSocketServer({ noServer: true })

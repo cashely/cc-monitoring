@@ -25,7 +25,17 @@ export const AppConfigSchema = z.object({
   }).optional().default({ type: 'sqlite', path: 'logs/proxy.db', maxDays: 7 }),
   auth: z.object({
     token: z.string().min(1)
-  }).optional()
+  }).optional(),
+  mcpServers: z.array(z.object({
+    name: z.string().min(1),
+    transport_type: z.enum(['stdio', 'sse', 'streamable-http']),
+    command: z.string().optional(),
+    args: z.array(z.string()).optional(),
+    env: z.record(z.string()).optional(),
+    url: z.string().optional(),
+    headers: z.record(z.string()).optional(),
+    enabled: z.boolean().default(true)
+  })).optional().default([])
 })
 
 export type AppConfig = z.infer<typeof AppConfigSchema>
