@@ -144,10 +144,15 @@ export function useWebSocketData(): {
             break
 
           case 'request':
-            if (msg.action === 'new') {
+            if (msg.action === 'new' || msg.action === 'update') {
               setRequests(prev => {
-                // 1. 去重：如果已存在相同 compositeId 的请求，先移除
-                const filtered = prev.filter(r => r.compositeId !== msg.data.compositeId)
+                // For 'update' with pendingId: remove the pending record first
+                let filtered = prev
+                if (msg.action === 'update' && msg.data.pendingId) {
+                  filtered = prev.filter(r => r.compositeId !== msg.data.pendingId)
+                }
+                // 去重：如果已存在相同 compositeId 的请求，先移除
+                filtered = filtered.filter(r => r.compositeId !== msg.data.compositeId)
                 // 2. 添加新请求
                 const withNew = [msg.data, ...filtered]
                 // 3. 按 timestamp 倒序排序（确保时间顺序正确）

@@ -18,6 +18,8 @@ export interface RequestSummary {
   machineId?: string
   baseUrl?: string
   usage?: TokenUsage
+  status?: 'pending' | 'completed'
+  pendingId?: string  // compositeId of the pending record to replace
 }
 
 export interface RequestDetails {

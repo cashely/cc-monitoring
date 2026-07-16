@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo } from 'react'
 import { Table, TableProps, Button, Checkbox, Tag } from 'antd'
-import { GitCompareArrows } from 'lucide-react'
+import { GitCompareArrows, Loader2 } from 'lucide-react'
 import { RequestSummary } from '../types/request'
 import { MethodTag } from './MethodTag'
 import { ModelTag } from './ModelTag'
@@ -125,6 +125,13 @@ export function RequestTable({
       width: 200,
       render: (value: string, record: any) => (
         <div className="flex items-center gap-2" style={{ minWidth: 0 }}>
+          {record.status === 'pending' && (
+            <Loader2
+              size={14}
+              className="flex-shrink-0 animate-spin"
+              style={{ color: 'var(--color-text-muted)' }}
+            />
+          )}
           <Tag
             className="flex-shrink-0"
             style={{
