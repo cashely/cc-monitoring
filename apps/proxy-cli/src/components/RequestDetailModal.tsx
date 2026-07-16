@@ -4,7 +4,7 @@ import { CloseOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { RequestDetails } from '../types/request'
 import { Tabs } from './Tabs'
-import { ShikiHighlighter } from './ShikiHighlighter'
+import { JsonHighlighter } from './JsonHighlighter'
 import { ParsedResponseBlocks } from './ParsedResponseBlocks'
 
 interface RequestDetailModalProps {
@@ -89,7 +89,7 @@ export function RequestDetailModal({
               defaultTab="reqHeaders"
               children={{
                 reqHeaders: details.request.headers ? (
-                  <ShikiHighlighter
+                  <JsonHighlighter
                     code={JSON.stringify(details.request.headers, null, 2)}
                     lang="json"
                   />
@@ -97,7 +97,7 @@ export function RequestDetailModal({
                   <span className="text-text-muted">无数据</span>
                 ),
                 reqBody: details.request.body ? (
-                  <ShikiHighlighter
+                  <JsonHighlighter
                     code={JSON.stringify(details.request.body, null, 2)}
                     lang="json"
                   />
@@ -105,7 +105,7 @@ export function RequestDetailModal({
                   <span className="text-text-muted">无数据</span>
                 ),
                 resHeaders: details.response?.headers ? (
-                  <ShikiHighlighter
+                  <JsonHighlighter
                     code={JSON.stringify(details.response.headers, null, 2)}
                     lang="json"
                   />
@@ -124,7 +124,7 @@ export function RequestDetailModal({
                           <span className="text-text-muted text-xs block mb-1">
                             #{i + 1} {event.type ?? 'unknown'}
                           </span>
-                          <ShikiHighlighter
+                          <JsonHighlighter
                             code={JSON.stringify(event, null, 2)}
                             lang="json"
                           />

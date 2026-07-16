@@ -3,9 +3,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { RequestCard } from './RequestCard'
 import { RequestSummary } from '../types/request'
 
-// Mock ShikiHighlighter so tests don't need real shiki runtime
-vi.mock('./ShikiHighlighter', () => ({
-  ShikiHighlighter: ({ code }: { code: string }) => (
+// Mock JsonHighlighter so tests don't need real highlight.js runtime
+vi.mock('./JsonHighlighter', () => ({
+  JsonHighlighter: ({ code }: { code: string }) => (
     <pre>{code}</pre>
   )
 }))
