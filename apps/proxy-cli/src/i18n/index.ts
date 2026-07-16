@@ -8,6 +8,7 @@ import zhStatus from './locales/zh/status.json'
 import zhLog from './locales/zh/log.json'
 import zhConfig from './locales/zh/config.json'
 import zhProviders from './locales/zh/providers.json'
+import zhMcp from './locales/zh/mcp.json'
 
 import enCommon from './locales/en/common.json'
 import enApp from './locales/en/app.json'
@@ -15,6 +16,7 @@ import enStatus from './locales/en/status.json'
 import enLog from './locales/en/log.json'
 import enConfig from './locales/en/config.json'
 import enProviders from './locales/en/providers.json'
+import enMcp from './locales/en/mcp.json'
 
 i18n
   .use(LanguageDetector)
@@ -27,7 +29,8 @@ i18n
         status: zhStatus,
         log: zhLog,
         config: zhConfig,
-        providers: zhProviders
+        providers: zhProviders,
+        mcp: zhMcp
       },
       en: {
         common: enCommon,
@@ -35,11 +38,12 @@ i18n
         status: enStatus,
         log: enLog,
         config: enConfig,
-        providers: enProviders
+        providers: enProviders,
+        mcp: enMcp
       }
     },
     fallbackLng: 'zh',
-    ns: ['common', 'app', 'status', 'log', 'config', 'providers'],
+    ns: ['common', 'app', 'status', 'log', 'config', 'providers', 'mcp'],
     defaultNS: 'common',
     interpolation: {
       escapeValue: false

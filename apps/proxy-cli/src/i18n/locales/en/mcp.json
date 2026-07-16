@@ -1,0 +1,55 @@
+{
+  "heading": "MCP Server Management",
+  "label": {
+    "name": "Name",
+    "transportType": "Transport Type",
+    "command": "Command",
+    "args": "Arguments",
+    "env": "Environment",
+    "url": "URL",
+    "headers": "Headers",
+    "enabled": "Enabled",
+    "status": "Status",
+    "toolCount": "Tools",
+    "tools": "Tool List",
+    "action": "Action"
+  },
+  "transportType": {
+    "stdio": "STDIO",
+    "sse": "SSE",
+    "streamableHttp": "Streamable HTTP"
+  },
+  "status": {
+    "connected": "Connected",
+    "disconnected": "Disconnected",
+    "connecting": "Connecting",
+    "notConnected": "Not Connected",
+    "disabled": "Disabled"
+  },
+  "action": {
+    "add": "Add Server",
+    "edit": "Edit",
+    "delete": "Delete",
+    "reconnect": "Reconnect",
+    "close": "Close",
+    "save": "Save",
+    "saving": "Saving...",
+    "toggleEnabled": "Toggle Enabled"
+  },
+  "message": {
+    "createdSuccess": "Server created successfully",
+    "updatedSuccess": "Server updated successfully",
+    "deletedSuccess": "Server deleted successfully",
+    "reconnecting": "Reconnecting...",
+    "reconnectSuccess": "Reconnected successfully",
+    "networkError": "Network error",
+    "confirmDelete": "Are you sure you want to delete this MCP server?"
+  },
+  "modal": {
+    "addTitle": "Add MCP Server",
+    "editTitle": "Edit MCP Server",
+    "transportHint": "Select transport type and fill in the corresponding configuration"
+  },
+  "empty": "No MCP servers configured",
+  "refresh": "Refresh"
+}
