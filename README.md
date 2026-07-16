@@ -1,6 +1,6 @@
-# CC Monitoring - Claude Code 代理监控系统
+# CC Monitoring
 
-> 一站式解决国内开发者使用 Claude Code 的网络问题，提供完整的请求监控、日志分析、用户管理和系统配置能力。一行命令启动，多界面管理，让 Claude Code 访问无障碍。
+> Claude Code 代理工具 + Token 消耗监控面板。一行命令启动代理，实时追踪每一次请求的模型、Token 用量和响应状态，让你对 Claude Code 的使用情况一目了然。
 
 ## 主题配置
 
@@ -139,21 +139,16 @@ proxy-cli 采用 Glassmorphism 设计风格，支持**暗黑主题（默认）**
 [![License: Apache-2.0][license-badge]][license-link]
 
 ## 为什么需要这个项目
-Claude Code 直接访问 Anthropic API 在国内网络环境下受限。CC Monitoring 在本地启动一个 Fastify 代理服务器，将所有请求透明转发到阿里云中转服务，同时提供完整的请求监控、日志流、用户管理、权限控制等企业级能力。你只需要改一个 API endpoint 配置，其余一切照旧。
+使用 Claude Code 时，你无法直观看到每次请求花了多少 Token、调用了哪个模型、响应耗时多久。CC Monitoring 在本地启动一个代理服务，Claude Code 的所有请求都经过它转发到上游 API，同时实时记录和展示每一笔 Token 消耗，让你精准掌控成本和用量。
 
 ## 功能特性
-- **代理转发** -- 透明转发 Claude Code 请求到阿里云 API，支持 `changeOrigin` 和路径重写
-- **完整请求记录** -- 记录请求 headers、body + 响应 headers、SSE events（支持阿里云格式）
-- **PM2 进程管理** -- start / stop / reload / status，生产级守护进程
+- **代理转发** -- 透明转发 Claude Code 请求到上游 API，支持多供应商切换和路径重写
+- **Token 消耗监控** -- 实时追踪每次请求的模型、Token 用量（input/output）、响应耗时
+- **请求历史** -- 完整记录请求 headers、body + 响应 SSE events，支持回放和对比
+- **Web 监控面板** -- 一站式仪表盘：状态监控、日志流、请求历史、Token 统计、配置编辑、供应商管理
+- **多供应商管理** -- 同时配置多个 AI 供应商（base_url + api_key + 模型档位），一键切换
 - **CLI 工具** -- 8 个命令覆盖日常运维（start, stop, status, logs, config, reload, test, ui）
-- **WebSocket 日志流** -- 实时推送代理日志到浏览器，支持级别过滤和关键字搜索
-- **双 Web UI 管理面板**：
-  - **Proxy 管理面板** -- 状态监控、日志查看、请求历史、配置编辑、供应商管理
-  - **系统管理后台** -- 用户管理、权限控制、全局监控、系统配置
-- **Zod 配置校验** -- 启动前自动校验 `~/.cc-monitoring/config.json`，错误配置不会上线
-- **认证保护** -- 配置修改 API 支持 Bearer Token 认证，防止未授权改动
-- **多供应商支持** -- 同时管理多个 AI 供应商配置，支持一键切换
-- **请求统计** -- 统计请求次数、Token 消耗、成功率等核心指标
+- **PM2 进程守护** -- 生产级进程管理，自动重启、内存限制、优雅 reload
 
 ## 快速开始
 **前提条件**: Node.js 18+, pnpm 8+
