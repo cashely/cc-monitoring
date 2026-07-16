@@ -12,11 +12,11 @@ export function removeDataClient(ws: WebSocket): void {
 }
 
 // Broadcast helpers
-export function pushNewRequest(summary: any): void {
+export function pushNewRequest(summary: any, status: 'pending' | 'completed' = 'completed'): void {
   broadcast({
     type: 'request',
-    action: 'new',
-    data: summary
+    action: status === 'pending' ? 'new' : 'update',
+    data: { ...summary, status }
   })
 }
 

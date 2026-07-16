@@ -292,6 +292,22 @@ export async function setupProxy(
 
       request.log.info(`request logged: ${request.id} ${request.method} ${request.url}`)
 
+      // Save initial record + push pending status to frontend
+      await saveRequestDB(sessionId, request.id, requestData)
+      pushNewRequest({
+        requestId: request.id,
+        sessionId,
+        compositeId: `${sessionId}:${request.id}`,
+        method: request.method,
+        path: request.url,
+        timestamp: requestData.timestamp,
+        statusCode: 0,
+        responseTime: 0,
+        model: forwardedModel,
+        machineId,
+        baseUrl: resolved.baseUrl
+      }, 'pending')
+
       // Build target URL correctly
       // request.url = '/v1/messages' -> should become '/apps/anthropic/v1/messages'
       const targetUrlStr = `${resolved.baseUrl}${resolved.targetPath}${request.url}`
@@ -333,6 +349,13 @@ export async function setupProxy(
         }
 
         requestData.response!.completedAt = new Date().toISOString()
+
+        // Remove pending row if cloudRequestId differs from request.id
+        if (cloudRequestId !== request.id) {
+          const db = getDatabase()
+          db.prepare('DELETE FROM requests WHERE request_id = ? AND session_id = ?').run(request.id, sessionId)
+        }
+
         await saveRequestDB(sessionId, cloudRequestId, requestData)
 
         const usage = extractTokenUsage(requestData.response!.events)
@@ -348,13 +371,12 @@ export async function setupProxy(
           model: forwardedModel,
           machineId,
           baseUrl: resolved.baseUrl,
-          usage
-        })
+          usage,
+          pendingId: cloudRequestId !== request.id ? `${sessionId}:${request.id}` : undefined
+        }, 'completed')
 
         const elapsed = Date.now() - startTime
         request.log.info(`json response: ${cloudRequestId} ${response.status} (${elapsed}ms)`)
-
-        // Send response to client
         reply.code(response.status)
         reply.headers(Object.fromEntries(response.headers))
         reply.send(responseBody)
@@ -401,6 +423,12 @@ export async function setupProxy(
           const elapsed = Date.now() - startTime
           requestData.response!.completedAt = new Date().toISOString()
 
+          // Remove pending row if cloudRequestId differs from request.id
+          if (cloudRequestId !== request.id) {
+            const db = getDatabase()
+            db.prepare('DELETE FROM requests WHERE request_id = ? AND session_id = ?').run(request.id, sessionId)
+          }
+
           await saveRequestDB(sessionId, cloudRequestId, requestData)
 
           const usage = extractTokenUsage(requestData.response!.events)
@@ -415,8 +443,9 @@ export async function setupProxy(
             responseTime: elapsed,
             model: forwardedModel,
             machineId,
-            usage
-          })
+            usage,
+            pendingId: cloudRequestId !== request.id ? `${sessionId}:${request.id}` : undefined
+          }, 'completed')
 
           request.log.info(`stream completed: ${cloudRequestId} ${response.status} (${elapsed}ms, ${requestData.response!.events!.length} events)`)
         })
@@ -446,7 +475,7 @@ export async function setupProxy(
         model: originalModel,
         machineId: getMachineIdSync() ?? undefined,
         baseUrl: resolved.baseUrl
-      })
+      }, 'completed')
 
       const statusCode = getErrorStatusCode(error)
       reply.code(statusCode).send({

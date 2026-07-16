@@ -6,7 +6,7 @@ import { loadConfig } from '../config/index.js'
 import { saveRequestDB, extractTokenUsage, type RequestData, loadSessionHistory } from '../utils/request-writer.js'
 import { cleanOldRequestsDB } from '../utils/request-writer.js'
 import { pushNewRequest } from './data-push.js'
-import { initDatabase } from '../utils/db.js'
+import { initDatabase, getDatabase } from '../utils/db.js'
 import { resolveProxyTarget, getProxyModel, filterForwardHeaders, extractSafeHeaders } from './proxy.js'
 import { injectMcpTools } from '../utils/tool-injector.js'
 import { runInjectLoop, parseSSEText, parseUpstreamEvents, findInjectedCall, runJsonInjectLoop, runStreamingInjectLoop } from '../utils/inject-loop.js'
@@ -114,6 +114,22 @@ export async function setupChatRoute(
     }
 
     await cleanOldRequestsDB(maxDays)
+
+    // Save initial record + push pending status to frontend
+    await saveRequestDB(sessionId, request.id, requestData)
+    pushNewRequest({
+      requestId: request.id,
+      sessionId,
+      compositeId: `${sessionId}:${request.id}`,
+      method: request.method,
+      path: request.url,
+      timestamp: requestData.timestamp,
+      statusCode: 0,
+      responseTime: 0,
+      model: forwardedModel,
+      machineId,
+      baseUrl: resolved.baseUrl
+    }, 'pending')
 
     // Mock interception (PoC)
     if (shouldMock(request.body)) {
@@ -223,7 +239,7 @@ export async function setupChatRoute(
                   machineId,
                   baseUrl: resolved.baseUrl,
                   usage: loopUsage
-                })
+                }, 'completed')
               }
               return loopJson || JSON.parse(loopResponseBody)
             }
@@ -232,6 +248,13 @@ export async function setupChatRoute(
           request.log.info(`[chat] json loop done: ${loopResult.iterations} iter (${cloudRequestId})`)
 
           requestData.response!.completedAt = new Date().toISOString()
+
+          // Remove pending row if cloudRequestId differs from request.id
+          if (cloudRequestId !== request.id) {
+            const db = getDatabase()
+            db.prepare('DELETE FROM requests WHERE request_id = ? AND session_id = ?').run(request.id, sessionId)
+          }
+
           await saveRequestDB(sessionId, cloudRequestId, requestData)
 
           const usage = extractTokenUsage(requestData.response!.events)
@@ -247,10 +270,10 @@ export async function setupChatRoute(
             model: forwardedModel,
             machineId,
             baseUrl: resolved.baseUrl,
-            usage
-          })
+            usage,
+            pendingId: cloudRequestId !== request.id ? `${sessionId}:${request.id}` : undefined
+          }, 'completed')
 
-          // Send final loop result with session ID
           const finalBody = { ...loopResult.finalBody, _sessionId: sessionId }
           reply.code(200).header('x-chat-session-id', sessionId).send(JSON.stringify(finalBody))
           return
@@ -259,6 +282,13 @@ export async function setupChatRoute(
 
       // Normal JSON passthrough
       requestData.response!.completedAt = new Date().toISOString()
+
+      // Remove pending row if cloudRequestId differs from request.id
+      if (cloudRequestId !== request.id) {
+        const db = getDatabase()
+        db.prepare('DELETE FROM requests WHERE request_id = ? AND session_id = ?').run(request.id, sessionId)
+      }
+
       await saveRequestDB(sessionId, cloudRequestId, requestData)
 
       const usage = extractTokenUsage(requestData.response!.events)
@@ -274,8 +304,9 @@ export async function setupChatRoute(
         model: forwardedModel,
         machineId,
         baseUrl: resolved.baseUrl,
-        usage
-      })
+        usage,
+        pendingId: cloudRequestId !== request.id ? `${sessionId}:${request.id}` : undefined
+      }, 'completed')
 
       // Inject session ID into response for passthrough
       try {
@@ -311,6 +342,13 @@ export async function setupChatRoute(
         // 保存原始请求到 DB
         requestData.response!.events = processor.events
         requestData.response!.completedAt = new Date().toISOString()
+
+        // Remove pending row if cloudRequestId differs from request.id
+        if (cloudRequestId !== request.id) {
+          const db = getDatabase()
+          db.prepare('DELETE FROM requests WHERE request_id = ? AND session_id = ?').run(request.id, sessionId)
+        }
+
         await saveRequestDB(sessionId, cloudRequestId, requestData)
 
         const usage = extractTokenUsage(requestData.response!.events)
@@ -326,8 +364,9 @@ export async function setupChatRoute(
           model: forwardedModel,
           machineId,
           baseUrl: resolved.baseUrl,
-          usage
-        })
+          usage,
+          pendingId: cloudRequestId !== request.id ? `${sessionId}:${request.id}` : undefined
+        }, 'completed')
 
         request.log.info(`[chat] stream completed: ${cloudRequestId} ${response.status} (${Date.now() - startTime}ms, ${processor.events.length} events)`)
 
@@ -402,7 +441,7 @@ export async function setupChatRoute(
                 machineId,
                 baseUrl: resolved.baseUrl,
                 usage: loopUsage
-              })
+              }, 'completed')
             },
             raw: reply.raw
           })
