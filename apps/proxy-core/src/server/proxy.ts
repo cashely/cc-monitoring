@@ -443,6 +443,7 @@ export async function setupProxy(
             responseTime: elapsed,
             model: forwardedModel,
             machineId,
+            baseUrl: resolved.baseUrl,
             usage,
             pendingId: cloudRequestId !== request.id ? `${sessionId}:${request.id}` : undefined
           }, 'completed')
