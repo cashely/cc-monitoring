@@ -17,6 +17,27 @@ interface RequestTableProps {
 
 const PAGE_SIZE = 100
 
+// Session 颜色轮询 palette（亮色，白色文字可读，暗/亮主题均适用）
+const SESSION_PALETTE = [
+  '#3B82F6', // blue
+  '#10B981', // emerald
+  '#F59E0B', // amber
+  '#06B6D4', // cyan
+  '#8B5CF6', // violet
+  '#EC4899', // pink
+  '#14B8A6', // teal
+  '#6366F1', // indigo
+]
+
+function getSessionColor(sessionId: string): string {
+  // 简单确定性 hash：charCode 累加 → palette 轮询
+  let hash = 0
+  for (let i = 0; i < sessionId.length; i++) {
+    hash = (hash * 31 + sessionId.charCodeAt(i)) | 0
+  }
+  return SESSION_PALETTE[Math.abs(hash) % SESSION_PALETTE.length]
+}
+
 function truncateSessionId(sessionId: string, length: number): string {
   return sessionId.length > length ? `${sessionId.slice(0, length)}...` : sessionId
 }
@@ -135,51 +156,54 @@ export function RequestTable({
       dataIndex: 'sessionId',
       key: 'sessionId',
       width: 200,
-      render: (value: string, record: any) => (
-        <div className="flex items-center gap-2" style={{ minWidth: 0 }}>
-          {record.status === 'pending' && (
-            <Loader2
-              size={14}
-              className="flex-shrink-0 animate-spin"
-              style={{ color: 'var(--color-text-muted)' }}
-            />
-          )}
-          <Tag
-            className="flex-shrink-0"
-            style={{
-              width: 20,
-              height: 20,
-              minWidth: 20,
-              padding: 0,
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderRadius: '50%',
-              fontSize: 11,
-              fontWeight: 600,
-              border: 'none',
-              background: 'var(--color-secondary)',
-              color: '#fff',
-            }}
-          >
-            {record.sequence}
-          </Tag>
-          <span
-            className="text-xs font-mono"
-            style={{
-              color: 'var(--color-text-muted)',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              maxWidth: 130,
-              display: 'inline-block',
-            }}
-            title={value}
-          >
-            {truncateSessionId(value, 16)}
-          </span>
-        </div>
-      ),
+      render: (value: string, record: any) => {
+        const sessionColor = getSessionColor(value)
+        return (
+          <div className="flex items-center gap-2" style={{ minWidth: 0 }}>
+            {record.status === 'pending' && (
+              <Loader2
+                size={14}
+                className="flex-shrink-0 animate-spin"
+                style={{ color: sessionColor }}
+              />
+            )}
+            <Tag
+              className="flex-shrink-0"
+              style={{
+                width: 20,
+                height: 20,
+                minWidth: 20,
+                padding: 0,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: '50%',
+                fontSize: 11,
+                fontWeight: 600,
+                border: 'none',
+                background: sessionColor,
+                color: '#fff',
+              }}
+            >
+              {record.sequence}
+            </Tag>
+            <span
+              className="text-xs font-mono"
+              style={{
+                color: sessionColor,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                maxWidth: 130,
+                display: 'inline-block',
+              }}
+              title={value}
+            >
+              {truncateSessionId(value, 16)}
+            </span>
+          </div>
+        )
+      },
     },
     {
       title: '时间',
