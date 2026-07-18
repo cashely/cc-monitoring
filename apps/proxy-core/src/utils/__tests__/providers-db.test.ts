@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3'
-import { applySchemaV2, applySchemaV3 } from '../db.js'
+import { applySchemaV2, applySchemaV3, applySchemaV7 } from '../db.js'
 import {
   listProviders,
   saveProviders,
@@ -19,6 +19,7 @@ describe('providers-db', () => {
     db.exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)`)
     applySchemaV2(db)
     applySchemaV3(db)
+    applySchemaV7(db)
   })
 
   afterEach(() => {
