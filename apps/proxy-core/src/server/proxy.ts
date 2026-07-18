@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { Readable } from 'stream'
+import { convertClaudeToOpenAIRequest, convertOpenAIToClaudeResponse, createStreamTransformer, buildOpenAIHeaders } from '../utils/openai-converter.js'
 import { ProxyConfig } from '../types/config.js'
 import { loadConfig } from '../config/index.js'
 import { saveRequestDB, extractTokenUsage, type RequestData } from '../utils/request-writer.js'
@@ -313,6 +314,158 @@ export async function setupProxy(
         baseUrl: resolved.baseUrl
       }, 'pending')
 
+      // --- OpenAI Compatible Mode ---
+      if (resolved.is_openai_compatible) {
+        const openaiRequest = convertClaudeToOpenAIRequest(request.body, forwardedModel)
+        const openaiHeaders = buildOpenAIHeaders(resolved.apiKey || '')
+
+        // Build target URL: /chat/completions for OpenAI format
+        const targetUrlStr = `${resolved.baseUrl}${resolved.targetPath}/chat/completions`
+
+        request.log.info(`forwarding (openai mode) to: ${targetUrlStr}`)
+
+        // Forward converted request to OpenAI-compatible API
+        const response = await fetch(targetUrlStr, {
+          method: request.method,
+          headers: openaiHeaders,
+          body: JSON.stringify(openaiRequest)
+        })
+
+        request.log.info(`response status: ${response.status}`)
+
+        // Extract cloud request ID
+        const cloudRequestId = response.headers.get('x-request-id') || request.id
+        requestData.requestId = cloudRequestId
+
+        requestData.response!.statusCode = response.status
+        requestData.response!.headers = Object.fromEntries(response.headers)
+
+        // Check response type
+        const contentType = response.headers.get('content-type') || ''
+        const isSSE = contentType.includes('text/event-stream')
+        const isJSON = contentType.includes('application/json')
+
+        // Handle non-streaming JSON response
+        if (isJSON && !isSSE && response.body) {
+          const responseBody = await response.text()
+          let claudeResponseBody: string
+
+          try {
+            const openaiRes = JSON.parse(responseBody)
+            const claudeRes = convertOpenAIToClaudeResponse(openaiRes, forwardedModel || originalModel)
+            claudeResponseBody = JSON.stringify(claudeRes)
+            requestData.response!.events!.push(claudeRes)
+          } catch {
+            claudeResponseBody = responseBody
+            try {
+              requestData.response!.events!.push(JSON.parse(responseBody))
+            } catch {
+              requestData.response!.events!.push({ raw: responseBody })
+            }
+          }
+
+          requestData.response!.completedAt = new Date().toISOString()
+
+          if (cloudRequestId !== request.id) {
+            const db = getDatabase()
+            db.prepare('DELETE FROM requests WHERE request_id = ? AND session_id = ?').run(request.id, sessionId)
+          }
+
+          await saveRequestDB(sessionId, cloudRequestId, requestData)
+
+          const usage = extractTokenUsage(requestData.response!.events)
+          pushNewRequest({
+            requestId: cloudRequestId,
+            sessionId,
+            compositeId: `${sessionId}:${cloudRequestId}`,
+            method: request.method,
+            path: request.url,
+            timestamp: requestData.timestamp,
+            statusCode: response.status,
+            responseTime: Date.now() - startTime,
+            model: forwardedModel,
+            machineId,
+            baseUrl: resolved.baseUrl,
+            usage,
+            pendingId: cloudRequestId !== request.id ? `${sessionId}:${request.id}` : undefined
+          }, 'completed')
+
+          const elapsed = Date.now() - startTime
+          request.log.info(`json response (openai): ${cloudRequestId} ${response.status} (${elapsed}ms)`)
+          reply.code(200).headers({ 'Content-Type': 'application/json' }).send(claudeResponseBody)
+          return
+        }
+
+        // Handle SSE streaming response
+        reply.hijack()
+
+        const responseHeaders = Object.fromEntries(response.headers)
+        // Replace content-type with Claude SSE format
+        responseHeaders['content-type'] = 'text/event-stream'
+        reply.raw.writeHead(response.status, responseHeaders)
+
+        if (response.body) {
+          const nodeStream = Readable.fromWeb(response.body as any)
+          const transformStream = createStreamTransformer(forwardedModel || originalModel)
+
+          // Record raw OpenAI SSE events for monitoring
+          nodeStream.on('data', (chunk: Buffer) => {
+            const text = chunk.toString()
+            const lines = text.split('\n')
+            for (const line of lines) {
+              if (line.startsWith('data:')) {
+                const eventData = line.slice(5).trim()
+                if (eventData && eventData !== '[DONE]') {
+                  try {
+                    const event = JSON.parse(eventData)
+                    requestData.response!.events!.push(event)
+                  } catch {
+                    // Not valid JSON, skip
+                  }
+                }
+              }
+            }
+          })
+
+          nodeStream.on('end', async () => {
+            const elapsed = Date.now() - startTime
+            requestData.response!.completedAt = new Date().toISOString()
+
+            if (cloudRequestId !== request.id) {
+              const db = getDatabase()
+              db.prepare('DELETE FROM requests WHERE request_id = ? AND session_id = ?').run(request.id, sessionId)
+            }
+
+            await saveRequestDB(sessionId, cloudRequestId, requestData)
+
+            const usage = extractTokenUsage(requestData.response!.events)
+            pushNewRequest({
+              requestId: cloudRequestId,
+              sessionId,
+              compositeId: `${sessionId}:${cloudRequestId}`,
+              method: request.method,
+              path: request.url,
+              timestamp: requestData.timestamp,
+              statusCode: response.status,
+              responseTime: elapsed,
+              model: forwardedModel,
+              machineId,
+              baseUrl: resolved.baseUrl,
+              usage,
+              pendingId: cloudRequestId !== request.id ? `${sessionId}:${request.id}` : undefined
+            }, 'completed')
+
+            request.log.info(`stream completed (openai): ${cloudRequestId} ${response.status} (${elapsed}ms, ${requestData.response!.events!.length} events)`)
+          })
+
+          // Pipe: OpenAI SSE → Transform → Claude SSE → Client
+          nodeStream.pipe(transformStream).pipe(reply.raw)
+        }
+
+        return
+      }
+
+      // --- Claude Mode (existing direct forwarding) ---
       // Build target URL correctly
       // request.url = '/v1/messages' -> should become '/apps/anthropic/v1/messages'
       const targetUrlStr = `${resolved.baseUrl}${resolved.targetPath}${request.url}`
