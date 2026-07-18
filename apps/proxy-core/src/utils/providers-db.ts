@@ -42,11 +42,23 @@ const REQUIRED_FIELDS: (keyof ProviderInput)[] = ['name', 'provider']
 export function listProviders(db: Database.Database): Provider[] {
   const rows = db.prepare(
     'SELECT * FROM providers ORDER BY created_at DESC'
-  ).all() as (Provider & { is_default: number; is_openai_compatible: number })[]
-  return rows.map(r => {
-    const { is_default, is_openai_compatible, ...rest } = r
-    return { ...rest, default: !!is_default, is_openai_compatible: !!is_openai_compatible }
-  })
+  ).all() as any[]
+  return rows.map(r => ({
+    id: r.id,
+    name: r.name,
+    base_url: r.base_url,
+    api_key: r.api_key,
+    model: r.model,
+    haiku_model: r.haiku_model,
+    sonnet_model: r.sonnet_model,
+    opus_model: r.opus_model,
+    subagent_model: r.subagent_model,
+    provider: r.provider,
+    default: !!r.is_default,
+    is_openai_compatible: !!r.is_openai_compatible,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+  }))
 }
 
 /**
