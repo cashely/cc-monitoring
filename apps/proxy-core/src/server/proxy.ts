@@ -392,7 +392,7 @@ export async function setupProxy(
 
           const elapsed = Date.now() - startTime
           request.log.info(`json response (openai): ${cloudRequestId} ${response.status} (${elapsed}ms)`)
-          reply.code(200).headers({ 'Content-Type': 'application/json' }).send(claudeResponseBody)
+          reply.code(response.status).headers({ 'Content-Type': 'application/json' }).send(claudeResponseBody)
           return
         }
 
@@ -427,9 +427,24 @@ export async function setupProxy(
             }
           })
 
+          nodeStream.on('error', (err) => {
+            request.log.error(`openai stream error: ${err.message}`)
+          })
+
           nodeStream.on('end', async () => {
             const elapsed = Date.now() - startTime
             requestData.response!.completedAt = new Date().toISOString()
+
+            // Convert OpenAI stream usage to Claude format for extractTokenUsage compatibility
+            const lastChunk = requestData.response!.events!.find((e: any) => e?.usage)
+            if (lastChunk?.usage) {
+              requestData.response!.events!.push({
+                type: 'message_delta',
+                usage: {
+                  output_tokens: lastChunk.usage.completion_tokens || 0
+                }
+              })
+            }
 
             if (cloudRequestId !== request.id) {
               const db = getDatabase()
