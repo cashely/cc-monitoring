@@ -10,6 +10,7 @@ export interface Provider {
   subagent_model?: string | null
   provider: string
   default: boolean
+  is_openai_compatible?: boolean
   created_at: string
   updated_at: string
 }
@@ -25,6 +26,7 @@ export interface ProviderInput {
   subagent_model?: string
   provider: string
   default?: boolean
+  is_openai_compatible?: boolean
 }
 
 export interface ProviderValidationError {

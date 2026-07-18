@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Button, Tooltip } from 'antd'
+import { Button, Tooltip, Checkbox } from 'antd'
 import { CloseOutlined, DeleteOutlined, CheckOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { fetchProviders, saveProviders } from '../api/providers'
@@ -20,7 +20,8 @@ const EMPTY_ROW: ProviderInput = {
   opus_model: '',
   subagent_model: '',
   provider: '',
-  default: false
+  default: false,
+  is_openai_compatible: false
 }
 
 const FIELDS: Array<{ key: keyof ProviderInput; i18nKey: string }> = [
@@ -32,7 +33,8 @@ const FIELDS: Array<{ key: keyof ProviderInput; i18nKey: string }> = [
   { key: 'sonnet_model', i18nKey: 'providers:label.sonnetModel' },
   { key: 'opus_model', i18nKey: 'providers:label.opusModel' },
   { key: 'subagent_model', i18nKey: 'providers:label.subagentModel' },
-  { key: 'provider', i18nKey: 'providers:label.provider' }
+  { key: 'provider', i18nKey: 'providers:label.provider' },
+  { key: 'is_openai_compatible', i18nKey: 'providers:label.openaiCompatible' }
 ]
 
 function providerToInput(p: Provider): ProviderInput {
@@ -46,7 +48,8 @@ function providerToInput(p: Provider): ProviderInput {
     opus_model: p.opus_model ?? '',
     subagent_model: p.subagent_model ?? '',
     provider: p.provider,
-    default: p.default
+    default: p.default,
+    is_openai_compatible: p.is_openai_compatible ?? false
   }
 }
 
@@ -108,7 +111,7 @@ export function ProviderManagerModal({ isOpen, onClose }: ProviderManagerModalPr
     setRows(rows.map((row, i) => ({ ...row, default: i === index })))
   }
 
-  const handleFieldChange = (index: number, field: keyof ProviderInput, value: string) => {
+  const handleFieldChange = (index: number, field: keyof ProviderInput, value: string | boolean) => {
     setRows(rows.map((row, i) => i === index ? { ...row, [field]: value } : row))
   }
 
@@ -163,12 +166,19 @@ export function ProviderManagerModal({ isOpen, onClose }: ProviderManagerModalPr
                 <tr key={rowIndex} className="border-b border-border/50">
                   {FIELDS.map(f => (
                     <td key={f.key} className="px-1 py-1">
-                      <input
-                        type="text"
-                        value={row[f.key]}
-                        onChange={(e) => handleFieldChange(rowIndex, f.key, e.target.value)}
-                        className="w-full px-2 py-1 rounded border border-border bg-bg-secondary text-text-primary focus:border-primary focus:outline-none transition-colors text-xs"
-                      />
+                      {f.key === 'is_openai_compatible' ? (
+                        <Checkbox
+                          checked={!!row[f.key]}
+                          onChange={(e) => handleFieldChange(rowIndex, f.key, e.target.checked)}
+                        />
+                      ) : (
+                        <input
+                          type="text"
+                          value={row[f.key] as string}
+                          onChange={(e) => handleFieldChange(rowIndex, f.key, e.target.value)}
+                          className="w-full px-2 py-1 rounded border border-border bg-bg-secondary text-text-primary focus:border-primary focus:outline-none transition-colors text-xs"
+                        />
+                      )}
                     </td>
                   ))}
                   <td className="px-1 py-1 whitespace-nowrap flex gap-1">
