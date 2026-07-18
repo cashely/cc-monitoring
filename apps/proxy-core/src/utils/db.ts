@@ -72,6 +72,11 @@ export function initDatabase(): Database.Database {
     db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (6)').run()
   }
 
+  if (currentVersion < 7) {
+    applySchemaV7(db)
+    db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (7)').run()
+  }
+
   return db
 }
 
@@ -246,6 +251,14 @@ export function applySchemaV6(db: Database.Database) {
     )
   `)
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_name ON mcp_servers(name)')
+}
+
+export function applySchemaV7(db: Database.Database) {
+  // Add is_openai_compatible column for OpenAI format conversion toggle
+  const columns = db.prepare("PRAGMA table_info(providers)").all() as { name: string }[]
+  if (!columns.some(c => c.name === 'is_openai_compatible')) {
+    db.exec('ALTER TABLE providers ADD COLUMN is_openai_compatible INTEGER NOT NULL DEFAULT 0')
+  }
 }
 
 export function closeDatabase() {

@@ -12,6 +12,7 @@ export interface Provider {
   subagent_model: string | null
   provider: string
   default: boolean
+  is_openai_compatible: boolean
   created_at: string
   updated_at: string
 }
@@ -27,6 +28,7 @@ export interface ProviderInput {
   subagent_model?: string
   provider: string
   default?: boolean
+  is_openai_compatible?: boolean
 }
 
 export interface ProviderValidationError {
@@ -40,10 +42,10 @@ const REQUIRED_FIELDS: (keyof ProviderInput)[] = ['name', 'provider']
 export function listProviders(db: Database.Database): Provider[] {
   const rows = db.prepare(
     'SELECT * FROM providers ORDER BY created_at DESC'
-  ).all() as (Provider & { is_default: number })[]
+  ).all() as (Provider & { is_default: number; is_openai_compatible: number })[]
   return rows.map(r => {
-    const { is_default, ...rest } = r
-    return { ...rest, default: !!is_default }
+    const { is_default, is_openai_compatible, ...rest } = r
+    return { ...rest, default: !!is_default, is_openai_compatible: !!is_openai_compatible }
   })
 }
 
@@ -57,8 +59,8 @@ export function listProviders(db: Database.Database): Provider[] {
 export function saveProviders(db: Database.Database, providers: ProviderInput[]): void {
   const deleteAll = db.prepare('DELETE FROM providers')
   const insertOne = db.prepare(`
-    INSERT INTO providers (name, base_url, api_key, model, haiku_model, sonnet_model, opus_model, subagent_model, provider, is_default)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO providers (name, base_url, api_key, model, haiku_model, sonnet_model, opus_model, subagent_model, provider, is_default, is_openai_compatible)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   const transaction = db.transaction(() => {
@@ -74,7 +76,8 @@ export function saveProviders(db: Database.Database, providers: ProviderInput[])
         p.opus_model && p.opus_model.trim() !== '' ? p.opus_model : null,
         p.subagent_model && p.subagent_model.trim() !== '' ? p.subagent_model : null,
         p.provider,
-        p.default ? 1 : 0
+        p.default ? 1 : 0,
+        p.is_openai_compatible ? 1 : 0
       )
     }
   })

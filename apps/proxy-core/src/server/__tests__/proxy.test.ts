@@ -85,7 +85,7 @@ describe('resolveProxyTarget', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     db = new Database(':memory:')
-    db.exec(`CREATE TABLE providers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, base_url TEXT, api_key TEXT, model TEXT, haiku_model TEXT, sonnet_model TEXT, opus_model TEXT, subagent_model TEXT, provider TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`)
+    db.exec(`CREATE TABLE providers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, base_url TEXT, api_key TEXT, model TEXT, haiku_model TEXT, sonnet_model TEXT, opus_model TEXT, subagent_model TEXT, provider TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0, is_openai_compatible INTEGER NOT NULL DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`)
     getDatabase.mockReturnValue(db)
   })
 
@@ -118,5 +118,23 @@ describe('resolveProxyTarget', () => {
     expect(result.baseUrl).toBe('https://config.example.com')
     expect(result.targetPath).toBe('/apps/anthropic')
     expect(result.apiKey).toBe('config-key')
+  })
+
+  test('returns is_openai_compatible from active provider', () => {
+    db.prepare('INSERT INTO providers (name, base_url, api_key, model, provider, is_default, is_openai_compatible) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+      'openai-provider', 'https://api.openai.com/v1', 'openai-key', 'gpt-4', 'openai', 1, 1
+    )
+
+    const result = resolveProxyTarget(config)
+    expect(result.is_openai_compatible).toBe(true)
+  })
+
+  test('returns is_openai_compatible as false when not set', () => {
+    db.prepare('INSERT INTO providers (name, base_url, api_key, model, provider, is_default, is_openai_compatible) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+      'claude-provider', 'https://provider.example.com/v1', 'provider-key', 'test-model', 'anthropic', 1, 0
+    )
+
+    const result = resolveProxyTarget(config)
+    expect(result.is_openai_compatible).toBe(false)
   })
 })
