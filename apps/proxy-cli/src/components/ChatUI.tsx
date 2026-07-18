@@ -1,10 +1,12 @@
-import { useRef, useEffect, useState, useMemo } from 'react'
+import { useState, useMemo } from 'react'
 import { Bubble, Sender, CodeHighlighter, Mermaid } from '@ant-design/x'
 import XMarkdown, { type ComponentProps } from '@ant-design/x-markdown'
 import { RobotOutlined, UserOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { useChat } from '../hooks/useChat'
 import { ChatToolbar } from './ChatToolbar'
+
+const QUICK_PROMPTS = ['chat.quickQ1', 'chat.quickQ2', 'chat.quickQ3'] as const
 
 const Code: React.FC<ComponentProps> = (props) => {
   const { className, children } = props
@@ -20,14 +22,7 @@ const Code: React.FC<ComponentProps> = (props) => {
 export function ChatUI(): JSX.Element {
   const { t } = useTranslation('app')
   const { messages, loading, error, sendMessage, newConversation } = useChat()
-  const listRef = useRef<HTMLDivElement>(null)
   const [inputValue, setInputValue] = useState('')
-
-  useEffect(() => {
-    if (listRef.current) {
-      listRef.current.scrollTop = listRef.current.scrollHeight
-    }
-  }, [messages])
 
   const handleSubmit = (content: string) => {
     if (!content.trim()) return
@@ -56,10 +51,25 @@ export function ChatUI(): JSX.Element {
 
   return (
     <div className="glass rounded-xl overflow-hidden flex flex-col h-101.25">
-      <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto px-4 py-2">
+      <div className="flex-1 min-h-0 px-4 py-2">
         {messages.length === 0 && (
-          <div className="flex items-center justify-center h-full text-text-muted text-xs">
-            {t('chat.placeholder')}
+          <div className="flex flex-col items-center justify-center h-full gap-3">
+            <div className="w-10 h-10 rounded-full flex items-center justify-center bg-secondary/20">
+              <RobotOutlined style={{ fontSize: '20px', color: 'var(--chat-assistant-accent)' }} />
+            </div>
+            <div className="text-text-primary text-sm font-medium">{t('chat.emptyTitle')}</div>
+            <div className="text-text-muted text-xs">{t('chat.emptyDesc')}</div>
+            <div className="flex gap-2 mt-1">
+              {QUICK_PROMPTS.map((key) => (
+                <button
+                  key={key}
+                  className="glass rounded-lg px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors cursor-pointer"
+                  onClick={() => sendMessage(t(key))}
+                >
+                  {t(key)}
+                </button>
+              ))}
+            </div>
           </div>
         )}
         <Bubble.List
@@ -70,7 +80,7 @@ export function ChatUI(): JSX.Element {
               avatar: (
                 <RobotOutlined
                   style={{
-                    backgroundColor: '#3B82F6',
+                    backgroundColor: 'var(--chat-avatar-assistant)',
                     color: '#fff',
                     borderRadius: '50%',
                     padding: '4px',
@@ -85,7 +95,7 @@ export function ChatUI(): JSX.Element {
               avatar: (
                 <UserOutlined
                   style={{
-                    backgroundColor: '#10B981',
+                    backgroundColor: 'var(--chat-avatar-user)',
                     color: '#fff',
                     borderRadius: '50%',
                     padding: '4px',
@@ -108,7 +118,7 @@ export function ChatUI(): JSX.Element {
         </div>
       )}
 
-      <div className="glass-strong p-2">
+      <div className="glass-strong p-2 flex flex-col gap-1.5">
         <ChatToolbar onNewConversation={newConversation} />
         <Sender
           value={inputValue}

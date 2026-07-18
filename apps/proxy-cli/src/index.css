@@ -84,17 +84,47 @@
   --blob-accent: rgba(16, 185, 129, 0.06);
 }
 
-/* Chat semantic tokens - reference primitives for global theme switching */
+/* Chat semantic tokens - role-based color distinction */
 :root {
-  --chat-bubble-bg: rgba(15, 23, 42, 0.7);
+  /* Shared */
   --chat-text-color: var(--color-text-primary);
-  --chat-input-bg: rgba(15, 23, 42, 0.6);
+
+  /* Assistant: blue identity */
+  --chat-assistant-bg: rgba(15, 23, 42, 0.75);
+  --chat-assistant-border: rgba(59, 130, 246, 0.15);
+  --chat-assistant-accent: var(--color-secondary);
+  --chat-avatar-assistant: var(--color-secondary);
+
+  /* User: amber identity */
+  --chat-user-bg: rgba(217, 119, 6, 0.12);
+  --chat-user-border: rgba(217, 119, 6, 0.25);
+  --chat-user-accent: var(--color-accent);
+  --chat-avatar-user: var(--color-accent);
+
+  /* Input */
+  --chat-input-bg: rgba(15, 23, 42, 0.5);
+  --chat-input-border: rgba(148, 163, 184, 0.15);
 }
 
 .light {
-  --chat-bubble-bg: rgba(255, 255, 255, 0.7);
+  /* Shared */
   --chat-text-color: var(--color-text-primary);
-  --chat-input-bg: rgba(255, 255, 255, 0.6);
+
+  /* Assistant: blue identity */
+  --chat-assistant-bg: rgba(255, 255, 255, 0.85);
+  --chat-assistant-border: rgba(59, 130, 246, 0.2);
+  --chat-assistant-accent: var(--color-secondary);
+  --chat-avatar-assistant: var(--color-secondary);
+
+  /* User: amber identity */
+  --chat-user-bg: rgba(217, 119, 6, 0.08);
+  --chat-user-border: rgba(217, 119, 6, 0.15);
+  --chat-user-accent: var(--color-accent);
+  --chat-avatar-user: var(--color-accent);
+
+  /* Input */
+  --chat-input-bg: rgba(255, 255, 255, 0.5);
+  --chat-input-border: rgba(148, 163, 184, 0.2);
 }
 
 /* Glassmorphism Utilities */
@@ -163,12 +193,26 @@
 .chat-bubble-list .ant-bubble.ant-bubble-end .ant-bubble-avatar {
   align-self: flex-end;
 }
-.ant-bubble-content-filled {
-  background-color: var(--chat-bubble-bg) !important;
+
+/* Assistant bubble - blue identity */
+.ant-bubble.ant-bubble-start .ant-bubble-content-filled {
+  background-color: var(--chat-assistant-bg) !important;
   color: var(--chat-text-color) !important;
   backdrop-filter: blur(12px);
-  border: 1px solid var(--glass-border) !important;
+  border: 1px solid var(--chat-assistant-border) !important;
+  border-left: 2px solid var(--chat-assistant-accent) !important;
 }
+
+/* User bubble - amber identity */
+.ant-bubble.ant-bubble-end .ant-bubble-content-filled {
+  background-color: var(--chat-user-bg) !important;
+  color: var(--chat-text-color) !important;
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--chat-user-border) !important;
+  border-right: 2px solid var(--chat-user-accent) !important;
+}
+
+/* Fallback: non-filled bubbles */
 .ant-bubble-content {
   color: var(--chat-text-color) !important;
 }
@@ -176,14 +220,16 @@
 .ant-bubble-footer {
   color: var(--chat-text-color) !important;
 }
+/* Sender input area - visual affordance + focus ring */
 .ant-sender {
-  border: none !important;
-  box-shadow: none !important;
-  background-color: transparent !important;
+  background-color: var(--chat-input-bg) !important;
+  border: 1px solid var(--chat-input-border) !important;
+  border-radius: 8px !important;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease !important;
 }
 .ant-sender:focus-within {
-  box-shadow: none !important;
-  border-color: transparent !important;
+  border-color: var(--chat-assistant-accent) !important;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15) !important;
 }
 .ant-sender .ant-input {
   background-color: transparent !important;
@@ -192,6 +238,21 @@
 }
 .ant-sender .ant-input::placeholder {
   color: var(--color-text-muted) !important;
+}
+
+/* Chat toolbar buttons - hover feedback */
+.chat-toolbar-btn {
+  color: var(--color-text-secondary);
+  transition: color 0.15s ease, background-color 0.15s ease !important;
+  border-radius: 6px;
+}
+.chat-toolbar-btn:hover {
+  color: var(--chat-assistant-accent);
+  background-color: var(--color-bg-hover);
+}
+.chat-toolbar-btn:active {
+  color: var(--color-text-primary);
+  opacity: 0.7;
 }
 
 /* Custom utility classes for calc heights */

@@ -44,8 +44,9 @@ export function ChatToolbar({ onNewConversation }: ChatToolbarProps) {
   return (
     <div className="flex items-center gap-2 px-2 py-1">
       <Tooltip title={t('chat.newConversation')}>
-        <Button type="text" icon={<PlusOutlined />} onClick={onNewConversation} size="small" />
+        <Button type="text" icon={<PlusOutlined />} onClick={onNewConversation} size="small" className="chat-toolbar-btn" />
       </Tooltip>
+      <div className="w-px h-4 bg-border" />
       <Tooltip title={t('chat.uploadFile')}>
         <Button
           type="text"
@@ -53,6 +54,7 @@ export function ChatToolbar({ onNewConversation }: ChatToolbarProps) {
           onClick={handleUploadClick}
           loading={uploading}
           size="small"
+          className="chat-toolbar-btn"
         />
       </Tooltip>
       <input

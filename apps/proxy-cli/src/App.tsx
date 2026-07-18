@@ -54,7 +54,7 @@ export function App(): JSX.Element {
           <div className="flex-1">
             <StatsBarChart stats={stats} todayStats={todayStats} />
           </div>
-          <div className="w-96">
+          <div className="w-[420px]">
             <ChatUI />
           </div>
         </div>
