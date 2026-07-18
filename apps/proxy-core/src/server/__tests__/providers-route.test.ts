@@ -46,15 +46,16 @@ jest.mock('@utils/db', () => {
     CREATE TABLE IF NOT EXISTS providers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT UNIQUE NOT NULL,
-      base_url TEXT NOT NULL,
-      api_key TEXT NOT NULL,
-      model TEXT NOT NULL,
+      base_url TEXT,
+      api_key TEXT,
+      model TEXT,
       haiku_model TEXT,
       sonnet_model TEXT,
       opus_model TEXT,
       subagent_model TEXT,
       provider TEXT NOT NULL,
       is_default INTEGER NOT NULL DEFAULT 0,
+      is_openai_compatible INTEGER NOT NULL DEFAULT 0,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
