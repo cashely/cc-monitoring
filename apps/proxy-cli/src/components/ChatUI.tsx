@@ -1,10 +1,10 @@
 import { useRef, useEffect, useState, useMemo } from 'react'
 import { Bubble, Sender, CodeHighlighter, Mermaid } from '@ant-design/x'
 import XMarkdown, { type ComponentProps } from '@ant-design/x-markdown'
-import { Button, Tooltip } from 'antd'
-import { PlusOutlined, RobotOutlined, UserOutlined } from '@ant-design/icons'
+import { RobotOutlined, UserOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { useChat } from '../hooks/useChat'
+import { ChatToolbar } from './ChatToolbar'
 
 const Code: React.FC<ComponentProps> = (props) => {
   const { className, children } = props
@@ -108,20 +108,16 @@ export function ChatUI(): JSX.Element {
         </div>
       )}
 
-      <div className="">
-        <div className="glass-strong p-2 flex items-center gap-2">
-          <Tooltip title={t('chat.newConversation')}>
-            <Button type="text" icon={<PlusOutlined />} onClick={newConversation} size="small" />
-          </Tooltip>
-          <Sender
-            value={inputValue}
-            onChange={setInputValue}
-            onSubmit={handleSubmit}
-            placeholder={t('chat.placeholder')}
-            loading={loading}
-            style={{ flex: 1 }}
-          />
-        </div>
+      <div className="glass-strong p-2">
+        <ChatToolbar onNewConversation={newConversation} />
+        <Sender
+          value={inputValue}
+          onChange={setInputValue}
+          onSubmit={handleSubmit}
+          placeholder={t('chat.placeholder')}
+          loading={loading}
+          style={{ flex: 1 }}
+        />
       </div>
     </div>
   )
