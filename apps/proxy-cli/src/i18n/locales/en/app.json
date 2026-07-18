@@ -46,6 +46,10 @@
     "newConversation": "New Chat",
     "send": "Send",
     "loading": "Thinking...",
-    "errorPrefix": "Error: "
+    "errorPrefix": "Error: ",
+    "uploadFile": "Upload File",
+    "uploadSuccess": "File uploaded and converted to .md format",
+    "uploadError": "Upload failed: {{error}}",
+    "uploadUnsupported": "Unsupported file type"
   }
 }

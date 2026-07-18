@@ -48,6 +48,10 @@
     "newConversation": "新对话",
     "send": "发送",
     "loading": "思考中...",
-    "errorPrefix": "错误："
+    "errorPrefix": "错误：",
+    "uploadFile": "上传文件",
+    "uploadSuccess": "文件已上传并转换为 .md 格式",
+    "uploadError": "上传失败：{{error}}",
+    "uploadUnsupported": "不支持的文件类型"
   }
 }
