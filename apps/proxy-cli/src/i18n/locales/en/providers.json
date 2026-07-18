@@ -10,6 +10,7 @@
     "opusModel": "Opus",
     "subagentModel": "Subagent",
     "provider": "Provider",
+    "openaiCompatible": "OpenAI Compatible",
     "action": "Action"
   },
   "action": {
