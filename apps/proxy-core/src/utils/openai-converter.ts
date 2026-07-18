@@ -32,7 +32,7 @@ interface ClaudeMessage {
 interface ClaudeMessagesRequest {
   model: string
   messages: ClaudeMessage[]
-  system?: string
+  system?: string | Array<{ type: 'text'; text: string }>
   max_tokens: number
   stop_sequences?: string[]
   stream?: boolean
@@ -109,7 +109,12 @@ export function convertClaudeToOpenAIRequest(
   const openaiMessages: OpenAIMessage[] = []
 
   if (claudeRequest.system) {
-    openaiMessages.push({ role: 'system', content: claudeRequest.system })
+    const systemContent = typeof claudeRequest.system === 'string'
+      ? claudeRequest.system
+      : Array.isArray(claudeRequest.system)
+        ? claudeRequest.system.map((block: any) => block.type === 'text' ? block.text : '').join('\n')
+        : String(claudeRequest.system)
+    openaiMessages.push({ role: 'system', content: systemContent })
   }
 
   for (const message of claudeRequest.messages) {
