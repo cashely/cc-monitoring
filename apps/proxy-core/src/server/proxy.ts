@@ -27,6 +27,7 @@ interface ResolvedTarget {
   haiku_model?: string
   sonnet_model?: string
   opus_model?: string
+  is_openai_compatible?: boolean
 }
 
 /**
@@ -46,6 +47,7 @@ export function resolveProxyTarget(proxyConfig: ProxyConfig): ResolvedTarget {
   let haiku_model: string | undefined
   let sonnet_model: string | undefined
   let opus_model: string | undefined
+  let is_openai_compatible: boolean | undefined
 
   try {
     // Parse config target as base
@@ -55,8 +57,8 @@ export function resolveProxyTarget(proxyConfig: ProxyConfig): ResolvedTarget {
 
     const db = getDatabase()
     const active = db.prepare(
-      'SELECT base_url, api_key, model, haiku_model, sonnet_model, opus_model FROM providers WHERE is_default = 1 LIMIT 1'
-    ).get() as { base_url: string | null, api_key: string | null, model: string | null, haiku_model: string | null, sonnet_model: string | null, opus_model: string | null } | undefined
+      'SELECT base_url, api_key, model, haiku_model, sonnet_model, opus_model, is_openai_compatible FROM providers WHERE is_default = 1 LIMIT 1'
+    ).get() as { base_url: string | null, api_key: string | null, model: string | null, haiku_model: string | null, sonnet_model: string | null, opus_model: string | null, is_openai_compatible: number | null } | undefined
 
     if (active) {
       // Replace base_url only if provided
@@ -76,6 +78,9 @@ export function resolveProxyTarget(proxyConfig: ProxyConfig): ResolvedTarget {
       if (active.haiku_model && active.haiku_model.trim() !== '') haiku_model = active.haiku_model
       if (active.sonnet_model && active.sonnet_model.trim() !== '') sonnet_model = active.sonnet_model
       if (active.opus_model && active.opus_model.trim() !== '') opus_model = active.opus_model
+
+      // Populate is_openai_compatible
+      is_openai_compatible = !!active.is_openai_compatible
     }
   } catch {
     // DB not initialized yet, read error, or URL parse error - fall back to config
@@ -84,7 +89,7 @@ export function resolveProxyTarget(proxyConfig: ProxyConfig): ResolvedTarget {
     targetPath = configUrl.pathname.replace(/\/$/, '')
   }
 
-  return { baseUrl, targetPath, apiKey, model, haiku_model, sonnet_model, opus_model }
+  return { baseUrl, targetPath, apiKey, model, haiku_model, sonnet_model, opus_model, is_openai_compatible }
 }
 
 /**
