@@ -1,208 +1,99 @@
-### Task 2: Server exec endpoint 扩展 — sessionId 支持
+### Task 2: DocxLoader + XlsxLoader + 注册
 
 **Files:**
-- Modify: `apps/proxy-core/src/server/ui-route.ts:19-30,234-373`
+- Create: `apps/proxy-core/src/parsers/docx-loader.ts`
+- Create: `apps/proxy-core/src/parsers/xlsx-loader.ts`
+- Modify: `apps/proxy-core/src/parsers/index.ts`
 
 **Interfaces:**
-- Consumes: none
-- Produces:
-  - `ExecRequestBody.sessionId?: string` — 前端 Task 3/4 使用
-  - `ExecResponse.sessionId?: string` — 前端 Task 4 使用
-  - SSE `session` event — 前端 Task 4 的 `useChat` hook 消费
-  - SSE `data` event JSON `{ type: 'stdout'|'stderr', content: string }` — 前端 Task 4 消费
+- Consumes: `ParserLoader` interface from Task 1
+- Produces: `DocxLoader`, `XlsxLoader` registered into `registry`
 
-- [ ] **Step 1: 扩展 ExecRequestBody 和 ExecResponse 类型**
-
-在 `apps/proxy-core/src/server/ui-route.ts` 修改类型定义（行19-30）：
-
-```typescript
-// Exec API types
-interface ExecRequestBody {
-  tool: 'claude'
-  prompt: string
-  stream?: boolean
-  sessionId?: string  // 新增：claude 会话 ID，用于多轮对话
-}
-
-interface ExecResponse {
-  success: boolean
-  output?: string
-  error?: string
-  sessionId?: string  // 新增：server 生成的会话 UUID
-}
-```
-
-- [ ] **Step 2: 修改 stream 模式的 spawn 命令和 SSE 逻辑**
-
-修改 `/ui/api/exec` stream 模式部分（行258-318）。整体替换如下：
-
-```typescript
-if (stream) {
-  // Streaming mode: use SSE
-  const newSessionId = sessionId ?? crypto.randomUUID()
-
-  reply.hijack()
-  const res = reply.raw
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive'
-  })
-
-  const sendSSE = (event: string, data: string) => {
-    if (res.destroyed) return
-    res.write(`event: ${event}\ndata: ${data}\n\n`)
-  }
-
-  // 新对话时发送 session event
-  if (!sessionId) {
-    sendSSE('session', newSessionId)
-  }
-
-  const spawnArgs = sessionId
-    ? ['-r', sessionId, '-p', prompt]
-    : ['--session-id', newSessionId, '-p', prompt]
-
-  const child = spawn('claude', spawnArgs, {
-    env: { ...process.env }
-  })
-
-  const TIMEOUT = 5 * 60 * 1000 // 5 minutes
-  const timeoutId = setTimeout(() => {
-    child.kill('SIGTERM')
-    if (!res.destroyed) {
-      sendSSE('error', JSON.stringify({ message: 'Execution timeout (5 minutes)' }))
-      sendSSE('done', JSON.stringify({ code: 1 }))
-      res.end()
-    }
-  }, TIMEOUT)
-
-  child.stdout?.on('data', (chunk) => {
-    sendSSE('data', JSON.stringify({ type: 'stdout', content: chunk.toString() }))
-  })
-
-  child.stderr?.on('data', (chunk) => {
-    sendSSE('data', JSON.stringify({ type: 'stderr', content: chunk.toString() }))
-  })
-
-  child.on('error', (err) => {
-    clearTimeout(timeoutId)
-    if (!res.destroyed) {
-      sendSSE('error', JSON.stringify({ message: err.message }))
-      sendSSE('done', JSON.stringify({ code: 1 }))
-      res.end()
-    }
-  })
-
-  child.on('close', (code) => {
-    clearTimeout(timeoutId)
-    if (!res.destroyed) {
-      sendSSE('done', JSON.stringify({ code: code ?? 0 }))
-      res.end()
-    }
-  })
-
-  // Handle client disconnect
-  res.on('close', () => {
-    clearTimeout(timeoutId)
-    if (!child.killed) {
-      child.kill('SIGTERM')
-    }
-  })
-}
-```
-
-- [ ] **Step 3: 修改非 stream 模式**
-
-修改非 stream 部分（行319-372）。替换整体：
-
-```typescript
-} else {
-  // Non-streaming mode: buffer all output
-  const newSessionId = sessionId ?? crypto.randomUUID()
-
-  const spawnArgs = sessionId
-    ? ['-r', sessionId, '-p', prompt]
-    : ['--session-id', newSessionId, '-p', prompt]
-
-  const child = spawn('claude', spawnArgs, {
-    env: { ...process.env }
-  })
-
-  const TIMEOUT = 5 * 60 * 1000 // 5 minutes
-  const timeoutId = setTimeout(() => {
-    child.kill('SIGTERM')
-  }, TIMEOUT)
-
-  let stdout = ''
-  let stderr = ''
-
-  child.stdout?.on('data', (chunk) => {
-    stdout += chunk.toString()
-  })
-
-  child.stderr?.on('data', (chunk) => {
-    stderr += chunk.toString()
-  })
-
-  const result: ExecResponse = await new Promise((resolve) => {
-    child.on('error', (err) => {
-      clearTimeout(timeoutId)
-      resolve({
-        success: false,
-        error: err.message
-      })
-    })
-
-    child.on('close', (code) => {
-      clearTimeout(timeoutId)
-      const output = stdout + stderr
-      if (code === 0) {
-        resolve({
-          success: true,
-          output,
-          sessionId: newSessionId
-        })
-      } else {
-        resolve({
-          success: false,
-          error: output || `Process exited with code ${code}`,
-          sessionId: newSessionId
-        })
-      }
-    })
-  })
-
-  if (!result.success) {
-    return reply.code(500).send(result)
-  }
-
-  return result
-}
-```
-
-- [ ] **Step 4: 更新请求体解构**
-
-修改行242，从 `request.body` 解构新增 `sessionId`：
-
-```typescript
-const { tool, prompt, stream = false, sessionId } = request.body
-```
-
-- [ ] **Step 5: 构建验证**
+- [ ] **Step 1: 安装 mammoth + xlsx npm 依赖**
 
 ```bash
-cd /Users/cashely.shi/Documents/projects/cc-monitoring
-pnpm build:proxy-core
+cd apps/proxy-core && pnpm add mammoth xlsx
 ```
 
-Expected: 构建成功，无 TS 错误
+- [ ] **Step 2: 创建 docx-loader.ts**
 
-- [ ] **Step 6: Commit**
+```typescript
+// apps/proxy-core/src/parsers/docx-loader.ts
+import mammoth from 'mammoth'
+import type { ParserLoader } from './types.js'
+
+export class DocxLoader implements ParserLoader {
+  supportedExtensions = ['.docx']
+
+  async parse(buffer: Buffer, _filename: string): Promise<string> {
+    const result = await mammoth.extractRawText({ buffer })
+    return result.value
+  }
+}
+```
+
+- [ ] **Step 3: 创建 xlsx-loader.ts**
+
+```typescript
+// apps/proxy-core/src/parsers/xlsx-loader.ts
+import XLSX from 'xlsx'
+import type { ParserLoader } from './types.js'
+
+export class XlsxLoader implements ParserLoader {
+  supportedExtensions = ['.xlsx', '.xls']
+
+  async parse(buffer: Buffer, _filename: string): Promise<string> {
+    const workbook = XLSX.read(buffer, { type: 'buffer' })
+    const parts: string[] = []
+
+    for (const sheetName of workbook.SheetNames) {
+      const sheet = workbook.Sheets[sheetName]
+      const csv = XLSX.utils.sheet_to_csv(sheet)
+      // 转 CSV 为 markdown table
+      const mdTable = csvToMarkdownTable(csv)
+      parts.push(`## ${sheetName}\n\n${mdTable}`)
+    }
+
+    return parts.join('\n\n')
+  }
+}
+
+function csvToMarkdownTable(csv: string): string {
+  const lines = csv.split('\n').filter(line => line.length > 0)
+  if (lines.length === 0) return ''
+
+  const rows = lines.map(line => line.split(','))
+  // Header row
+  const header = `| ${rows[0].join(' | ')} |`
+  const separator = `| ${rows[0].map(() => '---').join(' | ')} |`
+  const body = rows.slice(1).map(row => `| ${row.join(' | ')} |`).join('\n')
+
+  return [header, separator, body].join('\n')
+}
+```
+
+- [ ] **Step 4: 更新 index.ts — 注册 DocxLoader + XlsxLoader**
+
+```typescript
+// apps/proxy-core/src/parsers/index.ts
+import { ParserRegistry } from './registry.js'
+import { MdLoader } from './md-loader.js'
+import { DocxLoader } from './docx-loader.js'
+import { XlsxLoader } from './xlsx-loader.js'
+
+const registry = new ParserRegistry()
+registry.register(new MdLoader())
+registry.register(new DocxLoader())
+registry.register(new XlsxLoader())
+
+export { registry }
+```
+
+- [ ] **Step 5: Commit**
 
 ```bash
-git add apps/proxy-core/src/server/ui-route.ts
-git commit -m "feat: extend exec endpoint with sessionId support for multi-turn chat"
+git add apps/proxy-core/src/parsers/ apps/proxy-core/package.json apps/proxy-core/pnpm-lock.yaml
+git commit -m "feat: add DocxLoader and XlsxLoader parsers"
 ```
 
 ---
