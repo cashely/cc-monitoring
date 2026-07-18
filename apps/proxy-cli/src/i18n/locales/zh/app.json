@@ -52,6 +52,11 @@
     "uploadFile": "上传文件",
     "uploadSuccess": "文件已上传并转换为 .md 格式",
     "uploadError": "上传失败：{{error}}",
-    "uploadUnsupported": "不支持的文件类型"
+    "uploadUnsupported": "不支持的文件类型",
+    "emptyTitle": "AI 助手已就绪",
+    "emptyDesc": "开始对话，或选择下方快捷提问",
+    "quickQ1": "查看代理状态",
+    "quickQ2": "分析最近日志",
+    "quickQ3": "配置优化建议"
   }
 }

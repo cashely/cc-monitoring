@@ -50,6 +50,11 @@
     "uploadFile": "Upload File",
     "uploadSuccess": "File uploaded and converted to .md format",
     "uploadError": "Upload failed: {{error}}",
-    "uploadUnsupported": "Unsupported file type"
+    "uploadUnsupported": "Unsupported file type",
+    "emptyTitle": "AI Assistant Ready",
+    "emptyDesc": "Start a conversation or pick a quick question below",
+    "quickQ1": "Check proxy status",
+    "quickQ2": "Analyze recent logs",
+    "quickQ3": "Configuration suggestions"
   }
 }

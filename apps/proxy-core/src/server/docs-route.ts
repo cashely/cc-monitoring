@@ -17,7 +17,7 @@ export async function setupDocsRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.code(400).send({ success: false, error: 'No file uploaded' })
     }
 
-    const filename = data.filename
+    const filename = path.basename(data.filename)
     const buffer = await data.toBuffer()
 
     // 校验扩展名
