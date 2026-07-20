@@ -1,5 +1,5 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
-import { Readable } from 'stream'
+import { Readable, finished } from 'stream'
 import { convertClaudeToOpenAIRequest, convertOpenAIToClaudeResponse, createStreamTransformer, buildOpenAIHeaders } from '../utils/openai-converter.js'
 import { ProxyConfig } from '../types/config.js'
 import { loadConfig } from '../config/index.js'
@@ -427,11 +427,13 @@ export async function setupProxy(
             }
           })
 
-          nodeStream.on('error', (err) => {
-            request.log.error(`openai stream error: ${err.message}`)
-          })
+          // Use finished() for reliable stream completion detection
+          // (on('end') may not fire when transformStream.destroy() unpipes nodeStream)
+          finished(nodeStream, (err) => {
+            if (err) {
+              request.log.error(`openai stream error: ${err.message}`)
+            }
 
-          nodeStream.on('end', async () => {
             const elapsed = Date.now() - startTime
             requestData.response!.completedAt = new Date().toISOString()
 
@@ -451,26 +453,29 @@ export async function setupProxy(
               db.prepare('DELETE FROM requests WHERE request_id = ? AND session_id = ?').run(request.id, sessionId)
             }
 
-            await saveRequestDB(sessionId, cloudRequestId, requestData)
+            // Async DB save inside finished callback — handle errors explicitly
+            saveRequestDB(sessionId, cloudRequestId, requestData).then(() => {
+              const usage = extractTokenUsage(requestData.response!.events)
+              pushNewRequest({
+                requestId: cloudRequestId,
+                sessionId,
+                compositeId: `${sessionId}:${cloudRequestId}`,
+                method: request.method,
+                path: request.url,
+                timestamp: requestData.timestamp,
+                statusCode: response.status,
+                responseTime: elapsed,
+                model: forwardedModel,
+                machineId,
+                baseUrl: resolved.baseUrl,
+                usage,
+                pendingId: cloudRequestId !== request.id ? `${sessionId}:${request.id}` : undefined
+              }, 'completed')
 
-            const usage = extractTokenUsage(requestData.response!.events)
-            pushNewRequest({
-              requestId: cloudRequestId,
-              sessionId,
-              compositeId: `${sessionId}:${cloudRequestId}`,
-              method: request.method,
-              path: request.url,
-              timestamp: requestData.timestamp,
-              statusCode: response.status,
-              responseTime: elapsed,
-              model: forwardedModel,
-              machineId,
-              baseUrl: resolved.baseUrl,
-              usage,
-              pendingId: cloudRequestId !== request.id ? `${sessionId}:${request.id}` : undefined
-            }, 'completed')
-
-            request.log.info(`stream completed (openai): ${cloudRequestId} ${response.status} (${elapsed}ms, ${requestData.response!.events!.length} events)`)
+              request.log.info(`stream completed (openai): ${cloudRequestId} ${response.status} (${elapsed}ms, ${requestData.response!.events!.length} events)`)
+            }).catch((dbErr) => {
+              request.log.error(`openai stream save failed: ${dbErr.message}`)
+            })
           })
 
           // Pipe: OpenAI SSE → Transform → Claude SSE → Client
