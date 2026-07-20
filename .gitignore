@@ -22,6 +22,7 @@ docs/thinks/
 *.swp
 *.swo
 *~
+.superpowers/
 
 # OS
 .DS_Store
