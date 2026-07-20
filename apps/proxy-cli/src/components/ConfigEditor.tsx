@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react'
 import { Button, Tooltip } from 'antd'
-import { DatabaseZap, RefreshCw } from 'lucide-react'
+import { DatabaseZap, RefreshCw, Link2 } from 'lucide-react'
 import { ApiOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
-import { fetchConfig, controlProcess } from '../api'
+import { fetchConfig, controlProcess, syncClaudeSettings } from '../api'
 import { ProviderManagerModal } from './ProviderManagerModal'
 import { McpManagerPanel } from './McpManagerPanel'
 import { GlowCard } from './GlowCard'
@@ -17,6 +17,7 @@ export function ConfigEditor(): JSX.Element {
   const [isProviderModalOpen, setIsProviderModalOpen] = useState(false)
   const [isMcpPanelOpen, setIsMcpPanelOpen] = useState(false)
   const [configPath, setConfigPath] = useState<string | null>(null)
+  const [isSyncing, setIsSyncing] = useState(false)
 
   useEffect(() => {
     fetchConfig().then(data => {
@@ -27,6 +28,22 @@ export function ConfigEditor(): JSX.Element {
       // 忽略获取配置路径失败
     })
   }, [])
+
+  const handleSyncClaudeConfig = async () => {
+    setIsSyncing(true)
+    setMessage(null)
+    try {
+      const result = await syncClaudeSettings()
+      setMessage(result.message)
+      setMessageType(result.success ? 'success' : 'error')
+      setTimeout(() => setMessage(null), 5000)
+    } catch {
+      setMessage(t('message.restartFailed'))
+      setMessageType('error')
+    } finally {
+      setIsSyncing(false)
+    }
+  }
 
   const handleRestart = async () => {
     setIsRestarting(true)
@@ -110,9 +127,23 @@ export function ConfigEditor(): JSX.Element {
         <h4 className="text-xs font-medium mb-2 text-text-muted">{t('section.server')}</h4>
         <div className="space-y-2">
           <GlowCard color={TOKEN_COLORS.input}>
-            <div className="text-xs font-medium text-text-muted mb-1">{t('common:label.address')}</div>
-            <div className="text-text-primary font-mono text-xs">
-              http://localhost:9527
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-xs font-medium text-text-muted mb-1">{t('common:label.address')}</div>
+                <div className="text-text-primary font-mono text-xs">
+                  http://localhost:9527
+                </div>
+              </div>
+              <Tooltip title={t('action.syncClaudeConfig')}>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<Link2 size={14} />}
+                  loading={isSyncing}
+                  onClick={handleSyncClaudeConfig}
+                  className="!p-0 flex items-center"
+                />
+              </Tooltip>
             </div>
           </GlowCard>
           <GlowCard color={TOKEN_COLORS.output}>

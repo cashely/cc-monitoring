@@ -94,6 +94,14 @@ export function getClaudeVersion(): string {
 }
 
 /**
+ * 检测 Claude Code 是否已安装
+ * 复用 getClaudeVersion()，返回 "not installed" 即未安装
+ */
+export function isClaudeInstalled(): boolean {
+  return getClaudeVersion() !== 'not installed'
+}
+
+/**
  * 获取版本信息（合并返回）
  */
 export function getVersionInfo(): { projectVersion: string; claudeVersion: string; machineId: string } {

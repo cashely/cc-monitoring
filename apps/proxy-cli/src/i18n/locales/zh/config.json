@@ -18,7 +18,9 @@
   },
   "action": {
     "manageProviders": "管理供应商",
-    "restartServer": "重启服务"
+    "restartServer": "重启服务",
+    "syncClaudeConfig": "同步配置到 Claude Code",
+    "syncingClaudeConfig": "同步中..."
   },
   "error": {
     "fieldMessage": "{{field}}: {{message}}"

@@ -18,7 +18,9 @@
   },
   "action": {
     "manageProviders": "Manage Providers",
-    "restartServer": "Restart Server"
+    "restartServer": "Restart Server",
+    "syncClaudeConfig": "Sync config to Claude Code",
+    "syncingClaudeConfig": "Syncing..."
   },
   "error": {
     "fieldMessage": "{{field}}: {{message}}"

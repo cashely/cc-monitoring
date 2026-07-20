@@ -65,3 +65,14 @@ export async function fetchTodayStats(): Promise<TodayStats> {
 
 export { fetchProviders, saveProviders } from './providers'
 export { fetchMcpServers, createMcpServer, updateMcpServer, deleteMcpServer, reconnectMcpServer, fetchMcpTools } from './mcp'
+
+export interface SyncClaudeSettingsResult {
+  success: boolean
+  message: string
+  alreadyMatched?: boolean
+}
+
+export async function syncClaudeSettings(): Promise<SyncClaudeSettingsResult> {
+  const res = await fetch(`${API_BASE}/claude-settings/sync`, { method: 'POST' })
+  return res.json()
+}
