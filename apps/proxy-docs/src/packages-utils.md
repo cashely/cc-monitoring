@@ -105,5 +105,5 @@ export const debounce = <T extends (...args: any[]) => any>(
 
 ## 相关
 
-- proxy-cli 的类似工具（各自实现） → [utils-and-i18n.md](../proxy-cli/utils-and-i18n)
-- proxy-admin 的 utils（localStorage 封装） → [services-and-mock.md](../proxy-admin/services-and-mock#工具函数-utilsindexts)
+- proxy-cli 的类似工具（各自实现） → [utils-and-i18n.md](./proxy-cli/utils-and-i18n)
+- proxy-admin 的 utils（localStorage 封装） → [services-and-mock.md](./proxy-admin/services-and-mock#工具函数-utilsindexts)

@@ -423,6 +423,12 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.type('text/html').send(stream)
   })
 
+  // Handle /docs root path
+  fastify.get('/docs', async (request, reply) => {
+    const stream = fs.createReadStream(path.join(docsDistPath, 'index.html'))
+    return reply.type('text/html').send(stream)
+  })
+
   // WebSocket log stream handler (using native ws, not @fastify/websocket)
   function handleLogStream(ws: WebSocket, config: any) {
     const logFile = config.logging.file
@@ -656,6 +662,19 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
     decorateReply: false,
     wildcard: true, // Enable wildcard to serve assets properly
     maxAge: 0 // Disable browser caching for dev/prox parity
+  })
+
+  // 发布产物：dist/docs（bundle-docs.mjs 注入）；本地开发：monorepo 的 proxy-docs dist
+  const bundledDocs = path.join(serverDirname, '../docs')
+  const docsDistPath = fs.existsSync(bundledDocs)
+    ? bundledDocs
+    : path.join(serverDirname, '../../../proxy-docs/src/.vitepress/dist')
+  await fastify.register(staticPlugin, {
+    root: docsDistPath,
+    prefix: '/docs/',
+    decorateReply: false,
+    wildcard: true,
+    maxAge: 0
   })
 
   // Note: SPA routing handled by wildcard: true in static plugin
