@@ -1,6 +1,6 @@
 // apps/proxy-docs/.vitepress/config.ts
 import { defineConfig } from 'vitepress'
-import mermaidPlugin from 'vitepress-plugin-mermaid'
+import { MermaidMarkdown, MermaidPlugin } from 'vitepress-plugin-mermaid'
 
 export default defineConfig({
   title: 'CC Monitoring',
@@ -11,9 +11,16 @@ export default defineConfig({
   outDir: 'src/.vitepress/dist',
 
   markdown: {
-    config(md) {
-      md.use(mermaidPlugin)
+    preConfig(md) {
+      md.use(MermaidMarkdown)
     }
+  },
+
+  vite: {
+    plugins: [MermaidPlugin()],
+    ssr: {
+      noExternal: ['mermaid'],
+    },
   },
 
   themeConfig: {
@@ -78,6 +85,7 @@ export default defineConfig({
       ],
     },
 
+    siteTitle: 'CC Monitoring',
     search: { provider: 'local' },
   }
 })
