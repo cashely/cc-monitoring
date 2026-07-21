@@ -668,7 +668,7 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
   const bundledDocs = path.join(serverDirname, '../docs')
   const docsDistPath = fs.existsSync(bundledDocs)
     ? bundledDocs
-    : path.join(serverDirname, '../../../proxy-docs/src/.vitepress/dist')
+    : path.join(serverDirname, '../../../proxy-docs/dist')
   await fastify.register(staticPlugin, {
     root: docsDistPath,
     prefix: '/docs/',

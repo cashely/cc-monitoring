@@ -7,6 +7,7 @@ export default defineConfig({
   lang: 'zh-CN',
 
   base: '/docs/',
+  outDir: '../dist',
 
   themeConfig: {
     nav: [
