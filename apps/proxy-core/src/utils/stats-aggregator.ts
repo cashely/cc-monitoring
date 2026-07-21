@@ -75,6 +75,9 @@ export function aggregateStats(): void {
 
   // Clean ALL daily entries (legacy data from old +8h approach)
   db.prepare(`DELETE FROM stats WHERE period = 'daily'`).run()
+
+  // WAL checkpoint to keep WAL file size bounded
+  db.pragma('wal_checkpoint(TRUNCATE)')
 }
 
 // Get aggregated stats for UI

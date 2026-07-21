@@ -11,6 +11,10 @@ export function removeDataClient(ws: WebSocket): void {
   dataClients.delete(ws)
 }
 
+export function getDataClientCount(): number {
+  return dataClients.size
+}
+
 // Broadcast helpers
 export function pushNewRequest(summary: any, status: 'pending' | 'completed' = 'completed'): void {
   broadcast({
@@ -35,4 +39,9 @@ function broadcast(msg: any): void {
       ws.send(payload)
     }
   }
+}
+
+// Expose broadcast for global status timer (ui-route.ts)
+export function broadcastToDataClients(msg: any): void {
+  broadcast(msg)
 }

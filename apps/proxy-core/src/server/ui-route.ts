@@ -11,7 +11,7 @@ import { getCallerDirname } from '../utils/esm-dirname.js'
 import { getConfigPath, getDisplayPath } from '../utils/paths.js'
 import { loadRequestDB, listRequestDB, type RequestSummary, sessionIdExists } from '../utils/request-writer.js'
 import { statusHistory } from '../utils/status-history.js'
-import { addDataClient, removeDataClient, pushStatsNotify } from './data-push.js'
+import { addDataClient, removeDataClient, pushStatsNotify, broadcastToDataClients, getDataClientCount } from './data-push.js'
 import { getVersionInfo } from '../utils/version.js'
 import { getStatsData, getTodayStats } from '../utils/stats-aggregator.js'
 import { setupProvidersRoutes } from './providers-route.js'
@@ -476,10 +476,19 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
       }
     }
 
-    // Track read position to only send new lines on change events
+    // Track read position for incremental reads (avoid loading entire file on each change)
     let readPosition = 0
+    let lastInode = 0
+    let lastSize = 0
 
-    // Send initial last 50 lines on connect (filtered, async read)
+    // Get initial file metadata
+    try {
+      const stat = fs.statSync(logPath)
+      lastInode = stat.ino
+      lastSize = stat.size
+    } catch { /* ignore */ }
+
+    // Send initial last 50 lines on connect (one-time full read, acceptable)
     fs.promises.readFile(logPath, 'utf-8').then((content) => {
       const lines = content.trim().split('\n').slice(-50).filter(shouldFilterLog)
       for (const line of lines) {
@@ -492,22 +501,49 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
       // Log file not readable yet
     })
 
-    // Watch for changes
+    // Watch for changes — use incremental read instead of full file read
     const watcher = fs.watch(logPath, (event) => {
       if (event === 'change') {
-        fs.promises.readFile(logPath, 'utf-8').then((content) => {
-          if (content.length <= readPosition) return
-          const newContent = content.slice(readPosition)
-          readPosition = content.length
-          const lines = newContent.trim().split('\n').filter(l => l.length > 0).filter(shouldFilterLog)
-          for (const line of lines) {
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(line)
-            }
+        // Check file metadata to detect rotation (inode/size changed = new file)
+        try {
+          const stat = fs.statSync(logPath)
+          if (stat.ino !== lastInode || stat.size < readPosition) {
+            // File rotated — reset position and send last 50 lines of new file
+            lastInode = stat.ino
+            lastSize = stat.size
+            readPosition = 0
+            fs.promises.readFile(logPath, 'utf-8').then((content) => {
+              const lines = content.trim().split('\n').slice(-50).filter(shouldFilterLog)
+              for (const line of lines) {
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(line)
+                }
+              }
+              readPosition = content.length
+            }).catch(() => {})
+            return
           }
-        }).catch(() => {
-          // File temporarily unavailable
-        })
+          lastSize = stat.size
+        } catch { return }
+
+        // Incremental read: only read newly appended content
+        if (lastSize <= readPosition) return
+        const readLen = lastSize - readPosition
+        const buffer = Buffer.alloc(readLen)
+        try {
+          const fd = fs.openSync(logPath, 'r')
+          fs.readSync(fd, buffer, 0, readLen, readPosition)
+          fs.closeSync(fd)
+        } catch { return }
+
+        readPosition = lastSize
+        const newContent = buffer.toString('utf-8')
+        const lines = newContent.trim().split('\n').filter(l => l.length > 0).filter(shouldFilterLog)
+        for (const line of lines) {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(line)
+          }
+        }
       }
     })
 
@@ -516,10 +552,54 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
     })
   }
 
+  // Global status push timer — single timer broadcasts to all data clients (not per-client)
+  let globalStatusTimer: ReturnType<typeof setInterval> | null = null
+  function startGlobalStatusTimer(): void {
+    if (globalStatusTimer) return
+    globalStatusTimer = setInterval(async () => {
+      const status = await getProcessStatus('cc-monitoring')
+      if (status) {
+        statusHistory.push({
+          timestamp: Date.now(),
+          cpu: status.cpu,
+          memory: status.memory
+        })
+      }
+      broadcastToDataClients({
+        type: 'status',
+        action: 'snapshot',
+        data: {
+          status: status?.status ?? 'stopped',
+          cpu: status?.cpu ?? 0,
+          memory: status?.memory ?? 0,
+          uptime: status?.uptime ?? 0,
+          restarts: status?.restarts ?? 0,
+          history: statusHistory.getHistory(3600000)
+        }
+      })
+    }, 10000)
+  }
+
+  function stopGlobalStatusTimer(): void {
+    if (globalStatusTimer) {
+      clearInterval(globalStatusTimer)
+      globalStatusTimer = null
+    }
+  }
+
+  function checkAndStopTimer(): void {
+    if (getDataClientCount() === 0) {
+      stopGlobalStatusTimer()
+    }
+  }
+
   // WebSocket data stream handler
   function handleDataStream(ws: WebSocket) {
     // Add to connection pool
     addDataClient(ws)
+
+    // Start global status timer on first client connection
+    startGlobalStatusTimer()
 
     // Heartbeat timeout tracking: last time we sent a ping and got activity
     let lastPing = Date.now()
@@ -546,50 +626,20 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
       lastPing = Date.now()
     })
 
-    // Status push timer (10s)
-    const statusTimer = setInterval(async () => {
-      if (ws.readyState === WebSocket.OPEN) {
-        const status = await getProcessStatus('cc-monitoring')
-
-        // Sample status history (for trend charts) — WebSocket is the primary source
-        if (status) {
-          statusHistory.push({
-            timestamp: Date.now(),
-            cpu: status.cpu,
-            memory: status.memory
-          })
-        }
-
-        // Push status snapshot + history
-        ws.send(JSON.stringify({
-          type: 'status',
-          action: 'snapshot',
-          data: {
-            status: status?.status ?? 'stopped',
-            cpu: status?.cpu ?? 0,
-            memory: status?.memory ?? 0,
-            uptime: status?.uptime ?? 0,
-            restarts: status?.restarts ?? 0,
-            history: statusHistory.getHistory(3600000) // Last 1 hour
-          }
-        }))
-      }
-    }, 10000)
-
-    // Cleanup on close
+    // Cleanup on close (no statusTimer — handled by global timer)
     ws.on('close', () => {
       clearInterval(heartbeatTimer)
       clearInterval(timeoutTimer)
-      clearInterval(statusTimer)
       removeDataClient(ws)
+      checkAndStopTimer()
     })
 
     ws.on('error', (error) => {
       console.error('WebSocket data client error:', error)
       clearInterval(heartbeatTimer)
       clearInterval(timeoutTimer)
-      clearInterval(statusTimer)
       removeDataClient(ws)
+      checkAndStopTimer()
     })
   }
 

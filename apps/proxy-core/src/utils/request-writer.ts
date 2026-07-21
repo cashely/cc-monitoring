@@ -19,7 +19,7 @@ export interface RequestData {
   response?: {
     statusCode: number
     headers?: Record<string, string>
-    events?: any[]
+    events?: any[]  // Only used for initial pending save (empty array) and JSON responses
     completedAt?: string
     closedAt?: string
     error?: string
@@ -56,6 +56,63 @@ export function extractTokenUsage(events: any[] | undefined): TokenUsage | undef
   return messageDelta?.usage
 }
 
+// --- SSE Event Batch Writer (incremental DB writes during streaming) ---
+
+export const EVENT_BATCH_SIZE = 10
+
+// Cached prepared statements for batch writes
+let insertEventStmt: import('better-sqlite3').Statement | null = null
+let deleteRequestStmt: import('better-sqlite3').Statement | null = null
+let cachedDbInstance: import('better-sqlite3').Database | null = null
+
+// Invalidate cached stmts when DB instance changes (tests create fresh DB per suite)
+function ensureStmtCacheValid(db: import('better-sqlite3').Database): void {
+  if (db !== cachedDbInstance) {
+    insertEventStmt = null
+    deleteRequestStmt = null
+    cachedDbInstance = db
+  }
+}
+
+/**
+ * Flush a batch of SSE events to the response_events table.
+ * Called during streaming every ~10 events to avoid in-memory accumulation.
+ */
+export function flushEventBatch(
+  sessionId: string,
+  requestId: string,
+  batch: Array<{ index: number; type?: string; data: unknown }>,
+  startIndex: number
+): void {
+  const db = getDatabase()
+  ensureStmtCacheValid(db)
+  if (!insertEventStmt) {
+    insertEventStmt = db.prepare(
+      'INSERT INTO response_events (request_id, session_id, event_index, event_type, event_data) VALUES (?, ?, ?, ?, ?)'
+    )
+  }
+  for (let i = 0; i < batch.length; i++) {
+    const event = batch[i]
+    insertEventStmt.run(
+      requestId,
+      sessionId,
+      startIndex + i,
+      event.type ?? null,
+      JSON.stringify(event.data)
+    )
+  }
+}
+
+/**
+ * Delete response_events rows for a request (used when cloudRequestId differs from local requestId).
+ */
+export function deleteResponseEvents(requestId: string, sessionId: string): void {
+  const db = getDatabase()
+  db.prepare('DELETE FROM response_events WHERE request_id = ? AND session_id = ?').run(requestId, sessionId)
+}
+
+// --- Request DB Operations ---
+
 // Save request to SQLite database
 export async function saveRequestDB(
   sessionId: string,
@@ -64,7 +121,18 @@ export async function saveRequestDB(
 ): Promise<void> {
   const db = initDatabase()
 
-  const usage = extractTokenUsage(data.response?.events)
+  const events = data.response?.events
+  const usage = events ? extractTokenUsage(events) : undefined
+
+  // For JSON responses (non-streaming), events are still in the array — flush them first
+  if (events && events.length > 0) {
+    const batch = events.map((e: any, i: number) => ({
+      index: i,
+      type: e?.type ?? undefined,
+      data: e
+    }))
+    flushEventBatch(sessionId, requestId, batch, 0)
+  }
 
   const stmt = db.prepare(`
     INSERT OR REPLACE INTO requests (
@@ -100,11 +168,21 @@ export async function saveRequestDB(
     JSON.stringify(data.request.headers),
     data.request.body ? JSON.stringify(data.request.body) : null,
     data.response?.headers ? JSON.stringify(data.response.headers) : null,
-    data.response?.events ? JSON.stringify(data.response?.events) : null,
+    null,  // response_events now stored in separate table
     data.response?.completedAt || null,
     data.response?.closedAt || null,
     data.response?.error || null
   )
+}
+
+// Delete a request row by requestId + sessionId (for pending → completed replacement)
+export function deleteRequestRow(requestId: string, sessionId: string): void {
+  const db = getDatabase()
+  ensureStmtCacheValid(db)
+  if (!deleteRequestStmt) {
+    deleteRequestStmt = db.prepare('DELETE FROM requests WHERE request_id = ? AND session_id = ?')
+  }
+  deleteRequestStmt.run(requestId, sessionId)
 }
 
 // Load single request by compositeId (sessionId:requestId)
@@ -127,6 +205,25 @@ export async function loadRequestDB(compositeId: string): Promise<RequestData> {
     throw new Error(`Request not found: ${compositeId}`)
   }
 
+  // Load events from separate table; fallback to old JSON column for historical data
+  const eventRows = db.prepare(`
+    SELECT event_index, event_type, event_data FROM response_events
+    WHERE request_id = ? AND session_id = ?
+    ORDER BY event_index ASC
+  `).all(requestId, sessionId) as any[]
+
+  let events: any[]
+  if (eventRows.length > 0) {
+    events = eventRows.map(r => {
+      try { return JSON.parse(r.event_data) } catch { return { raw: r.event_data } }
+    })
+  } else if (row.response_events) {
+    // Fallback: historical data stored events in the requests.response_events JSON column
+    try { events = JSON.parse(row.response_events) } catch { events = [] }
+  } else {
+    events = []
+  }
+
   return {
     requestId: row.request_id,
     sessionId: row.session_id,
@@ -145,7 +242,7 @@ export async function loadRequestDB(compositeId: string): Promise<RequestData> {
     response: {
       statusCode: row.status_code,
       headers: row.response_headers ? JSON.parse(row.response_headers) : undefined,
-      events: row.response_events ? JSON.parse(row.response_events) : undefined,
+      events: events.length > 0 ? events : undefined,
       completedAt: row.completed_at,
       closedAt: row.closed_at,
       error: row.error
@@ -215,6 +312,8 @@ export async function cleanOldRequestsDB(daysToKeep = 7): Promise<void> {
 
   const cutoff = new Date(Date.now() - daysToKeep * 86400000).toISOString()
 
+  // Delete response_events first (foreign data), then requests
+  db.prepare(`DELETE FROM response_events WHERE request_id IN (SELECT request_id FROM requests WHERE timestamp < ?)`).run(cutoff)
   db.prepare(`DELETE FROM requests WHERE timestamp < ?`).run(cutoff)
 }
 
@@ -234,12 +333,12 @@ export function loadSessionHistory(sessionId: string): { messages: any[], system
 
   // Get the last completed request for this session
   const row = db.prepare(`
-    SELECT request_body, response_events
+    SELECT request_id, request_body, response_headers
     FROM requests
     WHERE session_id = ? AND completed_at IS NOT NULL AND status_code = 200
     ORDER BY timestamp DESC
     LIMIT 1
-  `).get(sessionId) as { request_body: string | null, response_events: string | null } | undefined
+  `).get(sessionId) as { request_id: string, request_body: string | null, response_headers: string | null } | undefined
 
   if (!row) return null
 
@@ -248,10 +347,26 @@ export function loadSessionHistory(sessionId: string): { messages: any[], system
     requestBody = row.request_body ? JSON.parse(row.request_body) : null
   } catch { return null }
 
-  let responseEvents: any[] = []
-  try {
-    responseEvents = row.response_events ? JSON.parse(row.response_events) : []
-  } catch { /* empty */ }
+  // Load response events from separate table; fallback to old JSON column for historical data
+  const eventRows = db.prepare(`
+    SELECT event_data FROM response_events
+    WHERE request_id = ? AND session_id = ?
+    ORDER BY event_index ASC
+  `).all(row.request_id, sessionId) as any[]
+
+  let responseEvents: any[]
+  if (eventRows.length > 0) {
+    try {
+      responseEvents = eventRows.map(r => JSON.parse(r.event_data))
+    } catch { responseEvents = [] }
+  } else {
+    // Fallback: read from old requests.response_events JSON column
+    const legacyRow = db.prepare('SELECT response_events FROM requests WHERE request_id = ? AND session_id = ?')
+      .get(row.request_id, sessionId) as { response_events: string | null } | undefined
+    try {
+      responseEvents = legacyRow?.response_events ? JSON.parse(legacyRow.response_events) : []
+    } catch { responseEvents = [] }
+  }
 
   if (!requestBody?.messages) return null
 
