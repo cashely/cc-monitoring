@@ -128,6 +128,14 @@ program.command('ui')
     await uiCommand(options)
   })
 
+program.command('doc')
+  .description('Open architecture docs')
+  .option('--build', 'Force rebuild docs')
+  .action(async (options) => {
+    const { docCommand } = await import('./commands/doc.js')
+    await docCommand(options)
+  })
+
 program.command('clean-requests')
   .description('清理旧的请求日志（SQLite）')
   .option('--days <days>', '保留最近N天的数据', '7')
