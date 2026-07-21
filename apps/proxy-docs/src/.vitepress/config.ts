@@ -7,8 +7,7 @@ export default defineConfig({
   description: 'Claude Code 代理 + 监控系统文档',
   lang: 'zh-CN',
 
-  srcDir: 'src',
-  outDir: 'src/.vitepress/dist',
+  base: '/docs/',
 
   markdown: {
     preConfig(md) {
