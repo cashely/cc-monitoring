@@ -3,7 +3,7 @@ import { Readable, finished } from 'stream'
 import { convertClaudeToOpenAIRequest, convertOpenAIToClaudeResponse, createStreamTransformer, buildOpenAIHeaders } from '../utils/openai-converter.js'
 import { ProxyConfig } from '../types/config.js'
 import { loadConfig } from '../config/index.js'
-import { saveRequestDB, extractTokenUsage, type RequestData } from '../utils/request-writer.js'
+import { saveRequestDB, extractTokenUsage, flushEventBatch, deleteResponseEvents, deleteRequestRow, EVENT_BATCH_SIZE, type RequestData } from '../utils/request-writer.js'
 import { cleanOldRequestsDB } from '../utils/request-writer.js'
 import { pushNewRequest } from './data-push.js'
 import { initDatabase, closeDatabase, getDatabase } from '../utils/db.js'
@@ -31,13 +31,17 @@ interface ResolvedTarget {
   is_openai_compatible?: boolean
 }
 
+// Cached prepared statement for active provider lookup (avoids per-request allocation)
+let activeProviderStmt: import('better-sqlite3').Statement | null = null
+let cachedDbInstance: import('better-sqlite3').Database | null = null
+
 /**
  * Resolves the proxy target per request:
  * - If a provider with is_default=1 exists in DB, use its base_url + api_key + tier models (partial replacement)
  * - Otherwise fall back to config.json proxy.target + proxy.apiKey
  *
  * Called per request for hot-swap support (no server restart needed on activation change).
- * better-sqlite3 is synchronous and ~us-level for a single-row SELECT; no caching needed.
+ * better-sqlite3 is synchronous and ~us-level for a single-row SELECT; cached statement avoids repeated allocation.
  */
 export function resolveProxyTarget(proxyConfig: ProxyConfig): ResolvedTarget {
   // Default to config values
@@ -57,9 +61,17 @@ export function resolveProxyTarget(proxyConfig: ProxyConfig): ResolvedTarget {
     targetPath = configUrl.pathname.replace(/\/$/, '')
 
     const db = getDatabase()
-    const active = db.prepare(
-      'SELECT base_url, api_key, model, haiku_model, sonnet_model, opus_model, is_openai_compatible FROM providers WHERE is_default = 1 LIMIT 1'
-    ).get() as { base_url: string | null, api_key: string | null, model: string | null, haiku_model: string | null, sonnet_model: string | null, opus_model: string | null, is_openai_compatible: number | null } | undefined
+    // Invalidate cached stmt if DB instance changed (happens in tests with fresh DB per test)
+    if (db !== cachedDbInstance) {
+      activeProviderStmt = null
+      cachedDbInstance = db
+    }
+    if (!activeProviderStmt) {
+      activeProviderStmt = db.prepare(
+        'SELECT base_url, api_key, model, haiku_model, sonnet_model, opus_model, is_openai_compatible FROM providers WHERE is_default = 1 LIMIT 1'
+      )
+    }
+    const active = activeProviderStmt.get() as { base_url: string | null, api_key: string | null, model: string | null, haiku_model: string | null, sonnet_model: string | null, opus_model: string | null, is_openai_compatible: number | null } | undefined
 
     if (active) {
       // Replace base_url only if provided
@@ -176,6 +188,84 @@ export function getErrorStatusCode(error: ProxyError): number {
   return 500
 }
 
+/**
+ * Push a parsed SSE event into batch/tail buffers.
+ * Flushes batch to DB when it reaches EVENT_BATCH_SIZE (10).
+ * Only memory held: current batch (≤10 events) + tail (≤5 events).
+ */
+function pushEventToBuffers(
+  event: any,
+  sessionId: string,
+  requestId: string,
+  eventBatch: Array<{ index: number; type?: string; data: unknown }>,
+  tailBuffer: any[],
+  eventIndexRef: { value: number }
+): void {
+  const entry = { index: eventIndexRef.value, type: event?.type, data: event }
+  eventBatch.push(entry)
+
+  // Maintain tail buffer (last 5 events for usage extraction)
+  tailBuffer.push(event)
+  if (tailBuffer.length > 5) {
+    tailBuffer.shift()
+  }
+
+  // Flush batch to DB when threshold reached
+  if (eventBatch.length >= EVENT_BATCH_SIZE) {
+    flushEventBatch(sessionId, requestId, eventBatch, eventIndexRef.value - eventBatch.length + 1)
+    eventBatch.length = 0 // Reset batch (memory freed)
+  }
+
+  eventIndexRef.value++
+}
+
+/**
+ * Flush remaining batch + update request completion in DB.
+ * Extracts token usage from tail buffer (no need for full events array).
+ */
+async function completeStreamSave(
+  sessionId: string,
+  requestId: string,
+  requestData: RequestData,
+  eventBatch: Array<{ index: number; type?: string; data: unknown }>,
+  tailBuffer: any[],
+  eventIndexRef: { value: number },
+  startTime: number,
+  statusCode: number,
+  resolved: ResolvedTarget,
+  forwardedModel: string | undefined,
+  originalModel: string | undefined,
+  machineId: string | undefined,
+  request: ProxyRequest
+): Promise<void> {
+  // Flush remaining events in batch
+  if (eventBatch.length > 0) {
+    flushEventBatch(sessionId, requestId, eventBatch, eventIndexRef.value - eventBatch.length)
+    eventBatch.length = 0
+  }
+
+  requestData.response!.completedAt = new Date().toISOString()
+  requestData.response!.events = []  // Not needed for streaming, clear to avoid serialization
+
+  await saveRequestDB(sessionId, requestId, requestData)
+
+  const usage = extractTokenUsage(tailBuffer)
+  pushNewRequest({
+    requestId,
+    sessionId,
+    compositeId: `${sessionId}:${requestId}`,
+    method: request.method,
+    path: request.url,
+    timestamp: requestData.timestamp,
+    statusCode,
+    responseTime: Date.now() - startTime,
+    model: forwardedModel || originalModel,
+    machineId,
+    baseUrl: resolved.baseUrl,
+    usage
+  }, 'completed')
+}
+
 export function getErrorMessage(error: ProxyError): string {
   if (error.code === 'ECONNREFUSED') {
     return 'Target server unreachable'
@@ -219,6 +309,15 @@ export async function setupProxy(
     }
   }, 300000) // 5 minutes
 
+  // Periodic cleanup timer (every 30 minutes, not per-request)
+  const cleanupTimer = setInterval(() => {
+    try {
+      cleanOldRequestsDB(maxDays)
+    } catch (err) {
+      console.error('Cleanup failed:', err)
+    }
+  }, 1800000) // 30 minutes
+
   // Initial aggregation on startup
   try {
     aggregateStats()
@@ -226,9 +325,17 @@ export async function setupProxy(
     console.error('Initial stats aggregation failed:', err)
   }
 
+  // Initial cleanup on startup
+  try {
+    cleanOldRequestsDB(maxDays)
+  } catch (err) {
+    console.error('Initial cleanup failed:', err)
+  }
+
   // Cleanup database, MCP connections, and timer on server close
   fastify.addHook('onClose', async () => {
     clearInterval(statsTimer)
+    clearInterval(cleanupTimer)
     await mcpManager.close()
     closeDatabase()
   })
@@ -290,11 +397,15 @@ export async function setupProxy(
         },
         response: {
           statusCode: 0, // Will be updated after fetch
-          events: [] // SSE events will be recorded here
+          events: [] // Only used for JSON responses; streaming uses batch buffer
         }
       }
 
-      await cleanOldRequestsDB(maxDays)
+      // SSE event batch buffer: flush to DB every ~10 events to avoid in-memory accumulation
+      // Tail buffer: keep last 5 events for token usage extraction at stream end
+      const eventBatch: Array<{ index: number; type?: string; data: unknown }> = []
+      const tailBuffer: any[] = []
+      const eventIndexRef = { value: 0 }
 
       request.log.info(`request logged: ${request.id} ${request.method} ${request.url}`)
 
@@ -367,8 +478,8 @@ export async function setupProxy(
           requestData.response!.completedAt = new Date().toISOString()
 
           if (cloudRequestId !== request.id) {
-            const db = getDatabase()
-            db.prepare('DELETE FROM requests WHERE request_id = ? AND session_id = ?').run(request.id, sessionId)
+            deleteResponseEvents(request.id, sessionId)
+            deleteRequestRow(request.id, sessionId)
           }
 
           await saveRequestDB(sessionId, cloudRequestId, requestData)
@@ -408,7 +519,7 @@ export async function setupProxy(
           const nodeStream = Readable.fromWeb(response.body as any)
           const transformStream = createStreamTransformer(forwardedModel || originalModel)
 
-          // Record raw OpenAI SSE events for monitoring
+          // Record SSE events via batch buffer (memory: ≤10 batch + ≤5 tail)
           nodeStream.on('data', (chunk: Buffer) => {
             const text = chunk.toString()
             const lines = text.split('\n')
@@ -418,7 +529,7 @@ export async function setupProxy(
                 if (eventData && eventData !== '[DONE]') {
                   try {
                     const event = JSON.parse(eventData)
-                    requestData.response!.events!.push(event)
+                    pushEventToBuffers(event, sessionId, cloudRequestId, eventBatch, tailBuffer, eventIndexRef)
                   } catch {
                     // Not valid JSON, skip
                   }
@@ -428,54 +539,39 @@ export async function setupProxy(
           })
 
           // Use finished() for reliable stream completion detection
-          // (on('end') may not fire when transformStream.destroy() unpipes nodeStream)
-          finished(nodeStream, (err) => {
+          finished(nodeStream, async (err) => {
             if (err) {
               request.log.error(`openai stream error: ${err.message}`)
             }
 
-            const elapsed = Date.now() - startTime
-            requestData.response!.completedAt = new Date().toISOString()
-
             // Convert OpenAI stream usage to Claude format for extractTokenUsage compatibility
-            const lastChunk = requestData.response!.events!.find((e: any) => e?.usage)
+            const lastChunk = tailBuffer.find((e: any) => e?.usage)
             if (lastChunk?.usage) {
-              requestData.response!.events!.push({
+              const syntheticEvent = {
                 type: 'message_delta',
                 usage: {
                   output_tokens: lastChunk.usage.completion_tokens || 0
                 }
-              })
+              }
+              pushEventToBuffers(syntheticEvent, sessionId, cloudRequestId, eventBatch, tailBuffer, eventIndexRef)
             }
 
             if (cloudRequestId !== request.id) {
-              const db = getDatabase()
-              db.prepare('DELETE FROM requests WHERE request_id = ? AND session_id = ?').run(request.id, sessionId)
+              deleteResponseEvents(request.id, sessionId)
+              deleteRequestRow(request.id, sessionId)
             }
 
-            // Async DB save inside finished callback — handle errors explicitly
-            saveRequestDB(sessionId, cloudRequestId, requestData).then(() => {
-              const usage = extractTokenUsage(requestData.response!.events)
-              pushNewRequest({
-                requestId: cloudRequestId,
-                sessionId,
-                compositeId: `${sessionId}:${cloudRequestId}`,
-                method: request.method,
-                path: request.url,
-                timestamp: requestData.timestamp,
-                statusCode: response.status,
-                responseTime: elapsed,
-                model: forwardedModel,
-                machineId,
-                baseUrl: resolved.baseUrl,
-                usage,
-                pendingId: cloudRequestId !== request.id ? `${sessionId}:${request.id}` : undefined
-              }, 'completed')
-
-              request.log.info(`stream completed (openai): ${cloudRequestId} ${response.status} (${elapsed}ms, ${requestData.response!.events!.length} events)`)
-            }).catch((dbErr) => {
+            // Flush remaining batch + complete request
+            try {
+              await completeStreamSave(
+                sessionId, cloudRequestId, requestData, eventBatch, tailBuffer, eventIndexRef,
+                startTime, response.status, resolved, forwardedModel, originalModel, machineId, request
+              )
+              const elapsed = Date.now() - startTime
+              request.log.info(`stream completed (openai): ${cloudRequestId} ${response.status} (${elapsed}ms, ${eventIndexRef.value} events)`)
+            } catch (dbErr: any) {
               request.log.error(`openai stream save failed: ${dbErr.message}`)
-            })
+            }
           })
 
           // Pipe: OpenAI SSE → Transform → Claude SSE → Client
@@ -530,8 +626,8 @@ export async function setupProxy(
 
         // Remove pending row if cloudRequestId differs from request.id
         if (cloudRequestId !== request.id) {
-          const db = getDatabase()
-          db.prepare('DELETE FROM requests WHERE request_id = ? AND session_id = ?').run(request.id, sessionId)
+          deleteResponseEvents(request.id, sessionId)
+          deleteRequestRow(request.id, sessionId)
         }
 
         await saveRequestDB(sessionId, cloudRequestId, requestData)
@@ -573,21 +669,18 @@ export async function setupProxy(
         // Convert Web ReadableStream to Node Readable stream
         const nodeStream = Readable.fromWeb(response.body as any)
 
-        // Record SSE events while forwarding
+        // Record SSE events via batch buffer (memory: ≤10 batch + ≤5 tail)
         nodeStream.on('data', (chunk: Buffer) => {
           const text = chunk.toString()
 
           const lines = text.split('\n')
           for (const line of lines) {
-            // Handle both standard SSE and Aliyun format
-            // Standard: data: {...}
-            // Aliyun: event:xxx\ndata:{...}
             if (line.startsWith('data:')) {
-              const eventData = line.slice(5).trim() // Remove 'data:' prefix
+              const eventData = line.slice(5).trim()
               if (eventData && eventData !== '[DONE]') {
                 try {
                   const event = JSON.parse(eventData)
-                  requestData.response!.events!.push(event)
+                  pushEventToBuffers(event, sessionId, cloudRequestId, eventBatch, tailBuffer, eventIndexRef)
                 } catch {
                   // Not valid JSON, skip
                 }
@@ -597,36 +690,26 @@ export async function setupProxy(
         })
 
         // Save request data when stream completes
-        nodeStream.on('end', async () => {
-          const elapsed = Date.now() - startTime
-          requestData.response!.completedAt = new Date().toISOString()
-
-          // Remove pending row if cloudRequestId differs from request.id
-          if (cloudRequestId !== request.id) {
-            const db = getDatabase()
-            db.prepare('DELETE FROM requests WHERE request_id = ? AND session_id = ?').run(request.id, sessionId)
+        finished(nodeStream, async (err) => {
+          if (err) {
+            request.log.error(`claude stream error: ${err.message}`)
           }
 
-          await saveRequestDB(sessionId, cloudRequestId, requestData)
+          if (cloudRequestId !== request.id) {
+            deleteResponseEvents(request.id, sessionId)
+            deleteRequestRow(request.id, sessionId)
+          }
 
-          const usage = extractTokenUsage(requestData.response!.events)
-          pushNewRequest({
-            requestId: cloudRequestId,
-            sessionId,
-            compositeId: `${sessionId}:${cloudRequestId}`,
-            method: request.method,
-            path: request.url,
-            timestamp: requestData.timestamp,
-            statusCode: response.status,
-            responseTime: elapsed,
-            model: forwardedModel,
-            machineId,
-            baseUrl: resolved.baseUrl,
-            usage,
-            pendingId: cloudRequestId !== request.id ? `${sessionId}:${request.id}` : undefined
-          }, 'completed')
-
-          request.log.info(`stream completed: ${cloudRequestId} ${response.status} (${elapsed}ms, ${requestData.response!.events!.length} events)`)
+          try {
+            await completeStreamSave(
+              sessionId, cloudRequestId, requestData, eventBatch, tailBuffer, eventIndexRef,
+              startTime, response.status, resolved, forwardedModel, originalModel, machineId, request
+            )
+            const elapsed = Date.now() - startTime
+            request.log.info(`stream completed: ${cloudRequestId} ${response.status} (${elapsed}ms, ${eventIndexRef.value} events)`)
+          } catch (dbErr: any) {
+            request.log.error(`stream save failed: ${dbErr.message}`)
+          }
         })
 
         // Pipe: Aliyun -> Claude Code

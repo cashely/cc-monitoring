@@ -77,6 +77,11 @@ export function initDatabase(): Database.Database {
     db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (7)').run()
   }
 
+  if (currentVersion < 8) {
+    applySchemaV8(db)
+    db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (8)').run()
+  }
+
   return db
 }
 
@@ -259,6 +264,24 @@ export function applySchemaV7(db: Database.Database) {
   if (!columns.some(c => c.name === 'is_openai_compatible')) {
     db.exec('ALTER TABLE providers ADD COLUMN is_openai_compatible INTEGER NOT NULL DEFAULT 0')
   }
+}
+
+export function applySchemaV8(db: Database.Database) {
+  // Separate table for streaming SSE events — eliminates in-memory accumulation
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS response_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      request_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      event_index INTEGER NOT NULL,
+      event_type TEXT,
+      event_data TEXT NOT NULL
+    )
+  `)
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_response_events_request
+    ON response_events(request_id, session_id, event_index)
+  `)
 }
 
 export function closeDatabase() {

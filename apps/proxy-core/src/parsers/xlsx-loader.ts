@@ -1,11 +1,11 @@
 // apps/proxy-core/src/parsers/xlsx-loader.ts
-import XLSX from 'xlsx'
 import type { ParserLoader } from './types.js'
 
 export class XlsxLoader implements ParserLoader {
   supportedExtensions = ['.xlsx', '.xls']
 
   async parse(buffer: Buffer, _filename: string): Promise<string> {
+    const XLSX = await import('xlsx')
     const workbook = XLSX.read(buffer, { type: 'buffer' })
     const parts: string[] = []
 

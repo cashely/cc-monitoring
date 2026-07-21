@@ -19,9 +19,9 @@ export class StatusHistoryStore {
 
   push(point: StatusDataPoint): void {
     this.data.push(point)
-    // 超出容量时，丢弃最旧数据
-    if (this.data.length > this.maxPoints) {
-      this.data = this.data.slice(-this.maxPoints)
+    // 超出容量时，丢弃最旧数据（shift 不创建新数组）
+    while (this.data.length > this.maxPoints) {
+      this.data.shift()
     }
   }
 
