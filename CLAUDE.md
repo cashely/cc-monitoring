@@ -58,6 +58,7 @@ pnpm build                # 构建所有包
 pnpm build:proxy-core     # 构建核心代理服务
 pnpm build:proxy-cli      # 构建代理管理面板
 pnpm build:proxy-admin    # 构建系统管理后台
+pnpm build:proxy-docs     # 构建架构文档（VitePress）
 ```
 
 ### Server Management
@@ -88,6 +89,7 @@ pnpm dev:proxy-core       # Core 开发模式（tsx 热重载）
 pnpm dev:proxy-cli        # Proxy UI 开发模式（Vite HMR）
 pnpm dev:proxy-admin      # Admin UI 开发模式（Vite HMR）
 pnpm dev                  # 同时启动 Core + Proxy UI
+pnpm docs                 # 本地预览架构文档（VitePress dev server）
 ```
 
 ### Testing
@@ -171,9 +173,10 @@ cc-monitoring/
 │           ├── pages/       # 管理页面
 │           ├── services/    # API 层
 │           └── components/  # 业务组件
+│   └── proxy-docs/      # 架构文档（VitePress）
 ├── packages/
 │   └── utils/            # @cc/utils（跨项目复用工具）
-└── docs/                 # 文档目录
+└── docs/                 # 开发流程文档（thinks/、superpowers/）
 ```
 
 ### Configuration Schema
@@ -213,6 +216,7 @@ cc-monitoring/
 
 ## Important Files
 - `~/.cc-monitoring/config.json`：运行时配置（项目外）
+- `apps/proxy-docs/`：架构文档（VitePress 项目）
 - `apps/proxy-core/src/server/proxy.ts`：Proxy 转发核心
 - `apps/proxy-core/src/server/ui-route.ts`：UI API + WebSocket + 静态资源
 - `apps/proxy-core/src/server/providers-route.ts`：供应商 REST API
