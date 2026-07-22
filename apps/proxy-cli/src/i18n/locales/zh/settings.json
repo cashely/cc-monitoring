@@ -4,5 +4,8 @@
     "providers": "管理供应商",
     "mcpServers": "MCP Servers",
     "viewDocs": "查看文档"
+  },
+  "aria": {
+    "settingsMenu": "设置"
   }
 }

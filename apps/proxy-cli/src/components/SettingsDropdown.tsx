@@ -41,15 +41,12 @@ export function SettingsDropdown(): JSX.Element {
     // 45秒超时保护
     setTimeout(() => {
       clearInterval(pollInterval)
-      setIsRestarting(current => {
-        if (current) setIsRestarting(false)
-        return false
-      })
+      setIsRestarting(false)
     }, 45000)
   }
 
   const handleViewDocs = () => {
-    window.open(location.origin + '/docs', '_blank')
+    window.open(window.location.origin + '/docs', '_blank')
   }
 
   return (
@@ -57,43 +54,45 @@ export function SettingsDropdown(): JSX.Element {
       <div className="relative group/settings">
         <button
           className="flex items-center justify-center w-8 h-8 rounded-lg hover:bg-bg-hover transition-colors"
-          aria-label={t('menu.viewDocs')}
+          aria-label={t('aria.settingsMenu')}
         >
           <Settings size={16} className="text-text-muted group-hover/settings:text-text-primary transition-colors" />
         </button>
 
         {/* Dropdown — appears on hover */}
-        <div className="absolute right-0 top-full mt-1 w-48 glass-strong rounded-xl py-1 opacity-0 invisible group-hover/settings:opacity-100 group-hover/settings:visible transition-all duration-200 z-50">
-          <button
-            onClick={handleRestart}
-            disabled={isRestarting}
-            className="w-full flex items-center gap-2 px-3 py-2 text-xs text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <RefreshCw size={14} className={isRestarting ? 'animate-spin' : ''} />
-            {isRestarting ? tc('action.restarting') : t('menu.restart')}
-          </button>
-          <button
-            onClick={() => setIsProviderModalOpen(true)}
-            className="w-full flex items-center gap-2 px-3 py-2 text-xs text-text-primary hover:bg-bg-hover transition-colors"
-          >
-            <DatabaseZap size={14} />
-            {t('menu.providers')}
-          </button>
-          <button
-            onClick={() => setIsMcpPanelOpen(true)}
-            className="w-full flex items-center gap-2 px-3 py-2 text-xs text-text-primary hover:bg-bg-hover transition-colors"
-          >
-            <ApiOutlined style={{ fontSize: 14 }} />
-            {t('menu.mcpServers')}
-          </button>
-          <div className="my-1 border-t border-border" />
-          <button
-            onClick={handleViewDocs}
-            className="w-full flex items-center gap-2 px-3 py-2 text-xs text-text-primary hover:bg-bg-hover transition-colors"
-          >
-            <BookOpen size={14} />
-            {t('menu.viewDocs')}
-          </button>
+        <div className="absolute right-0 top-full pt-1 w-48 z-50 opacity-0 invisible group-hover/settings:opacity-100 group-hover/settings:visible transition-all duration-200">
+          <div className="glass-strong rounded-xl py-1">
+            <button
+              onClick={handleRestart}
+              disabled={isRestarting}
+              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <RefreshCw size={14} className={isRestarting ? 'animate-spin' : ''} />
+              {isRestarting ? tc('action.restarting') : t('menu.restart')}
+            </button>
+            <button
+              onClick={() => setIsProviderModalOpen(true)}
+              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-text-primary hover:bg-bg-hover transition-colors"
+            >
+              <DatabaseZap size={14} />
+              {t('menu.providers')}
+            </button>
+            <button
+              onClick={() => setIsMcpPanelOpen(true)}
+              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-text-primary hover:bg-bg-hover transition-colors"
+            >
+              <ApiOutlined style={{ fontSize: 14 }} />
+              {t('menu.mcpServers')}
+            </button>
+            <div className="my-1 border-t border-border" />
+            <button
+              onClick={handleViewDocs}
+              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-text-primary hover:bg-bg-hover transition-colors"
+            >
+              <BookOpen size={14} />
+              {t('menu.viewDocs')}
+            </button>
+          </div>
         </div>
       </div>
 
