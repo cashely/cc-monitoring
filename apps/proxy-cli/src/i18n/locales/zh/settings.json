@@ -1,0 +1,8 @@
+{
+  "menu": {
+    "restart": "重启服务",
+    "providers": "管理供应商",
+    "mcpServers": "MCP Servers",
+    "viewDocs": "查看文档"
+  }
+}
