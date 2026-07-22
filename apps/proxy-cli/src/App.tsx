@@ -3,6 +3,7 @@ import { ConfigEditor } from './components/ConfigEditor'
 import { RequestHistory } from './components/RequestHistory'
 import { LanguageSwitcher } from './components/LanguageSwitcher'
 import { ThemeSwitcher } from './components/ThemeSwitcher'
+import { SettingsDropdown } from './components/SettingsDropdown'
 import { StatsBarChart } from './components/StatsBarChart'
 import { ChatUI } from './components/ChatUI'
 import { ConnectionBanner } from './components/ConnectionBanner'
@@ -46,6 +47,7 @@ export function App(): JSX.Element {
               </span>
             )}
             <LanguageSwitcher />
+            <SettingsDropdown />
             <ThemeSwitcher />
           </div>
         </header>
