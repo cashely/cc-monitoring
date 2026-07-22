@@ -1,4 +1,4 @@
-import { StatusPanel } from './components/StatusPanel'
+import { StatusLineChart } from './components/StatusLineChart'
 import { ConfigEditor } from './components/ConfigEditor'
 import { RequestHistory } from './components/RequestHistory'
 import { LanguageSwitcher } from './components/LanguageSwitcher'
@@ -14,6 +14,7 @@ export function App(): JSX.Element {
   const { versions } = useConfig()
   const { status, history, requests, stats, todayStats, connectionState, loading } =
     useWebSocketData()
+  const memoryHistory = (history || []).map(p => ({ ...p, memoryMB: p.memory / 1024 / 1024 }))
 
   return (
     <div className="min-h-screen flex flex-col bg-bg-primary text-text-primary relative overflow-hidden">
@@ -59,20 +60,25 @@ export function App(): JSX.Element {
           </div>
         </div>
 
-        <main className="flex-1 flex gap-2 px-2 pb-2">
-          <section className="flex-1 rounded-xl overflow-hidden relative glass">
-            <div className="absolute inset-0 overflow-y-auto">
-              <RequestHistory requests={requests} loading={loading} />
-            </div>
-          </section>
-          <section className="w-96 flex flex-col gap-4">
-            <div className="glass rounded-xl p-4">
-              <StatusPanel status={{ ...status, history }} />
-            </div>
-            <div className="glass rounded-xl p-4 overflow-y-auto">
-              <ConfigEditor />
-            </div>
-          </section>
+        {/* CPU / Memory / Config middle row */}
+        <div className="px-2 py-2 flex gap-2">
+          <div className="flex-1 glass rounded-xl p-4">
+            <h4 className="text-xs text-text-muted mb-1">{t('status:cpuChart')}</h4>
+            <StatusLineChart data={history || []} metric="cpu" height={120} />
+          </div>
+          <div className="flex-1 glass rounded-xl p-4">
+            <h4 className="text-xs text-text-muted mb-1">{t('status:memoryChart')}</h4>
+            <StatusLineChart data={memoryHistory} metric="memoryMB" height={120} />
+          </div>
+          <div className="flex-1 glass rounded-xl p-4 overflow-y-auto">
+            <ConfigEditor />
+          </div>
+        </div>
+
+        <main className="flex-1 flex flex-col px-2 pb-2 min-h-0">
+          <div className="flex-1 glass rounded-xl overflow-y-auto min-h-0">
+            <RequestHistory requests={requests} loading={loading} />
+          </div>
         </main>
       </div>
     </div>

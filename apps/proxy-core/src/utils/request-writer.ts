@@ -175,6 +175,25 @@ export async function saveRequestDB(
   )
 }
 
+// Update token columns for a request (streaming: usage extracted from tailBuffer after save)
+export function updateRequestTokens(
+  requestId: string,
+  sessionId: string,
+  usage: TokenUsage | undefined
+): void {
+  const db = getDatabase()
+  db.prepare(
+    'UPDATE requests SET input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, cache_creation_tokens = ? WHERE request_id = ? AND session_id = ?'
+  ).run(
+    usage?.input_tokens || null,
+    usage?.output_tokens || null,
+    usage?.cache_read_input_tokens || null,
+    usage?.cache_creation_input_tokens || null,
+    requestId,
+    sessionId
+  )
+}
+
 // Delete a request row by requestId + sessionId (for pending → completed replacement)
 export function deleteRequestRow(requestId: string, sessionId: string): void {
   const db = getDatabase()

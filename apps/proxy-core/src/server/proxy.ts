@@ -3,7 +3,7 @@ import { Readable, finished } from 'stream'
 import { convertClaudeToOpenAIRequest, convertOpenAIToClaudeResponse, createStreamTransformer, buildOpenAIHeaders } from '../utils/openai-converter.js'
 import { ProxyConfig } from '../types/config.js'
 import { loadConfig } from '../config/index.js'
-import { saveRequestDB, extractTokenUsage, flushEventBatch, deleteResponseEvents, deleteRequestRow, EVENT_BATCH_SIZE, type RequestData } from '../utils/request-writer.js'
+import { saveRequestDB, extractTokenUsage, flushEventBatch, deleteResponseEvents, deleteRequestRow, updateRequestTokens, EVENT_BATCH_SIZE, type RequestData } from '../utils/request-writer.js'
 import { cleanOldRequestsDB } from '../utils/request-writer.js'
 import { pushNewRequest } from './data-push.js'
 import { initDatabase, closeDatabase, getDatabase } from '../utils/db.js'
@@ -250,6 +250,8 @@ async function completeStreamSave(
   await saveRequestDB(sessionId, requestId, requestData)
 
   const usage = extractTokenUsage(tailBuffer)
+  updateRequestTokens(requestId, sessionId, usage)
+
   pushNewRequest({
     requestId,
     sessionId,
