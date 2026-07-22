@@ -1,0 +1,8 @@
+{
+  "menu": {
+    "restart": "Restart Server",
+    "providers": "Manage Providers",
+    "mcpServers": "MCP Servers",
+    "viewDocs": "View Docs"
+  }
+}
