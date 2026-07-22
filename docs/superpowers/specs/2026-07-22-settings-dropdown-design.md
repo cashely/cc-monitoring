@@ -38,7 +38,7 @@ onMcpPanelOpen: () => void
 
 ### App.tsx changes
 
-- Header right side: insert `<SettingsDropdown>` between `LanguageSwitcher` and `ThemeSwitcher` (or before LanguageSwitcher)
+- Header right side: insert `<SettingsDropdown>` between LanguageSwitcher and ThemeSwitcher (order: [version info] [LanguageSwitcher] [SettingsDropdown] [ThemeSwitcher])
 - Add `isProviderModalOpen` / `isMcpPanelOpen` state to App
 - Render `<ProviderManagerModal>` and `<McpManagerPanel>` at App level
 - Remove ConfigEditor's provider/mcp related props if any
