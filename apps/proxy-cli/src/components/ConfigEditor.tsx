@@ -9,7 +9,7 @@ import { TOKEN_COLORS } from './chart-theme'
 export function ConfigEditor(): JSX.Element {
   const { t } = useTranslation('config')
   const [message, setMessage] = useState<string | null>(null)
-  const [messageType, setMessageType] = useState<'success' | 'error' | 'restarting'>('success')
+  const [messageType, setMessageType] = useState<'success' | 'error'>('success')
   const [configPath, setConfigPath] = useState<string | null>(null)
   const [isSyncing, setIsSyncing] = useState(false)
 
@@ -76,7 +76,6 @@ export function ConfigEditor(): JSX.Element {
       {message && (
         <div className={`p-2 mb-2 rounded ${
           messageType === 'success' ? 'bg-success/10 text-success' :
-          messageType === 'restarting' ? 'bg-warning/10 text-warning animate-pulse' :
           'bg-error/10 text-error'
         }`}>
           {message}

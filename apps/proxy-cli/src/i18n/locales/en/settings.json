@@ -4,5 +4,8 @@
     "providers": "Manage Providers",
     "mcpServers": "MCP Servers",
     "viewDocs": "View Docs"
+  },
+  "aria": {
+    "settingsMenu": "Settings"
   }
 }
