@@ -61,7 +61,7 @@ export function SettingsDropdown(): JSX.Element {
 
         {/* Dropdown — appears on hover */}
         <div className="absolute right-0 top-full pt-1 w-48 z-50 opacity-0 invisible group-hover/settings:opacity-100 group-hover/settings:visible transition-all duration-200">
-          <div className="glass-strong rounded-xl py-1">
+          <div className="dropdown-bg rounded-xl py-1">
             <button
               onClick={handleRestart}
               disabled={isRestarting}

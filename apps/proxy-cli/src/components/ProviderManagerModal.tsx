@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { Button, Tooltip, Checkbox } from 'antd'
 import { CloseOutlined, DeleteOutlined, CheckOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
@@ -139,7 +140,7 @@ export function ProviderManagerModal({ isOpen, onClose }: ProviderManagerModalPr
     setIsSaving(false)
   }
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
       <div className="bg-bg-primary rounded-lg shadow-xl w-full max-w-6xl max-h-[90vh] overflow-auto p-6">
         <div className="flex items-center justify-between mb-4 pb-2 border-b border-border">
@@ -239,6 +240,7 @@ export function ProviderManagerModal({ isOpen, onClose }: ProviderManagerModalPr
           </Button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

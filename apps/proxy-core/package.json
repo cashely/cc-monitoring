@@ -1,6 +1,6 @@
 {
   "name": "@cc-monitoring/proxy-core",
-  "version": "0.1.5-alpha.1",
+  "version": "0.1.6",
   "description": "Claude Code 代理工具 + Token 消耗监控面板",
   "keywords": [
     "claude-code-proxy",
@@ -39,7 +39,7 @@
     "dev": "tsx src/server/index.ts",
     "start": "pm2 start ecosystem.config.js",
     "test": "jest",
-    "prepublishOnly": "pnpm build && node scripts/bundle-ui.mjs"
+    "prepublishOnly": "pnpm build && node scripts/bundle-ui.mjs && node scripts/bundle-docs.mjs"
   },
   "dependencies": {
     "@fastify/http-proxy": "^9.5.0",

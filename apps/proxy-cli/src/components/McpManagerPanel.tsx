@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { Button, Modal, Select, Input, Switch, Tag, Tooltip, Popconfirm } from 'antd'
 import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, ApiOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
@@ -156,7 +157,7 @@ export function McpManagerPanel({ isOpen, onClose }: McpManagerPanelProps): JSX.
   const isStdio = form.transport_type === 'stdio'
   const isHttp = form.transport_type === 'sse' || form.transport_type === 'streamable-http'
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="bg-bg-primary rounded-lg shadow-xl w-full max-w-4xl max-h-[90vh] overflow-auto p-6">
         {/* Header */}
@@ -366,6 +367,7 @@ export function McpManagerPanel({ isOpen, onClose }: McpManagerPanelProps): JSX.
           </div>
         </Modal>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
