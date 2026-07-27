@@ -140,6 +140,18 @@
   box-shadow: 0 4px 24px -1px rgba(0, 0, 0, 0.08);
 }
 
+.dropdown-bg {
+  background: rgba(15, 23, 42, 0.95);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  box-shadow: var(--glass-shadow);
+}
+
+.light .dropdown-bg {
+  background: rgba(248, 250, 252, 0.95);
+  box-shadow: 0 4px 24px -1px rgba(0, 0, 0, 0.08);
+}
+
 .glass-strong {
   background: var(--color-bg-secondary);
   backdrop-filter: blur(var(--glass-blur));
