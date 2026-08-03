@@ -28,7 +28,7 @@ importers:
         version: 5.29.3(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       axios:
         specifier: ^1.6.0
-        version: 1.18.1
+        version: 1.18.1(debug@4.3.7)
       react:
         specifier: ^18.2.0
         version: 18.3.1
@@ -8173,7 +8173,7 @@ snapshots:
       '@vueuse/shared': 12.8.2(typescript@5.9.3)
       vue: 3.5.40(typescript@5.9.3)
     optionalDependencies:
-      axios: 1.18.1
+      axios: 1.18.1(debug@4.3.7)
       focus-trap: 7.8.0
     transitivePeerDependencies:
       - typescript
@@ -8380,7 +8380,7 @@ snapshots:
       '@fastify/error': 3.4.1
       fastq: 1.20.1
 
-  axios@1.18.1:
+  axios@1.18.1(debug@4.3.7):
     dependencies:
       follow-redirects: 1.16.0(debug@4.3.7)
       form-data: 4.0.6

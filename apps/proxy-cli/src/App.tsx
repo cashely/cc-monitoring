@@ -18,17 +18,17 @@ export function App(): JSX.Element {
   const memoryHistory = (history || []).map(p => ({ ...p, memoryMB: p.memory / 1024 / 1024 }))
 
   return (
-    <div className="min-h-screen flex flex-col bg-bg-primary text-text-primary relative overflow-hidden">
+    <div className="min-h-screen flex flex-col bg-bg-primary text-text-primary relative overflow-x-hidden">
       {/* Ambient background blobs */}
       <div className="ambient-blob blob-1" />
       <div className="ambient-blob blob-2" />
       <div className="ambient-blob blob-3" />
 
       {/* Content layer above blobs */}
-      <div className="content-layer flex flex-col min-h-screen">
+      <div className="content-layer flex flex-col min-h-screen pt-[44px]">
         <ConnectionBanner connected={connectionState !== 'disconnected'} />
 
-        <header className="bg-bg-secondary/80 backdrop-blur-xl px-2 py-2 flex justify-between items-center border-b border-border">
+        <header className="fixed top-0 left-0 right-0 z-50 bg-bg-secondary/80 backdrop-blur-xl px-2 py-2 flex justify-between items-center border-b border-border">
           <div className="flex items-center gap-2">
             <h1 className="text-base font-semibold">
               {t('title')}
@@ -47,8 +47,8 @@ export function App(): JSX.Element {
               </span>
             )}
             <LanguageSwitcher />
-            <SettingsDropdown />
             <ThemeSwitcher />
+            <SettingsDropdown />
           </div>
         </header>
 
