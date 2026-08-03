@@ -13,7 +13,7 @@ export function LanguageSwitcher(): JSX.Element {
     <button
       onClick={toggleLanguage}
       title={i18n.language === 'zh' ? 'Switch to English' : '切换为中文'}
-      className="flex items-center justify-center w-8 h-8 rounded border border-border bg-bg-secondary text-text-primary text-sm hover:bg-bg-hover"
+      className="flex items-center justify-center w-8 h-8 rounded bg-bg-secondary text-text-primary text-sm hover:bg-bg-hover"
     >
       <Languages size={16} />
     </button>

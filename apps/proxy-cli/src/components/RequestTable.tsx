@@ -167,26 +167,6 @@ export function RequestTable({
                 style={{ color: sessionColor }}
               />
             )}
-            <Tag
-              className="flex-shrink-0"
-              style={{
-                width: 20,
-                height: 20,
-                minWidth: 20,
-                padding: 0,
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                borderRadius: '50%',
-                fontSize: 11,
-                fontWeight: 600,
-                border: 'none',
-                background: sessionColor,
-                color: '#fff',
-              }}
-            >
-              {record.sequence}
-            </Tag>
             <span
               className="text-xs font-mono"
               style={{
