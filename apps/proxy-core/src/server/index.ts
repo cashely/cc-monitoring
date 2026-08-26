@@ -19,7 +19,8 @@ export async function createServer(): Promise<FastifyInstance> {
 
   const fastify = Fastify({
     logger: logger as unknown as FastifyBaseLogger,
-    trustProxy: true
+    trustProxy: true,
+    requestTimeout: 310000
   })
 
   fastify.register(requestIdMiddleware)

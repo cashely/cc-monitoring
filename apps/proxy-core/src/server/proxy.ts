@@ -264,7 +264,8 @@ async function completeStreamSave(
     model: forwardedModel || originalModel,
     machineId,
     baseUrl: resolved.baseUrl,
-    usage
+    usage,
+    pendingId: requestId !== request.id ? `${sessionId}:${request.id}` : undefined
   }, 'completed')
 }
 
@@ -441,7 +442,8 @@ export async function setupProxy(
         const response = await fetch(targetUrlStr, {
           method: request.method,
           headers: openaiHeaders,
-          body: JSON.stringify(openaiRequest)
+          body: JSON.stringify(openaiRequest),
+          signal: AbortSignal.timeout(300000)
         })
 
         request.log.info(`response status: ${response.status}`)
@@ -594,7 +596,8 @@ export async function setupProxy(
       const response = await fetch(targetUrlStr, {
         method: request.method,
         headers: forwardHeaders,
-        body: request.method !== 'GET' ? JSON.stringify(request.body) : undefined
+        body: request.method !== 'GET' ? JSON.stringify(request.body) : undefined,
+        signal: AbortSignal.timeout(300000)
       })
 
       request.log.info(`response status: ${response.status}`)

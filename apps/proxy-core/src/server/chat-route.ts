@@ -157,7 +157,8 @@ export async function setupChatRoute(
     const response = await fetch(targetUrlStr, {
       method: 'POST',
       headers: forwardHeaders,
-      body: JSON.stringify(request.body)
+      body: JSON.stringify(request.body),
+      signal: AbortSignal.timeout(300000)
     })
 
     request.log.info(`[chat] response status: ${response.status}`)
@@ -198,7 +199,8 @@ export async function setupChatRoute(
               const r = await fetch(targetUrlStr, {
                 method: 'POST',
                 headers: forwardHeaders,
-                body: JSON.stringify(b)
+                body: JSON.stringify(b),
+                signal: AbortSignal.timeout(300000)
               })
               const loopResponseBody = await r.text()
               let loopJson: any
@@ -385,7 +387,8 @@ export async function setupChatRoute(
               const r = await fetch(targetUrlStr, {
                 method: 'POST',
                 headers: forwardHeaders,
-                body: JSON.stringify(b)
+                body: JSON.stringify(b),
+                signal: AbortSignal.timeout(300000)
               })
               const loopRequestId = r.headers.get('x-request-id') || `loop_${request.id}_${Date.now()}`
               return { response: r, requestId: loopRequestId }
