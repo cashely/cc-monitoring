@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Settings, RefreshCw, DatabaseZap, BookOpen } from 'lucide-react'
+import { Settings, RefreshCw, DatabaseZap } from 'lucide-react'
 import { ApiOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { controlProcess } from '../api'
@@ -45,10 +45,6 @@ export function SettingsDropdown(): JSX.Element {
     }, 45000)
   }
 
-  const handleViewDocs = () => {
-    window.open(window.location.origin + '/docs', '_blank')
-  }
-
   return (
     <>
       <div className="relative group/settings">
@@ -65,32 +61,24 @@ export function SettingsDropdown(): JSX.Element {
             <button
               onClick={handleRestart}
               disabled={isRestarting}
-              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-text-primary hover:bg-bg-hover cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <RefreshCw size={14} className={isRestarting ? 'animate-spin' : ''} />
               {isRestarting ? tc('action.restarting') : t('menu.restart')}
             </button>
             <button
               onClick={() => setIsProviderModalOpen(true)}
-              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-text-primary hover:bg-bg-hover transition-colors"
+              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-text-primary hover:bg-bg-hover cursor-pointer transition-colors"
             >
               <DatabaseZap size={14} />
               {t('menu.providers')}
             </button>
             <button
               onClick={() => setIsMcpPanelOpen(true)}
-              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-text-primary hover:bg-bg-hover transition-colors"
+              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-text-primary hover:bg-bg-hover cursor-pointer transition-colors"
             >
               <ApiOutlined style={{ fontSize: 14 }} />
               {t('menu.mcpServers')}
-            </button>
-            <div className="my-1 border-t border-border" />
-            <button
-              onClick={handleViewDocs}
-              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-text-primary hover:bg-bg-hover transition-colors"
-            >
-              <BookOpen size={14} />
-              {t('menu.viewDocs')}
             </button>
           </div>
         </div>

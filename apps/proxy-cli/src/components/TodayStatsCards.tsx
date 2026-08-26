@@ -25,7 +25,7 @@ export function TodayStatsCards({ today }: Props): JSX.Element {
   const maxCount = Math.max(...modelEntries.map(([, count]) => count), 1)
 
   return (
-    <div className="grid grid-cols-5 gap-2 mb-4">
+    <div className="grid grid-cols-5 gap-2 mb-4 w-full">
       {cards.map(card => (
         <GlowCard key={card.key} color={card.color}>
           <div className="flex items-center justify-between mb-1">
@@ -53,7 +53,7 @@ export function TodayStatsCards({ today }: Props): JSX.Element {
           <span className="text-xs text-text-muted">{t('today.models')}</span>
           <Boxes size={14} style={{ color: MODEL_COLOR }} />
         </div>
-        <div className="h-12">
+        <div className="flex items-center justify-center h-12">
           {modelEntries.length === 0 ? (
             <div className="flex items-center justify-center h-full text-xs text-text-muted">{t('today.noModels')}</div>
           ) : (

@@ -304,7 +304,7 @@ export function RequestTable({
         })}
         rowKey="compositeId"
         size="small"
-        scroll={{ x: 'max-content', y: 'calc(100vh - 200px)' }}
+        scroll={{ x: 1420, y: 'calc(100vh - 200px)' }}
         tableLayout="auto"
         sticky
         footer={() => (

@@ -50,8 +50,8 @@ export function ChatUI(): JSX.Element {
   )
 
   return (
-    <div className="glass rounded-xl overflow-hidden flex flex-col h-101.25">
-      <div className="flex-1 min-h-0 px-4 py-2">
+    <div className="glass rounded-xl overflow-hidden flex flex-col absolute inset-0" style={{ padding: 16 }}>
+      <div className="flex-1 min-h-0">
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full gap-3">
             <div className="w-10 h-10 rounded-full flex items-center justify-center bg-secondary/20">
@@ -118,7 +118,7 @@ export function ChatUI(): JSX.Element {
         </div>
       )}
 
-      <div className="glass-strong p-2 flex flex-col gap-1.5">
+      <div className="glass-strong px-4 py-2 flex flex-col gap-1.5">
         <ChatToolbar onNewConversation={newConversation} />
         <Sender
           value={inputValue}
