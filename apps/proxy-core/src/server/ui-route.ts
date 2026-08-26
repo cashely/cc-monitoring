@@ -1,4 +1,4 @@
-import { FastifyInstance } from 'fastify'
+import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import staticPlugin from '@fastify/static'
 import path from 'path'
 import fs from 'fs'
@@ -35,6 +35,10 @@ interface ExecResponse {
 }
 
 export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
+  // Health check: Claude Code probes base URL with HEAD/GET /
+  fastify.head('/', async () => '')
+  fastify.get('/', async (_req: FastifyRequest, reply: FastifyReply) => reply.redirect('/ui'))
+
   const config = await loadConfig()
 
   // Mount providers API routes
