@@ -199,7 +199,7 @@ export function StatsBarChart({ stats, todayStats }: StatsBarChartProps): JSX.El
         })}
       </div>
 
-      <p className="text-xs text-text-muted mt-2">
+      <p className="text-xs text-text-muted mt-2 text-right">
         {t('lastUpdated')}: {formatTime(stats.lastUpdated)}
       </p>
     </div>
