@@ -128,6 +128,18 @@ program.command('ui')
     await uiCommand(options)
   })
 
+program.command('mcp')
+  .description('Start cc-monitoring as a stdio MCP server for external clients')
+  .action(async () => {
+    try {
+      const { mcpCommand } = await import('./commands/mcp.js')
+      await mcpCommand()
+    } catch (err) {
+      console.error('[ccm mcp] failed to start:', err)
+      process.exit(1)
+    }
+  })
+
 program.command('doc')
   .description('Open architecture docs')
   .option('--build', 'Force rebuild docs')
