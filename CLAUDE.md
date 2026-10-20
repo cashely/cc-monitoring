@@ -81,6 +81,42 @@ Claude Code 行为准则 + 编码约束。项目介绍、命令、架构详见 [
 
 ---
 
+## 发版流程（npm 自动发布）
+
+仅发布 `@cc-monitoring/proxy-core`（bin: `ccm`）。proxy-cli / proxy-docs **不单独发版**，其产物会被 bundle 进 proxy-core 包内。
+由 GitHub Action 自动完成：`.github/workflows/publish.yml`。
+
+### 触发条件
+- push `v*` tag（如 `v0.1.9`）→ 正式发布
+- 手动 `workflow_dispatch`（可勾选 `dry_run`）→ 试跑，不真正发布
+
+### 产物构成（自包含）
+`proxy-core` 的 npm 包 = core + UI + docs。`prepublishOnly` 钩子自动执行：
+1. `pnpm build`（core tsc 编译 → `dist/`）
+2. `node scripts/bundle-ui.mjs` → `pnpm --filter @cc-monitoring/proxy-cli build`，拷贝 `proxy-cli/dist` → `proxy-core/dist/ui`，并给 `dist/cli/index.js` 注入 shebang + chmod 755（作为 bin `ccm`）
+3. `node scripts/bundle-docs.mjs` → `pnpm --filter @cc-monitoring/docs build`，拷贝 `proxy-docs/dist` → `proxy-core/dist/docs`
+
+因此无论改动在 core / proxy-cli / proxy-docs，**统一通过发 proxy-core 一个包发布**。
+
+### 发版步骤
+1. 改动已合并到 `main`，工作区干净
+2. 升级 `apps/proxy-core/package.json` 的 `version`（如 `0.1.8` → `0.1.9`），提交并 push 到 main
+3. 打 tag 并推送（**tag 名 = `v` + package.json version，必须严格对应**）：
+   ```bash
+   git tag v0.1.9
+   git push origin v0.1.9
+   ```
+4. Action 自动执行：node 22 + pnpm 11 → `pnpm install`（monorepo 根，装齐所有 workspace）→ `pnpm build` → `npm publish --access public --provenance`（`prepublishOnly` 钩子会再跑 bundle-ui/docs）
+5. 验证：`npm info @cc-monitoring/proxy-core` 看 `latest` 版本号是否为新版本
+
+### 关键配置
+- 鉴权：`NPM_TOKEN` secret；`id-token: write` 用于 npm provenance
+- registry：https://registry.npmjs.org
+- 工作目录：`apps/proxy-core`
+- 已知冗余：`publish.yml` 显式跑一次 `pnpm build`，`prepublishOnly` 又跑一次 `pnpm build`——功能正确，仅耗时冗余，未修
+
+---
+
 ## 开发流程规范
 
 1. 收到任务先做需求分析
