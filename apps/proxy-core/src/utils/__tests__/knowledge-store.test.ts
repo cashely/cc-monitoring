@@ -5,15 +5,15 @@ import { createKnowledgeStore } from '../knowledge-store.js'
 
 async function makeTmpDocs(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-test-'))
-  // 根 INDEX.md
+  // 根 INDEX.md（自然列表）
   await fs.writeFile(path.join(dir, 'INDEX.md'),
-    '# 知识主题清单\n\n- [react-hooks](react-hooks/) — React hooks 用法\n', 'utf8')
+    '# 知识库总览\n\n## 主题列表\n- react-hooks: React hooks 用法\n', 'utf8')
   // 主题文件夹
   await fs.mkdir(path.join(dir, 'react-hooks', 'chunks'), { recursive: true })
   await fs.writeFile(path.join(dir, 'react-hooks', 'INDEX.md'),
-    '---\ntitle: React Hooks 参考\ntags: [react, hooks]\nchunkCount: 1\n---\n\n# React Hooks 参考\n\n## 片段清单\n- [chunk-001](chunks/chunk-001.md) — useState：状态管理\n', 'utf8')
+    '# react-hooks\n\n## 元数据\n- 名称: React Hooks 参考\n- 标签: react, hooks\n\n## Chunk 列表\n- chunk-001: 状态管理 — useState 用于组件状态\n', 'utf8')
   await fs.writeFile(path.join(dir, 'react-hooks', 'chunks', 'chunk-001.md'),
-    '---\ntitle: useState 状态管理\n---\n\nuseState 用于组件状态。', 'utf8')
+    '# 状态管理：useState\n\nuseState 用于组件状态。', 'utf8')
   return dir
 }
 
@@ -37,7 +37,7 @@ describe('knowledge-store', () => {
     const detail = await store.getTopic('react-hooks')
     expect(detail.title).toBe('React Hooks 参考')
     expect(detail.tags).toEqual(['react', 'hooks'])
-    expect(detail.chunks).toEqual([{ id: 'chunk-001', title: 'useState：状态管理', summary: 'useState：状态管理' }])
+    expect(detail.chunks).toEqual([{ id: 'chunk-001', title: '状态管理', summary: 'useState 用于组件状态' }])
   })
 
   it('readChunk 返回单片正文', async () => {
@@ -58,6 +58,6 @@ describe('knowledge-store', () => {
     const root = await makeTmpDocs()
     const store = createKnowledgeStore(root)
     const hits = await store.searchChunks('useState')
-    expect(hits).toEqual([{ topic: 'react-hooks', chunkId: 'chunk-001', title: 'useState 状态管理' }])
+    expect(hits).toEqual([{ topic: 'react-hooks', chunkId: 'chunk-001', title: '状态管理：useState' }])
   })
 })
