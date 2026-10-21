@@ -2,14 +2,15 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import staticPlugin from '@fastify/static'
 import path from 'path'
 import fs from 'fs'
-import { spawn } from 'child_process'
 import { WebSocketServer, WebSocket } from 'ws'
 import { randomUUID } from 'node:crypto'
 import { loadConfig, saveConfig } from '../config/index.js'
 import { getProcessStatus, startProcess, stopProcess, reloadProcess } from '../utils/pm2.js'
 import { getCallerDirname } from '../utils/esm-dirname.js'
 import { getConfigPath, getDisplayPath } from '../utils/paths.js'
-import { loadRequestDB, listRequestDB, type RequestSummary, sessionIdExists } from '../utils/request-writer.js'
+import { loadRequestDB, listRequestDB, type RequestSummary } from '../utils/request-writer.js'
+import { createPiSession } from '../utils/pi-runtime.js'
+import type { AgentSession } from '@earendil-works/pi-coding-agent'
 import { statusHistory } from '../utils/status-history.js'
 import { addDataClient, removeDataClient, pushStatsNotify, broadcastToDataClients, getDataClientCount } from './data-push.js'
 import { getVersionInfo } from '../utils/version.js'
@@ -21,10 +22,12 @@ import { checkAuth } from './auth.js'
 
 // Exec API types
 interface ExecRequestBody {
-  tool: 'claude'
+  tool?: string
   prompt: string
   stream?: boolean
-  sessionId?: string  // claude 会话 ID，用于多轮对话
+  sessionId?: string  // pi 会话 ID，用于多轮对话
+  mode?: 'chat' | 'learn'  // 会话模式：chat=只读问答，learn=浏览器学习，默认 chat
+  thinkingLevel?: 'off' | 'minimal' | 'low' | 'medium' | 'high'
 }
 
 interface ExecResponse {
@@ -254,7 +257,10 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
     }
   })
 
-  // Exec endpoint: run claude -p <prompt>
+  // pi AgentSession 进程内注册表：key = sessionId（pi 自己生成）
+  const piSessions = new Map<string, AgentSession>()
+
+  // Exec endpoint: 通过嵌入的 pi SDK 跑 prompt，保持原 SSE/JSON 契约
   fastify.post<{ Body: ExecRequestBody }>('/ui/api/exec', async (request, reply) => {
     if (!checkAuth(request, config)) {
       return reply.code(401).send({
@@ -263,14 +269,9 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    const { tool, prompt, stream = false, sessionId } = request.body
-
-    if (tool !== 'claude') {
-      return reply.code(400).send({
-        success: false,
-        error: 'Unsupported tool: only "claude" is supported'
-      })
-    }
+    const { prompt, stream = false, sessionId, mode } = request.body
+    // mode 只认 'learn'，其余一律按 chat 处理（默认只读问答）
+    const resolvedMode: 'chat' | 'learn' = mode === 'learn' ? 'learn' : 'chat'
 
     if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
       return reply.code(400).send({
@@ -279,16 +280,56 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    if (stream) {
-      // Streaming mode: use SSE
-      const newSessionId = sessionId ?? randomUUID()
+    const port = config.server.port
 
+    // piSessions 按 `${mode}:${piSessionId}` 隔离：chat / learn 各自独立 session。
+    // 前端回传的 sessionId 不带 mode，先按 resolvedMode 精确查，找不到再按后缀兜底。
+    const sessionKey = (m: 'chat' | 'learn', id: string) => `${m}:${id}`
+    let existing: AgentSession | undefined
+    if (sessionId) {
+      existing = piSessions.get(sessionKey(resolvedMode, sessionId))
+      if (!existing) {
+        // 兜底：mode 不一致或旧数据，按 `:${sessionId}` 后缀反查
+        for (const [key, s] of piSessions) {
+          if (key.endsWith(`:${sessionId}`)) { existing = s; break }
+        }
+      }
+    }
+    const isNewSession = !existing
+    let session: AgentSession
+    if (isNewSession) {
+      try {
+        session = await createPiSession({ port, mode: resolvedMode })
+      } catch (err: any) {
+        request.log.error({ err }, 'Failed to create pi session')
+        return reply.code(500).send({
+          success: false,
+          error: err?.message || 'Failed to initialize pi runtime'
+        })
+      }
+      piSessions.set(sessionKey(resolvedMode, session.sessionId), session)
+    } else {
+      // isNewSession 为 false 时 existing 必非 undefined（TS 窄化在循环赋值后丢失，这里显式断言）
+      session = existing as AgentSession
+    }
+    const resolvedSessionId = session.sessionId
+
+    // 前端透传 thinkingLevel（默认 off）；若 session 支持则设置
+    const level = request.body.thinkingLevel ?? 'off'
+    if (typeof (session as any).supportsThinking === 'function' && (session as any).supportsThinking()) {
+      session.setThinkingLevel(level as any)
+    }
+
+    if (stream) {
+      // Streaming mode: SSE（与前端 chat.ts 解析契约严格对齐）
       reply.hijack()
       const res = reply.raw
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive'
+        'Connection': 'keep-alive',
+        // pi 真实 sessionId 通过 response header 下发；新建/复用都带，前端后续回传
+        'x-claude-code-session-id': resolvedSessionId
       })
 
       const sendSSE = (event: string, data: string) => {
@@ -296,128 +337,128 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
         res.write(`event: ${event}\ndata: ${data}\n\n`)
       }
 
-      // 新对话时发送 session event
-      if (!sessionId) {
-        sendSSE('session', newSessionId)
+      let finished = false
+      const finish = (code: number) => {
+        if (finished) return
+        finished = true
+        clearTimeout(timeoutId)
+        if (!res.destroyed) {
+          sendSSE('done', JSON.stringify({ code }))
+          res.end()
+        }
       }
 
-      // 判断：如果 sessionId 存在于数据库，用 -r；否则用 --session-id
-      const spawnArgs = sessionId
-        ? (sessionIdExists(sessionId)
-            ? ['-r', sessionId, '-p', prompt, '--allowedTools', 'Bash,Write,Edit,Read']
-            : ['--session-id', sessionId, '-p', prompt, '--allowedTools', 'Bash,Write,Edit,Read'])
-        : ['-p', prompt, '--allowedTools', 'Bash,Write,Edit,Read']
-
-      const child = spawn('claude', spawnArgs, {
-        env: { ...process.env }
+      const unsub = session.subscribe((ev) => {
+        try {
+          if (ev.type === 'message_update') {
+            // assistantMessageEvent 是底层 pi-ai 流事件；按 delta 类型结构化转发
+            const ae = (ev as any).assistantMessageEvent
+            if (ae?.type === 'text_delta' && typeof ae.delta === 'string') {
+              sendSSE('data', JSON.stringify({ type: 'text_delta', content: ae.delta }))
+            } else if (ae?.type === 'thinking_delta' && typeof ae.delta === 'string') {
+              sendSSE('data', JSON.stringify({ type: 'thinking_delta', content: ae.delta }))
+            }
+            // thinking_start / text_start / thinking_end / text_end 不发：前端按 delta 累积
+          } else if (ev.type === 'tool_execution_start') {
+            const e = ev as any
+            sendSSE('data', JSON.stringify({
+              type: 'tool_start',
+              toolCallId: e.toolCallId,
+              toolName: e.toolName,
+              args: e.args,
+            }))
+          } else if (ev.type === 'tool_execution_end') {
+            const e = ev as any
+            const resultText = Array.isArray(e.result?.content)
+              ? e.result.content.map((c: any) => (c?.type === 'text' ? c.text : '')).join('\n')
+              : ''
+            sendSSE('data', JSON.stringify({
+              type: 'tool_end',
+              toolCallId: e.toolCallId,
+              toolName: e.toolName,
+              isError: !!e.isError,
+              durationMs: e.durationMs,
+              result: resultText,
+            }))
+          } else if (ev.type === 'agent_end') {
+            finish(0)
+          }
+        } catch (e) {
+          request.log.error({ err: e }, 'pi event mapping failed')
+        }
       })
 
-      const TIMEOUT = 5 * 60 * 1000 // 5 minutes
+      const TIMEOUT = 5 * 60 * 1000
       const timeoutId = setTimeout(() => {
-        child.kill('SIGTERM')
         if (!res.destroyed) {
           sendSSE('error', JSON.stringify({ message: 'Execution timeout (5 minutes)' }))
-          sendSSE('done', JSON.stringify({ code: 1 }))
-          res.end()
         }
+        session.abort().catch(() => {})
+        finish(1)
       }, TIMEOUT)
 
-      child.stdout?.on('data', (chunk) => {
-        sendSSE('data', JSON.stringify({ type: 'stdout', content: chunk.toString() }))
-      })
-
-      child.stderr?.on('data', (chunk) => {
-        sendSSE('data', JSON.stringify({ type: 'stderr', content: chunk.toString() }))
-      })
-
-      child.on('error', (err) => {
-        clearTimeout(timeoutId)
-        if (!res.destroyed) {
-          sendSSE('error', JSON.stringify({ message: err.message }))
-          sendSSE('done', JSON.stringify({ code: 1 }))
-          res.end()
-        }
-      })
-
-      child.on('close', (code) => {
-        clearTimeout(timeoutId)
-        if (!res.destroyed) {
-          sendSSE('done', JSON.stringify({ code: code ?? 0 }))
-          res.end()
-        }
-      })
-
-      // Handle client disconnect
       res.on('close', () => {
         clearTimeout(timeoutId)
-        if (!child.killed) {
-          child.kill('SIGTERM')
+        unsub()
+        session.abort().catch(() => {})
+      })
+
+      try {
+        await session.prompt(prompt)
+      } catch (err: any) {
+        unsub()
+        if (!res.destroyed) {
+          sendSSE('error', JSON.stringify({ message: err?.message || 'Prompt failed' }))
         }
-      })
+        finish(1)
+        return
+      }
+
+      // prompt 已返回；agent_end 会触发 finish。若未触发（异常路径），waitForIdle 兜底
+      session.waitForIdle().catch(() => {})
     } else {
-      // Non-streaming mode: buffer all output
-      const newSessionId = sessionId ?? randomUUID()
-
-      // 判断：如果 sessionId 存在于数据库，用 -r；否则用 --session-id
-      const spawnArgs = sessionId
-        ? (sessionIdExists(sessionId)
-            ? ['-r', sessionId, '-p', prompt, '--allowedTools', 'Bash,Write,Edit,Read']
-            : ['--session-id', sessionId, '-p', prompt, '--allowedTools', 'Bash,Write,Edit,Read'])
-        : ['-p', prompt, '--allowedTools', 'Bash,Write,Edit,Read']
-
-      const child = spawn('claude', spawnArgs, {
-        env: { ...process.env }
-      })
-
-      const TIMEOUT = 5 * 60 * 1000 // 5 minutes
-      const timeoutId = setTimeout(() => {
-        child.kill('SIGTERM')
-      }, TIMEOUT)
-
+      // Non-streaming mode: buffer 文本后返回 ExecResponse
       let stdout = ''
       let stderr = ''
 
-      child.stdout?.on('data', (chunk) => {
-        stdout += chunk.toString()
-      })
-
-      child.stderr?.on('data', (chunk) => {
-        stderr += chunk.toString()
-      })
-
-      const result: ExecResponse = await new Promise((resolve) => {
-        child.on('error', (err) => {
-          clearTimeout(timeoutId)
-          resolve({
-            success: false,
-            error: err.message
-          })
-        })
-
-        child.on('close', (code) => {
-          clearTimeout(timeoutId)
-          const output = stdout + stderr
-          if (code === 0) {
-            resolve({
-              success: true,
-              output,
-              sessionId: newSessionId
-            })
-          } else {
-            resolve({
-              success: false,
-              error: output || `Process exited with code ${code}`,
-              sessionId: newSessionId
-            })
+      const unsub = session.subscribe((ev) => {
+        if (ev.type === 'message_update') {
+          const ae = (ev as any).assistantMessageEvent
+          if (ae?.type === 'text_delta' && typeof ae.delta === 'string') {
+            stdout += ae.delta
           }
-        })
+        } else if (
+          ev.type === 'tool_execution_start' ||
+          ev.type === 'tool_execution_update' ||
+          ev.type === 'tool_execution_end'
+        ) {
+          const toolName = (ev as any).toolName
+          if (toolName) stderr += `[tool:${toolName}]\n`
+        }
       })
 
-      if (!result.success) {
-        return reply.code(500).send(result)
+      try {
+        await Promise.race([
+          session.prompt(prompt),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('Execution timeout (5 minutes)')), 5 * 60 * 1000)),
+        ])
+        await session.waitForIdle()
+        unsub()
+        return {
+          success: true,
+          output: stdout + stderr,
+          sessionId: resolvedSessionId,
+        }
+      } catch (err: any) {
+        unsub()
+        await session.abort().catch(() => {})
+        return reply.code(500).send({
+          success: false,
+          error: err?.message || 'Prompt failed',
+          output: stdout + stderr,
+          sessionId: resolvedSessionId,
+        })
       }
-
-      return result
     }
   })
 
