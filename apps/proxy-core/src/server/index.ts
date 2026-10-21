@@ -48,7 +48,9 @@ export async function startServer(): Promise<void> {
 // PM2 compatibility: PM2 fork mode sets process.argv[1] to ProcessContainerFork.js wrapper,
 // not the user script. Check PM2-specific env vars instead.
 const _isPm2 = process.env.pm_id !== undefined || process.env.NODE_APP_INSTANCE !== undefined
-const _currentModuleUrl = getCurrentModuleUrl()
+// 直接用本模块的 import.meta.url；getCurrentModuleUrl() 返回的是 util 模块自身的 URL，
+// 不能用来判断"本文件是否被直接执行"（否则 guard 永远 false，dev 模式从不启动 server）
+const _currentModuleUrl = import.meta.url
 
 // For PM2: always start if PM2 env detected and this module is the configured script
 // For direct execution: check if this module is the main module

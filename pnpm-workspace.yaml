@@ -2,6 +2,10 @@ packages:
   - 'apps/*'
   - 'packages/*'
 allowBuilds:
+  '@google/genai': true
   better-sqlite3: true
   esbuild: true
   msw: true
+  protobufjs: true
+overrides:
+  marked: 18.0.7
