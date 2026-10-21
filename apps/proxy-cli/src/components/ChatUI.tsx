@@ -5,6 +5,9 @@ import { RobotOutlined, UserOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { useChat } from '../hooks/useChat'
 import { ChatToolbar } from './ChatToolbar'
+import { ThinkingBlock } from './ThinkingBlock'
+import { ToolBlock } from './ToolBlock'
+import type { ContentBlock, TextBlock, ThinkingBlock as ThinkingBlockType, ToolBlock as ToolBlockType } from '../types/chat'
 
 const QUICK_PROMPTS = ['chat.quickQ1', 'chat.quickQ2', 'chat.quickQ3'] as const
 
@@ -19,9 +22,46 @@ const Code: React.FC<ComponentProps> = (props) => {
   return <CodeHighlighter lang={lang}>{children}</CodeHighlighter>
 }
 
+// 渲染单个 content block 为 React 节点
+// streamingBlockIndex: 当前正在接收 delta 的 block 下标（仅 thinking 块用）
+function renderBlock(block: ContentBlock, index: number, streamingBlockIndex: number | null): React.ReactNode {
+  switch (block.type) {
+    case 'text': {
+      const tb = block as TextBlock
+      if (!tb.content) return null
+      return (
+        <XMarkdown key={block.id} components={{ code: Code }} paragraphTag="div">
+          {tb.content}
+        </XMarkdown>
+      )
+    }
+    case 'thinking': {
+      const tb = block as ThinkingBlockType
+      const streaming = streamingBlockIndex === index
+      return <ThinkingBlock key={block.id} block={tb} streaming={streaming} />
+    }
+    case 'tool': {
+      const tb = block as ToolBlockType
+      return <ToolBlock key={block.id} block={tb} />
+    }
+    default:
+      return null
+  }
+}
+
 export function ChatUI(): JSX.Element {
   const { t } = useTranslation('app')
-  const { messages, loading, error, sendMessage, newConversation } = useChat()
+  const {
+    messages,
+    loading,
+    error,
+    sendMessage,
+    newConversation,
+    mode,
+    setMode,
+    thinkingLevel,
+    setThinkingLevel
+  } = useChat()
   const [inputValue, setInputValue] = useState('')
 
   const handleSubmit = (content: string) => {
@@ -32,20 +72,35 @@ export function ChatUI(): JSX.Element {
 
   const items = useMemo(
     () =>
-      messages.map((msg) => ({
-        key: msg.id,
-        content: msg.content,
-        role: msg.role as 'user' | 'assistant',
-        loading: msg.role === 'assistant' && loading && !msg.content,
-        contentRender:
-          msg.role === 'assistant'
-            ? (content: string) => (
-                <XMarkdown components={{ code: Code }} paragraphTag="div">
-                  {content}
-                </XMarkdown>
-              )
-            : undefined,
-      })),
+      messages.map((msg) => {
+        if (msg.role === 'user') {
+          // user 消息：把所有 text block 拼起来当 content
+          const text = msg.blocks
+            .filter((b): b is TextBlock => b.type === 'text')
+            .map(b => (b as TextBlock).content)
+            .join('\n')
+          return {
+            key: msg.id,
+            content: text,
+            role: 'user' as const
+          }
+        }
+
+        // assistant 消息：按 blocks 顺序渲染
+        // 当前正在接收 delta 的 block 是最后一个 block（loading 时）
+        const streamingBlockIndex = loading && msg.blocks.length > 0
+          ? msg.blocks.length - 1
+          : null
+        const nodes = msg.blocks.map((b, i) => renderBlock(b, i, streamingBlockIndex))
+
+        return {
+          key: msg.id,
+          content: <>{nodes}</>,
+          role: 'assistant' as const,
+          // blocks 为空且 loading 时显示原 loading 动画
+          loading: loading && msg.blocks.length === 0
+        }
+      }),
     [messages, loading]
   )
 
@@ -119,7 +174,13 @@ export function ChatUI(): JSX.Element {
       )}
 
       <div className="glass-strong px-4 py-2 flex flex-col gap-1.5">
-        <ChatToolbar onNewConversation={newConversation} />
+        <ChatToolbar
+          onNewConversation={newConversation}
+          mode={mode}
+          onModeChange={setMode}
+          thinkingLevel={thinkingLevel}
+          onThinkingLevelChange={setThinkingLevel}
+        />
         <Sender
           value={inputValue}
           onChange={setInputValue}

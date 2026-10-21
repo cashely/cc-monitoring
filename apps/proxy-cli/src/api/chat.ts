@@ -1,8 +1,9 @@
-import type { ChatConversation } from '../types/chat'
+import type { ChatConversation, ThinkingLevel } from '../types/chat'
 
 const API_BASE = '/ui/api'
 
-export const LOCALSTORAGE_KEY = 'cc-chat-conversations'
+// v2：ChatMessage 从扁平 content 升级为 blocks 数组，旧结构不兼容，换新 key 清掉历史
+export const LOCALSTORAGE_KEY = 'cc-chat-conversations-v2'
 
 export function loadConversations(): ChatConversation[] {
   try {
@@ -21,13 +22,19 @@ export function saveConversations(conversations: ChatConversation[]): void {
 export interface SSEConnection {
   abortController: AbortController
   onSession: (sessionId: string) => void
-  onData: (type: string, content: string) => void
+  // 把整个 parsed SSE 对象交给 hook，由 hook 按 type 分支累积 blocks
+  onData: (type: string, data: any) => void
   onError: (message: string) => void
   onDone: (code: number) => void
   abort: () => void
 }
 
-export function createChatConnection(prompt: string, sessionId?: string): SSEConnection {
+export function createChatConnection(
+  prompt: string,
+  sessionId?: string,
+  mode: 'chat' | 'learn' = 'chat',
+  thinkingLevel?: ThinkingLevel
+): SSEConnection {
   const abortController = new AbortController()
 
   const connection: SSEConnection = {
@@ -48,7 +55,9 @@ export function createChatConnection(prompt: string, sessionId?: string): SSECon
       tool: 'claude',
       prompt,
       stream: true,
-      sessionId
+      sessionId,
+      mode,
+      thinkingLevel: thinkingLevel ?? 'off'
     }),
     signal: abortController.signal
   }).then(async (response) => {
@@ -56,6 +65,12 @@ export function createChatConnection(prompt: string, sessionId?: string): SSECon
       const err = await response.json()
       connection.onError(err.error || `HTTP ${response.status}`)
       return
+    }
+
+    // pi 真实 sessionId 通过 response header 下发（新建/复用都带）
+    const piSessionId = response.headers.get('x-claude-code-session-id')
+    if (piSessionId) {
+      connection.onSession(piSessionId)
     }
 
     const reader = response.body?.getReader()
@@ -93,14 +108,13 @@ export function createChatConnection(prompt: string, sessionId?: string): SSECon
 
         if (!eventType || !eventData) continue
 
-        if (eventType === 'session') {
-          connection.onSession(eventData)
-        } else if (eventType === 'data') {
+        if (eventType === 'data') {
           try {
             const parsed = JSON.parse(eventData)
-            connection.onData(parsed.type || 'stdout', parsed.content || '')
+            // 不在这里按 type 硬过滤，把 type 和整个 parsed 对象都透给 hook
+            connection.onData(parsed.type || 'stdout', parsed)
           } catch {
-            connection.onData('stdout', eventData)
+            connection.onData('stdout', { content: eventData })
           }
         } else if (eventType === 'error') {
           try {
