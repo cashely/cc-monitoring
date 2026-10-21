@@ -1,6 +1,6 @@
 {
   "name": "@cc-monitoring/proxy-core",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Claude Code 代理工具 + Token 消耗监控面板",
   "keywords": [
     "claude-code-proxy",
