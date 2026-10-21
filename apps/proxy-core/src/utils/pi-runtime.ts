@@ -104,6 +104,7 @@ STRUCTURE:
 CHAT MODE (answer questions):
 1. Call list_topics to see available topics
 2. Call get_topic(topic) to see that topic's chunk list
+2.5. If topic is unclear, call search_chunks(query) to find relevant chunks across topics.
 3. Call read_chunk(topic, chunk_id) ONLY for relevant chunks — never read unrelated chunks
 4. Never read a whole folder or multiple chunks at once
 5. If no relevant chunk exists, say so. Do not invent answers.
