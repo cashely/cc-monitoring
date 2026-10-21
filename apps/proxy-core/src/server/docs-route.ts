@@ -1,12 +1,10 @@
 // apps/proxy-core/src/server/docs-route.ts
 import { FastifyInstance } from 'fastify'
 import multipart from '@fastify/multipart'
-import fs from 'fs'
 import path from 'path'
 import { registry } from '../parsers/index.js'
-import { dataDir } from '../utils/paths.js'
-
-const docsDir = path.join(dataDir, 'docs')
+import { loadConfig } from '../config/index.js'
+import { createPiSession } from '../utils/pi-runtime.js'
 
 export async function setupDocsRoutes(fastify: FastifyInstance): Promise<void> {
   await fastify.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 } })
@@ -49,25 +47,54 @@ export async function setupDocsRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    // 确保 docs 目录存在
-    if (!fs.existsSync(docsDir)) {
-      fs.mkdirSync(docsDir, { recursive: true })
-    }
-
-    // 写入 md 文件
-    const mdFilename = filename.slice(0, dotIndex) + '.md'
-    const mdPath = path.join(docsDir, mdFilename)
-
+    // 不直接落盘根目录，而是交给 pi learn agent 切块入库
+    let config
     try {
-      fs.writeFileSync(mdPath, mdContent, 'utf-8')
+      config = await loadConfig()
     } catch (err: any) {
-      request.log.error({ err, mdPath }, 'Failed to write md file')
+      request.log.error({ err }, 'Failed to load config')
       return reply.code(500).send({
         success: false,
-        error: 'Failed to save file'
+        error: err?.message || 'Failed to load config'
+      })
+    }
+    const port = config.server.port
+
+    const prompt = `以下是上传文档《${filename}》的完整内容。请按知识库规范处理：
+1. 调 list_topics 查重，决定新建主题还是复用现有
+2. 把文档内容按结构切成 300-500 字 chunks，写入 <主题>/chunks/chunk-NNN.md
+3. 更新该主题 INDEX.md（片段清单 + 元数据）
+4. 若新建主题，更新根 INDEX.md 的主题行
+
+文档内容：
+${mdContent}`
+
+    let session
+    try {
+      session = await createPiSession({ port, mode: 'learn' })
+    } catch (err: any) {
+      request.log.error({ err }, 'Failed to create pi learn session')
+      return reply.code(500).send({
+        success: false,
+        error: err?.message || 'Failed to initialize pi runtime'
       })
     }
 
-    return { success: true, path: `docs/${mdFilename}` }
+    try {
+      await Promise.race([
+        session.prompt(prompt),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('Execution timeout (5 minutes)')), 5 * 60 * 1000)),
+      ])
+      await session.waitForIdle()
+    } catch (err: any) {
+      await session.abort().catch(() => {})
+      request.log.error({ err, filename }, 'pi learn distill failed')
+      return reply.code(500).send({
+        success: false,
+        error: err?.message || 'Failed to distill document into knowledge base'
+      })
+    }
+
+    return { success: true, path: `docs/` }
   })
 }
