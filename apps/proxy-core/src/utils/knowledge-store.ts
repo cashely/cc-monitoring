@@ -31,10 +31,10 @@ function assertChunkId(chunkId: string): void {
   }
 }
 
-/** 解析 "- [slug](slug/) — 摘要" 行 */
+/** 解析 "- <slug>: <摘要>" 行（自然 markdown 列表） */
 function parseRootIndex(text: string): TopicSummary[] {
   const out: TopicSummary[] = []
-  const re = /^- \[([a-z0-9-]+)\]\([a-z0-9-]+\/\)\s*[—-]\s*(.+)$/m
+  const re = /^- ([a-z0-9][a-z0-9-]*):\s*(.+?)\s*$/m
   for (const line of text.split('\n')) {
     const m = line.match(re)
     if (m) out.push({ slug: m[1], title: m[1], summary: m[2].trim() })
@@ -42,33 +42,48 @@ function parseRootIndex(text: string): TopicSummary[] {
   return out
 }
 
-/** 解析 frontmatter 里的 title / tags / sources */
-function parseFrontmatter(text: string): Record<string, string> {
-  const out: Record<string, string> = {}
-  const m = text.match(/^---\n([\s\S]*?)\n---/)
-  if (!m) return out
-  for (const line of m[1].split('\n')) {
-    const kv = line.match(/^(\w+):\s*(.+)$/)
-    if (kv) out[kv[1]] = kv[2].trim()
+/** 解析主题 INDEX.md 的 "## 元数据" 区块：`- 名称: xxx` / `- 标签: a, b, c` */
+function parseTopicMeta(text: string): { title: string; tags: string[] } {
+  let title = ''
+  let tags: string[] = []
+  const nameRe = /^- 名称:\s*(.+?)\s*$/m
+  const tagsRe = /^- 标签:\s*(.+?)\s*$/m
+  const nameM = text.match(nameRe)
+  if (nameM) title = nameM[1].trim()
+  const tagsM = text.match(tagsRe)
+  if (tagsM) {
+    tags = tagsM[1].split(',').map(s => s.trim()).filter(Boolean)
   }
-  return out
+  return { title, tags }
 }
 
-/** 解析片段清单行 "- [chunk-NNN](chunks/chunk-NNN.md) — 描述" */
+/** 解析片段清单行 "- chunk-NNN: <标题> — <描述>" 或 "- chunk-NNN: <描述>" */
 function parseChunkList(text: string): ChunkRef[] {
   const out: ChunkRef[] = []
-  const re = /^- \[(chunk-\d{3})\]\(chunks\/chunk-\d{3}\.md\)\s*[—-]\s*(.+)$/m
+  const re = /^- (chunk-\d{3}):\s*(.+?)\s*$/m
   for (const line of text.split('\n')) {
     const m = line.match(re)
-    if (m) out.push({ id: m[1], title: m[2].trim(), summary: m[2].trim() })
+    if (!m) continue
+    const rest = m[2].trim()
+    const dashIdx = rest.indexOf(' — ')
+    let title: string
+    let summary: string
+    if (dashIdx >= 0) {
+      title = rest.slice(0, dashIdx).trim()
+      summary = rest.slice(dashIdx + 3).trim()
+    } else {
+      title = rest
+      summary = rest
+    }
+    out.push({ id: m[1], title, summary })
   }
   return out
 }
 
-/** 从 chunk 正文 frontmatter 提取 title（用于 searchChunks） */
+/** 从 chunk 正文首行 `# xxx` 提取 title（用于 searchChunks） */
 function parseChunkTitle(text: string): string {
-  const fm = parseFrontmatter(text)
-  return fm.title ?? ''
+  const m = text.match(/^#\s+(.+?)\s*$/m)
+  return m ? m[1].trim() : ''
 }
 
 export function createKnowledgeStore(root: string): KnowledgeStore {
@@ -86,10 +101,10 @@ export function createKnowledgeStore(root: string): KnowledgeStore {
     assertTopic(topic)
     const indexPath = path.join(root, topic, 'INDEX.md')
     const text = await fs.readFile(indexPath, 'utf8')
-    const fm = parseFrontmatter(text)
+    const meta = parseTopicMeta(text)
     return {
-      title: fm.title ?? topic,
-      tags: fm.tags ? fm.tags.replace(/[[\]]/g, '').split(',').map(s => s.trim()).filter(Boolean) : [],
+      title: meta.title || topic,
+      tags: meta.tags,
       sources: [],
       chunks: parseChunkList(text),
     }
