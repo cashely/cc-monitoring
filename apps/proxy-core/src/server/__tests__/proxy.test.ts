@@ -1,4 +1,4 @@
-import { getErrorStatusCode, getErrorMessage, resolveProxyTarget } from '../proxy'
+import { getErrorStatusCode, getErrorMessage, resolveProxyTarget, filterForwardHeaders } from '../proxy'
 import Database from 'better-sqlite3'
 
 jest.mock('@utils/db', () => ({
@@ -85,7 +85,7 @@ describe('resolveProxyTarget', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     db = new Database(':memory:')
-    db.exec(`CREATE TABLE providers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, base_url TEXT, api_key TEXT, model TEXT, haiku_model TEXT, sonnet_model TEXT, opus_model TEXT, subagent_model TEXT, provider TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0, is_openai_compatible INTEGER NOT NULL DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`)
+    db.exec(`CREATE TABLE providers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, base_url TEXT, api_key TEXT, model TEXT, haiku_model TEXT, sonnet_model TEXT, opus_model TEXT, subagent_model TEXT, provider TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0, is_openai_compatible INTEGER NOT NULL DEFAULT 0, auth_style TEXT NOT NULL DEFAULT 'bearer', created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`)
     getDatabase.mockReturnValue(db)
   })
 
@@ -136,5 +136,49 @@ describe('resolveProxyTarget', () => {
 
     const result = resolveProxyTarget(config)
     expect(result.is_openai_compatible).toBe(false)
+  })
+
+  test('returns auth_style x-api-key when provider sets it', () => {
+    db.prepare('INSERT INTO providers (name, base_url, api_key, model, provider, is_default, auth_style) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+      'xkey-provider', 'https://provider.example.com/v1', 'provider-key', 'test-model', 'anthropic', 1, 'x-api-key'
+    )
+
+    const result = resolveProxyTarget(config)
+    expect(result.auth_style).toBe('x-api-key')
+  })
+
+  test('defaults auth_style to bearer when column is null', () => {
+    db.prepare('INSERT INTO providers (name, base_url, api_key, model, provider, is_default) VALUES (?, ?, ?, ?, ?, ?)').run(
+      'bearer-provider', 'https://provider.example.com/v1', 'provider-key', 'test-model', 'anthropic', 1
+    )
+
+    const result = resolveProxyTarget(config)
+    expect(result.auth_style).toBe('bearer')
+  })
+})
+
+describe('filterForwardHeaders with authStyle', () => {
+  test('bearer style: inbound x-api-key is normalized to authorization Bearer', () => {
+    const out = filterForwardHeaders({ 'x-api-key': 'inbound-key' }, 'proxy-key', 'bearer')
+    expect(out['authorization']).toBe('Bearer proxy-key')
+    expect(out['x-api-key']).toBeUndefined()
+  })
+
+  test('x-api-key style: inbound authorization Bearer is normalized to x-api-key', () => {
+    const out = filterForwardHeaders({ 'authorization': 'Bearer inbound-key' }, 'proxy-key', 'x-api-key')
+    expect(out['x-api-key']).toBe('proxy-key')
+    expect(out['authorization']).toBeUndefined()
+    expect(out['Authorization']).toBeUndefined()
+  })
+
+  test('authStyle not provided keeps inbound style (x-api-key stays)', () => {
+    const out = filterForwardHeaders({ 'x-api-key': 'inbound-key' }, 'proxy-key')
+    expect(out['x-api-key']).toBe('proxy-key')
+    expect(out['authorization']).toBeUndefined()
+  })
+
+  test('proxyApiKey not provided leaves headers untouched', () => {
+    const out = filterForwardHeaders({ 'x-api-key': 'inbound-key' })
+    expect(out['x-api-key']).toBe('inbound-key')
   })
 })

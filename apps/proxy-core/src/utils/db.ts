@@ -82,6 +82,11 @@ export function initDatabase(): Database.Database {
     db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (8)').run()
   }
 
+  if (currentVersion < 9) {
+    applySchemaV9(db)
+    db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (9)').run()
+  }
+
   return db
 }
 
@@ -282,6 +287,14 @@ export function applySchemaV8(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_response_events_request
     ON response_events(request_id, session_id, event_index)
   `)
+}
+
+export function applySchemaV9(db: Database.Database) {
+  // Add auth_style column for per-provider auth header normalization
+  const columns = db.prepare("PRAGMA table_info(providers)").all() as { name: string }[]
+  if (!columns.some(c => c.name === 'auth_style')) {
+    db.exec("ALTER TABLE providers ADD COLUMN auth_style TEXT NOT NULL DEFAULT 'bearer'")
+  }
 }
 
 export function closeDatabase() {

@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3'
-import { applySchemaV2, applySchemaV3 } from '../db.js'
+import { applySchemaV2, applySchemaV3, applySchemaV9 } from '../db.js'
 
 describe('Schema Migration V2', () => {
   let db: Database.Database
@@ -110,5 +110,30 @@ describe('Schema Migration V2', () => {
     const columns = db.prepare("PRAGMA table_info(providers)").all()
     const isDefaultCols = columns.filter((c: any) => c.name === 'is_default')
     expect(isDefaultCols.length).toBe(1)
+  })
+
+  test('applySchemaV9 adds auth_style column with default bearer', () => {
+    applySchemaV2(db)
+    applySchemaV9(db)
+
+    const columns = db.prepare("PRAGMA table_info(providers)").all() as { name: string }[]
+    expect(columns.map(c => c.name)).toContain('auth_style')
+
+    // Existing rows get the default 'bearer'
+    db.prepare("INSERT INTO providers (name, base_url, api_key, model, provider) VALUES (?, ?, ?, ?, ?)").run(
+      'p1', 'https://api.test.com', 'key1', 'claude-3', 'anthropic'
+    )
+    const row = db.prepare("SELECT auth_style FROM providers WHERE name = 'p1'").get() as { auth_style: string }
+    expect(row.auth_style).toBe('bearer')
+  })
+
+  test('applySchemaV9 is idempotent', () => {
+    applySchemaV2(db)
+    applySchemaV9(db)
+    expect(() => applySchemaV9(db)).not.toThrow()
+
+    const columns = db.prepare("PRAGMA table_info(providers)").all() as { name: string }[]
+    const authStyleCols = columns.filter(c => c.name === 'auth_style')
+    expect(authStyleCols.length).toBe(1)
   })
 })
