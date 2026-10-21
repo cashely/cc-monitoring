@@ -5,6 +5,7 @@ import type { AppConfig } from '../config/schema.js'
 import { getDatabase } from '../utils/db.js'
 import { listRequestDB } from '../utils/request-writer.js'
 import { listProviders } from '../utils/providers-db.js'
+import { knowledgeStore } from '../utils/knowledge-store.js'
 
 export interface McpToolContext {
   config: AppConfig
@@ -163,6 +164,44 @@ export const MCP_TOOLS: {
       additionalProperties: false,
     },
   },
+  {
+    name: 'list_topics',
+    description: 'List all knowledge topics with one-line summary. Call this first to discover what topics exist.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'get_topic',
+    description: 'Get a topic metadata and its chunk list (descriptions only, no body). Call this to see which chunks exist in a topic before reading one.',
+    inputSchema: {
+      type: 'object',
+      properties: { topic: { type: 'string', description: 'Topic slug, e.g. react-hooks' } },
+      required: ['topic'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'search_chunks',
+    description: 'Keyword search across all chunks. Returns matching chunk list (no body). Use when topic is unknown.',
+    inputSchema: {
+      type: 'object',
+      properties: { query: { type: 'string', description: 'Search keyword' } },
+      required: ['query'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'read_chunk',
+    description: 'Read a single knowledge chunk body by topic and chunk id. ONLY one chunk per call. To discover chunk ids, call get_topic first.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        topic: { type: 'string', description: 'Topic slug' },
+        chunk_id: { type: 'string', description: 'Chunk id, e.g. chunk-001' },
+      },
+      required: ['topic', 'chunk_id'],
+      additionalProperties: false,
+    },
+  },
 ]
 
 const HANDLERS: Record<string, ToolHandler> = {
@@ -170,6 +209,23 @@ const HANDLERS: Record<string, ToolHandler> = {
   list_requests: handleListRequests,
   get_token_stats: handleGetTokenStats,
   get_logs: handleGetLogs,
+  list_topics: async () => ok(JSON.stringify(await knowledgeStore.listTopics(), null, 2)),
+  get_topic: async (args) => {
+    try {
+      return ok(JSON.stringify(await knowledgeStore.getTopic(args.topic), null, 2))
+    } catch (e) {
+      return err(e)
+    }
+  },
+  search_chunks: async (args) => ok(JSON.stringify(await knowledgeStore.searchChunks(args.query ?? ''), null, 2)),
+  read_chunk: async (args) => {
+    try {
+      const body = await knowledgeStore.readChunk(args.topic, args.chunk_id)
+      return ok(body)
+    } catch (e) {
+      return err(e)
+    }
+  },
 }
 
 export function registerMcpTools(server: Server, ctx: McpToolContext): void {
