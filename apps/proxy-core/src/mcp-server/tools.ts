@@ -214,6 +214,10 @@ const HANDLERS: Record<string, ToolHandler> = {
     try {
       return ok(JSON.stringify(await knowledgeStore.getTopic(args.topic), null, 2))
     } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (msg.includes('ENOENT')) {
+        return ok(JSON.stringify({ error: `topic "${args.topic}" not found. Call list_topics to see available topics.` }, null, 2))
+      }
       return err(e)
     }
   },

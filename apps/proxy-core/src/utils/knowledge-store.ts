@@ -96,6 +96,7 @@ export function createKnowledgeStore(root: string): KnowledgeStore {
   }
 
   async function searchChunks(query: string): Promise<ChunkHit[]> {
+    if (!query.trim()) return []
     const hits: ChunkHit[] = []
     const q = query.toLowerCase()
     let entries: string[]
