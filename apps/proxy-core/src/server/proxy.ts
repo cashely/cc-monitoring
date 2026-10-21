@@ -29,6 +29,7 @@ interface ResolvedTarget {
   sonnet_model?: string
   opus_model?: string
   is_openai_compatible?: boolean
+  auth_style?: 'bearer' | 'x-api-key'
 }
 
 // Cached prepared statement for active provider lookup (avoids per-request allocation)
@@ -53,6 +54,7 @@ export function resolveProxyTarget(proxyConfig: ProxyConfig): ResolvedTarget {
   let sonnet_model: string | undefined
   let opus_model: string | undefined
   let is_openai_compatible: boolean | undefined
+  let auth_style: 'bearer' | 'x-api-key' | undefined
 
   try {
     // Parse config target as base
@@ -68,10 +70,10 @@ export function resolveProxyTarget(proxyConfig: ProxyConfig): ResolvedTarget {
     }
     if (!activeProviderStmt) {
       activeProviderStmt = db.prepare(
-        'SELECT base_url, api_key, model, haiku_model, sonnet_model, opus_model, is_openai_compatible FROM providers WHERE is_default = 1 LIMIT 1'
+        'SELECT base_url, api_key, model, haiku_model, sonnet_model, opus_model, is_openai_compatible, auth_style FROM providers WHERE is_default = 1 LIMIT 1'
       )
     }
-    const active = activeProviderStmt.get() as { base_url: string | null, api_key: string | null, model: string | null, haiku_model: string | null, sonnet_model: string | null, opus_model: string | null, is_openai_compatible: number | null } | undefined
+    const active = activeProviderStmt.get() as { base_url: string | null, api_key: string | null, model: string | null, haiku_model: string | null, sonnet_model: string | null, opus_model: string | null, is_openai_compatible: number | null, auth_style: string | null } | undefined
 
     if (active) {
       // Replace base_url only if provided
@@ -94,6 +96,9 @@ export function resolveProxyTarget(proxyConfig: ProxyConfig): ResolvedTarget {
 
       // Populate is_openai_compatible
       is_openai_compatible = !!active.is_openai_compatible
+
+      // Populate auth_style (default bearer for null/unknown)
+      auth_style = active.auth_style === 'x-api-key' ? 'x-api-key' : 'bearer'
     }
   } catch {
     // DB not initialized yet, read error, or URL parse error - fall back to config
@@ -102,7 +107,7 @@ export function resolveProxyTarget(proxyConfig: ProxyConfig): ResolvedTarget {
     targetPath = configUrl.pathname.replace(/\/$/, '')
   }
 
-  return { baseUrl, targetPath, apiKey, model, haiku_model, sonnet_model, opus_model, is_openai_compatible }
+  return { baseUrl, targetPath, apiKey, model, haiku_model, sonnet_model, opus_model, is_openai_compatible, auth_style }
 }
 
 /**
@@ -148,7 +153,8 @@ export function extractSafeHeaders(headers: Record<string, unknown>): Record<str
 // Filter headers for forwarding (remove problematic ones, replace API key if configured)
 export function filterForwardHeaders(
   headers: Record<string, string>,
-  proxyApiKey?: string
+  proxyApiKey?: string,
+  authStyle?: 'bearer' | 'x-api-key'
 ): Record<string, string> {
   const filtered = { ...headers }
 
@@ -159,6 +165,19 @@ export function filterForwardHeaders(
 
   // Inject or replace API key when proxy key is available
   if (proxyApiKey) {
+    // If provider specifies an auth style, normalize to it (override inbound style)
+    if (authStyle) {
+      delete filtered['x-api-key']
+      delete filtered['authorization']
+      delete filtered['Authorization']
+      if (authStyle === 'bearer') {
+        filtered['authorization'] = `Bearer ${proxyApiKey}`
+      } else {
+        filtered['x-api-key'] = proxyApiKey
+      }
+      return filtered
+    }
+
     const hasApiKey = 'x-api-key' in filtered
     const hasAuth = 'authorization' in filtered || 'Authorization' in filtered
 
@@ -366,7 +385,8 @@ export async function setupProxy(
       // Prepare headers for forwarding (replace API key if configured)
       const forwardHeaders = filterForwardHeaders(
         extractSafeHeaders(request.headers),
-        resolved.apiKey
+        resolved.apiKey,
+        resolved.auth_style
       )
 
       // Extract proxy fields
