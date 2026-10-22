@@ -1,5 +1,5 @@
-import { useEffect } from 'react'
-import { Drawer, Empty, Spin } from 'antd'
+import { useEffect, useState } from 'react'
+import { Drawer, Empty, Spin, Input, Button } from 'antd'
 import { LoadingOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import XMarkdown from '@ant-design/x-markdown'
 import { useTranslation } from 'react-i18next'
@@ -47,7 +47,7 @@ function RoundCard({
           <CheckCircleOutlined style={{ color: 'var(--color-success)' }} />
         )}
         <span className="font-medium">
-          {t('chat.roundLabel', { n: round.roundIndex + 1 })}
+          {t('chat.roundLabel', { n: round.roundIndex })}
         </span>
         {active && streaming && (
           <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
@@ -76,11 +76,13 @@ function RoundCard({
 // 学习任务抽屉：顶部来源 + 按 round 分组渲染流式过程
 export function LearnDrawer({ open, task, onClose }: LearnDrawerProps): JSX.Element {
   const { t } = useTranslation('app')
-  const { rounds, status, error, start, cancel } = useLearnStream()
+  const { rounds, status, error, start, followup, cancel } = useLearnStream()
+  const [followupInput, setFollowupInput] = useState('')
 
-  // task 就绪即启动流式（每次任务都是新对象）
+  // task 就绪即启动流式（每次任务都是新对象），顺带清空追问输入
   useEffect(() => {
     if (open && task) {
+      setFollowupInput('')
       start(task)
     }
   }, [open, task, start])
@@ -88,6 +90,14 @@ export function LearnDrawer({ open, task, onClose }: LearnDrawerProps): JSX.Elem
   const handleClose = () => {
     cancel()
     onClose()
+  }
+
+  // 发送追问：复用同一 learn session，不清空已有 rounds
+  const handleFollowup = () => {
+    const text = followupInput.trim()
+    if (!text || status !== 'done') return
+    setFollowupInput('')
+    followup(text)
   }
 
   return (
@@ -138,9 +148,31 @@ export function LearnDrawer({ open, task, onClose }: LearnDrawerProps): JSX.Elem
       )}
 
       {status === 'done' && rounds.length > 0 && (
-        <div className="text-xs mt-3" style={{ color: 'var(--color-success)' }}>
-          {t('chat.roundDone')}
-        </div>
+        <>
+          <div className="text-xs mt-3" style={{ color: 'var(--color-success)' }}>
+            {t('chat.roundDone')}
+          </div>
+
+          {/* 追问输入区：同一学习会话继续，streaming 时禁用 */}
+          <div className="glass rounded-lg p-2 mt-2 flex items-center gap-2">
+            <Input.TextArea
+              value={followupInput}
+              onChange={e => setFollowupInput(e.target.value)}
+              placeholder={t('chat.learnFollowupPlaceholder')}
+              autoSize={{ minRows: 1, maxRows: 3 }}
+              disabled={status === 'streaming'}
+              className="text-xs"
+            />
+            <Button
+              type="primary"
+              size="small"
+              onClick={handleFollowup}
+              disabled={!followupInput.trim() || status === 'streaming'}
+            >
+              {t('chat.learnFollowupSend')}
+            </Button>
+          </div>
+        </>
       )}
     </Drawer>
   )

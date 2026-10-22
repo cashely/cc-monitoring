@@ -348,8 +348,8 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
-      // 流式轮次计数器：每个 SSE 连接独立计数，避免并发串扰
-      let roundIndex = 0
+      // 轮次计数器挂在 session 上：跨 SSE 连接持续递增，避免复用时 roundIndex 回退导致前端吞掉新轮次
+      const sessionBox = session as any
 
       const unsub = session.subscribe((ev) => {
         try {
@@ -357,12 +357,13 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
             // message_start 对 user / assistant / toolResult 三种消息都会触发，
             // 只有 assistant 才对应一次 LLM 回复轮次；其余角色直接忽略，避免前端出现空 round
             if ((ev as any).message?.role !== 'assistant') return
-            roundIndex++
-            sendSSE('data', JSON.stringify({ type: 'round_start', roundIndex }))
+            // 新 session 从 0 起；复用 session 从上次累计值继续
+            sessionBox.__learnRoundIndex = (sessionBox.__learnRoundIndex ?? 0) + 1
+            sendSSE('data', JSON.stringify({ type: 'round_start', roundIndex: sessionBox.__learnRoundIndex }))
           } else if (ev.type === 'message_end') {
             // 同理：只有 assistant 的 message_end 才发 round_end
             if ((ev as any).message?.role !== 'assistant') return
-            sendSSE('data', JSON.stringify({ type: 'round_end', roundIndex }))
+            sendSSE('data', JSON.stringify({ type: 'round_end', roundIndex: sessionBox.__learnRoundIndex }))
           } else if (ev.type === 'message_update') {
             // assistantMessageEvent 是底层 pi-ai 流事件；按 delta 类型结构化转发
             const ae = (ev as any).assistantMessageEvent
