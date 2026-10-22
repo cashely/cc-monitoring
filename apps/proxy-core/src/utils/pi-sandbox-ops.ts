@@ -21,6 +21,16 @@ export function assertInside(absPath: string): string {
   return resolved
 }
 
+/**
+ * 守卫：index.json 由 add_topic/add_chunk 工具原子维护，
+ * 禁止 LLM 通过 write/edit 直接改写。
+ */
+function assertNotManagedIndexJson(absPath: string): void {
+  if (path.basename(absPath) === 'index.json') {
+    throw new Error('index.json is managed by add_topic/add_chunk tools, do not write directly')
+  }
+}
+
 // 统一 access：校验可读性
 async function access(absolutePath: string): Promise<void> {
   const p = assertInside(absolutePath)
@@ -42,6 +52,7 @@ export const sandboxReadOps = {
 export const sandboxWriteOps = {
   async writeFile(absolutePath: string, content: string): Promise<void> {
     const p = assertInside(absolutePath)
+    assertNotManagedIndexJson(p)
     await fs.writeFile(p, content, 'utf8')
   },
   async mkdir(dir: string): Promise<void> {
@@ -58,6 +69,7 @@ export const sandboxEditOps = {
   },
   async writeFile(absolutePath: string, content: string): Promise<void> {
     const p = assertInside(absolutePath)
+    assertNotManagedIndexJson(p)
     await fs.writeFile(p, content, 'utf8')
   },
   access,

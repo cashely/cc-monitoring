@@ -63,8 +63,10 @@ export async function setupDocsRoutes(fastify: FastifyInstance): Promise<void> {
     const prompt = `以下是上传文档《${filename}》的完整内容。请按知识库规范处理：
 1. 调 list_topics 查重，决定新建主题还是复用现有
 2. 把文档内容按结构切成 300-500 字 chunks，写入 <主题>/chunks/chunk-NNN.md
-3. 更新该主题 INDEX.md（片段清单 + 元数据）
-4. 若新建主题，更新根 INDEX.md 的主题行
+3. 每写完一个 chunk 文件，立即调 add_chunk(topic, chunk_id, title, summary) 登记该 chunk
+4. 若新建主题，先调 add_topic(slug, title, summary, tags) 注册主题；若复用现有主题，跳过此步
+
+注意：不要手写 index.json 或 INDEX.md，主题元数据与 chunk 清单全部通过 add_topic / add_chunk 工具维护。
 
 文档内容：
 ${mdContent}`
