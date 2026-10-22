@@ -7,16 +7,21 @@ const docsDir = path.join(dataDir, 'docs')
 const TOPIC_RE = /^[a-z0-9][a-z0-9-]*$/
 const CHUNK_RE = /^chunk-\d{3}$/
 
-export interface TopicSummary { slug: string; title: string; summary: string }
+export interface TopicSummary { slug: string; title: string; summary: string; tags: string[] }
 export interface ChunkRef { id: string; title: string; summary: string }
 export interface TopicDetail { title: string; tags: string[]; sources: unknown[]; chunks: ChunkRef[] }
 export interface ChunkHit { topic: string; chunkId: string; title: string }
+
+interface RootIndex { topics: TopicSummary[] }
+interface TopicIndex { slug: string; title: string; summary: string; tags: string[]; chunks: ChunkRef[] }
 
 export interface KnowledgeStore {
   listTopics(): Promise<TopicSummary[]>
   getTopic(topic: string): Promise<TopicDetail>
   searchChunks(query: string): Promise<ChunkHit[]>
   readChunk(topic: string, chunkId: string): Promise<string>
+  upsertTopic(input: { slug: string; title: string; summary: string; tags: string[] }): Promise<void>
+  upsertChunkRef(input: { topic: string; chunkId: string; title: string; summary: string }): Promise<void>
 }
 
 function assertTopic(topic: string): void {
@@ -31,83 +36,105 @@ function assertChunkId(chunkId: string): void {
   }
 }
 
-/** 解析 "- <slug>: <摘要>" 行（自然 markdown 列表） */
-function parseRootIndex(text: string): TopicSummary[] {
-  const out: TopicSummary[] = []
-  const re = /^- ([a-z0-9][a-z0-9-]*):\s*(.+?)\s*$/m
-  for (const line of text.split('\n')) {
-    const m = line.match(re)
-    if (m) out.push({ slug: m[1], title: m[1], summary: m[2].trim() })
-  }
-  return out
-}
-
-/** 解析主题 INDEX.md 的 "## 元数据" 区块：`- 名称: xxx` / `- 标签: a, b, c` */
-function parseTopicMeta(text: string): { title: string; tags: string[] } {
-  let title = ''
-  let tags: string[] = []
-  const nameRe = /^- 名称:\s*(.+?)\s*$/m
-  const tagsRe = /^- 标签:\s*(.+?)\s*$/m
-  const nameM = text.match(nameRe)
-  if (nameM) title = nameM[1].trim()
-  const tagsM = text.match(tagsRe)
-  if (tagsM) {
-    tags = tagsM[1].split(',').map(s => s.trim()).filter(Boolean)
-  }
-  return { title, tags }
-}
-
-/** 解析片段清单行 "- chunk-NNN: <标题> — <描述>" 或 "- chunk-NNN: <描述>" */
-function parseChunkList(text: string): ChunkRef[] {
-  const out: ChunkRef[] = []
-  const re = /^- (chunk-\d{3}):\s*(.+?)\s*$/m
-  for (const line of text.split('\n')) {
-    const m = line.match(re)
-    if (!m) continue
-    const rest = m[2].trim()
-    const dashIdx = rest.indexOf(' — ')
-    let title: string
-    let summary: string
-    if (dashIdx >= 0) {
-      title = rest.slice(0, dashIdx).trim()
-      summary = rest.slice(dashIdx + 3).trim()
-    } else {
-      title = rest
-      summary = rest
-    }
-    out.push({ id: m[1], title, summary })
-  }
-  return out
-}
-
 /** 从 chunk 正文首行 `# xxx` 提取 title（用于 searchChunks） */
 function parseChunkTitle(text: string): string {
   const m = text.match(/^#\s+(.+?)\s*$/m)
   return m ? m[1].trim() : ''
 }
 
+/** 读 JSON 文件，不存在或解析失败时返回 fallback */
+async function readJsonOr<T>(file: string, fallback: T): Promise<T> {
+  try {
+    const text = await fs.readFile(file, 'utf8')
+    return JSON.parse(text) as T
+  } catch {
+    return fallback
+  }
+}
+
 export function createKnowledgeStore(root: string): KnowledgeStore {
   async function listTopics(): Promise<TopicSummary[]> {
-    const indexPath = path.join(root, 'INDEX.md')
-    try {
-      const text = await fs.readFile(indexPath, 'utf8')
-      return parseRootIndex(text)
-    } catch {
-      return []
-    }
+    const indexPath = path.join(root, 'index.json')
+    const parsed = await readJsonOr<RootIndex>(indexPath, { topics: [] })
+    return Array.isArray(parsed.topics) ? parsed.topics : []
   }
 
   async function getTopic(topic: string): Promise<TopicDetail> {
     assertTopic(topic)
-    const indexPath = path.join(root, topic, 'INDEX.md')
-    const text = await fs.readFile(indexPath, 'utf8')
-    const meta = parseTopicMeta(text)
+    const indexPath = path.join(root, topic, 'index.json')
+    let meta: TopicIndex
+    try {
+      const text = await fs.readFile(indexPath, 'utf8')
+      meta = JSON.parse(text) as TopicIndex
+    } catch (e: any) {
+      if (e && e.code === 'ENOENT') {
+        throw new Error(`topic not found: ${topic}`)
+      }
+      throw new Error(`topic index corrupt: ${topic}, fix or delete ${topic}/index.json`)
+    }
     return {
       title: meta.title || topic,
-      tags: meta.tags,
+      tags: Array.isArray(meta.tags) ? meta.tags : [],
       sources: [],
-      chunks: parseChunkList(text),
+      chunks: Array.isArray(meta.chunks) ? meta.chunks : [],
     }
+  }
+
+  async function upsertTopic(input: { slug: string; title: string; summary: string; tags: string[] }): Promise<void> {
+    assertTopic(input.slug)
+    const { slug, title, summary, tags } = input
+
+    // 1. 更新根 index.json
+    const rootPath = path.join(root, 'index.json')
+    const rootIdx = await readJsonOr<RootIndex>(rootPath, { topics: [] })
+    if (!Array.isArray(rootIdx.topics)) rootIdx.topics = []
+    const existingRoot = rootIdx.topics.find(t => t.slug === slug)
+    if (existingRoot) {
+      existingRoot.title = title
+      existingRoot.summary = summary
+      existingRoot.tags = tags
+    } else {
+      rootIdx.topics.push({ slug, title, summary, tags })
+    }
+    await fs.writeFile(rootPath, JSON.stringify(rootIdx, null, 2), 'utf8')
+
+    // 2. 更新主题 index.json（不动 chunks 数组）
+    const topicDir = path.join(root, slug)
+    const topicPath = path.join(topicDir, 'index.json')
+    const topicIdx = await readJsonOr<TopicIndex>(topicPath, { slug, title, summary, tags, chunks: [] })
+    topicIdx.slug = slug
+    topicIdx.title = title
+    topicIdx.summary = summary
+    topicIdx.tags = tags
+    if (!Array.isArray(topicIdx.chunks)) topicIdx.chunks = []
+    await fs.mkdir(topicDir, { recursive: true })
+    await fs.writeFile(topicPath, JSON.stringify(topicIdx, null, 2), 'utf8')
+  }
+
+  async function upsertChunkRef(input: { topic: string; chunkId: string; title: string; summary: string }): Promise<void> {
+    assertTopic(input.topic)
+    assertChunkId(input.chunkId)
+    const { topic, chunkId, title, summary } = input
+    const topicPath = path.join(root, topic, 'index.json')
+    let topicIdx: TopicIndex
+    try {
+      const text = await fs.readFile(topicPath, 'utf8')
+      topicIdx = JSON.parse(text) as TopicIndex
+    } catch (e: any) {
+      if (e && e.code === 'ENOENT') {
+        throw new Error(`topic not found: ${topic}, call add_topic first`)
+      }
+      throw e
+    }
+    if (!Array.isArray(topicIdx.chunks)) topicIdx.chunks = []
+    const existing = topicIdx.chunks.find(c => c.id === chunkId)
+    if (existing) {
+      existing.title = title
+      existing.summary = summary
+    } else {
+      topicIdx.chunks.push({ id: chunkId, title, summary })
+    }
+    await fs.writeFile(topicPath, JSON.stringify(topicIdx, null, 2), 'utf8')
   }
 
   async function searchChunks(query: string): Promise<ChunkHit[]> {
@@ -153,7 +180,7 @@ export function createKnowledgeStore(root: string): KnowledgeStore {
     return fs.readFile(resolved, 'utf8')
   }
 
-  return { listTopics, getTopic, searchChunks, readChunk }
+  return { listTopics, getTopic, searchChunks, readChunk, upsertTopic, upsertChunkRef }
 }
 
 // 默认单例：绑生产 docsDir

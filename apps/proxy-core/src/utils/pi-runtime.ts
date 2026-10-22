@@ -97,9 +97,9 @@ Your knowledge directory (~/.cc-monitoring/docs) stores structured knowledge.
 
 STRUCTURE:
 - Each topic is a subfolder: docs/<topic-slug>/
-- Each topic has INDEX.md (metadata + chunk list, NO body)
+- Each topic has docs/<slug>/index.json (metadata + chunk list, NO body)
 - Bodies live in docs/<topic-slug>/chunks/chunk-NNN.md (300-500 words each)
-- Root INDEX.md lists all topics with one-line summaries
+- Root docs/index.json lists all topics as JSON
 
 CHAT MODE (answer questions):
 1. Call list_topics to see available topics
@@ -114,8 +114,9 @@ LEARN MODE (distill web pages into knowledge):
 2. Use browser tools to read web pages
 3. Distill into 300-500 word chunks, one point per chunk
 4. Write chunks to docs/<topic-slug>/chunks/chunk-NNN.md (include source URL + quote)
-5. Update docs/<topic-slug>/INDEX.md chunk list + metadata
-6. Update root INDEX.md topic line if new topic
+5. Call add_topic(slug, title, summary, tags) to register/update the topic in the index
+6. Call add_chunk(topic, chunk_id, title, summary) for each chunk you wrote
+Do NOT write or edit index.json files directly — use add_topic/add_chunk tools
 `
 
 /** 从 ~/.cc-monitoring/pi/system.md 读取自定义 system prompt，不存在则用兜底文本 */
@@ -177,6 +178,45 @@ function buildKnowledgeTools(): ToolDefinition[] {
         catch (e) { return err(e) }
       },
     },
+    {
+      name: 'add_topic',
+      label: 'add_topic',
+      description: '注册或更新一个知识主题（原子读改写 index.json）。LLM 不要直接写 index.json 文件。',
+      parameters: Type.Object({
+        slug: Type.String({ description: '主题 slug，小写连字符，如 react-hooks' }),
+        title: Type.String(),
+        summary: Type.String(),
+        tags: Type.Array(Type.String()),
+      }),
+      async execute(_id, params: { slug: string; title: string; summary: string; tags: string[] }) {
+        try {
+          await knowledgeStore.upsertTopic(params)
+          return ok('topic added')
+        } catch (e) { return err(e) }
+      },
+    },
+    {
+      name: 'add_chunk',
+      label: 'add_chunk',
+      description: '登记或更新一个 chunk 在主题索引中的引用（原子读改写）。写完 chunk-NNN.md 正文后调用。',
+      parameters: Type.Object({
+        topic: Type.String(),
+        chunk_id: Type.String({ description: '如 chunk-001' }),
+        title: Type.String(),
+        summary: Type.String(),
+      }),
+      async execute(_id, params: { topic: string; chunk_id: string; title: string; summary: string }) {
+        try {
+          await knowledgeStore.upsertChunkRef({
+            topic: params.topic,
+            chunkId: params.chunk_id,
+            title: params.title,
+            summary: params.summary,
+          })
+          return ok('chunk ref added')
+        } catch (e) { return err(e) }
+      },
+    },
   ]
 }
 
@@ -206,7 +246,7 @@ function buildToolAllowlist(mode: PiSessionMode): string[] {
   if (mode === 'chat') {
     return base
   }
-  return [...base, 'write', 'edit', ...browserTools.map((t) => t.name)]
+  return [...base, 'add_topic', 'add_chunk', 'write', 'edit', ...browserTools.map((t) => t.name)]
 }
 
 export async function createPiSession(options: CreatePiSessionOptions): Promise<AgentSession> {
