@@ -3,8 +3,6 @@ import { createChatConnection, loadConversations, saveConversations } from '../a
 import type { ChatMessage, ChatConversation, ContentBlock, TextBlock, ThinkingBlock, ToolBlock, ThinkingLevel } from '../types/chat'
 import { generateUUID } from '../utils/uuid'
 
-export type ChatMode = 'chat' | 'learn'
-
 export function useChat() {
   const [conversations, setConversations] = useState<ChatConversation[]>(loadConversations())
   const [currentIndex, setCurrentIndex] = useState<number>(
@@ -12,8 +10,6 @@ export function useChat() {
   )
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // 会话模式：chat=只读问答（搜 docs），learn=浏览器学习（抓网页写 docs）
-  const [mode, setModeState] = useState<ChatMode>('chat')
   // 思考等级：透传到后端请求 body
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>('off')
 
@@ -124,7 +120,7 @@ export function useChat() {
     let assistantMsgId = ''
     let hasAnyBlock = false
 
-    const connection = createChatConnection(prompt, currentSessionId, mode, thinkingLevel)
+    const connection = createChatConnection(prompt, currentSessionId, 'chat', thinkingLevel)
     connectionRef.current = connection
 
     // 后端通过 response header 下发 pi 真实 sessionId（新建/复用都带）。
@@ -273,23 +269,11 @@ export function useChat() {
         })
       }
     }
-  }, [sessionId, currentIndex, loading, persist, mode, thinkingLevel])
+  }, [sessionId, currentIndex, loading, persist, thinkingLevel])
 
   // 开始新对话
   const newConversation = useCallback(() => {
     // 如果正在加载，先取消
-    if (connectionRef.current) {
-      connectionRef.current.abort()
-      connectionRef.current = null
-      setLoading(false)
-    }
-    setCurrentIndex(-1)
-    setError(null)
-  }, [])
-
-  // 切换模式：chat/learn 的 session 工具集不同，强制开新对话避免复用错 session
-  const setMode = useCallback((m: ChatMode) => {
-    setModeState(m)
     if (connectionRef.current) {
       connectionRef.current.abort()
       connectionRef.current = null
@@ -326,8 +310,6 @@ export function useChat() {
     newConversation,
     conversations,
     currentIndex,
-    mode,
-    setMode,
     thinkingLevel,
     setThinkingLevel
   }
