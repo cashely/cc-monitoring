@@ -194,6 +194,15 @@
   left: 30%;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .ambient-blob,
+  .blob-1,
+  .blob-2,
+  .blob-3 {
+    animation: none !important;
+  }
+}
+
 /* Chat UI overrides - antd-x Bubble & Sender */
 .chat-bubble-list .ant-bubble {
   flex-direction: column !important;

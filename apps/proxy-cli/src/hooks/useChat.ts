@@ -19,11 +19,28 @@ export function useChat() {
 
   const connectionRef = useRef<ReturnType<typeof createChatConnection> | null>(null)
   const conversationsRef = useRef<ChatConversation[]>(conversations)
+  const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingSaveRef = useRef<ChatConversation[] | null>(null)
 
   // Keep ref in sync with state so SSE callbacks always read latest
   useEffect(() => {
     conversationsRef.current = conversations
   }, [conversations])
+
+  // 节流写 localStorage：连续 delta 只在最后一次变更后 1.5s 落盘，避免每个 token 都 JSON.stringify 整个数组
+  const scheduleSave = useCallback((next: ChatConversation[]) => {
+    pendingSaveRef.current = next
+    if (persistTimerRef.current !== null) {
+      clearTimeout(persistTimerRef.current)
+    }
+    persistTimerRef.current = setTimeout(() => {
+      persistTimerRef.current = null
+      if (pendingSaveRef.current !== null) {
+        saveConversations(pendingSaveRef.current)
+        pendingSaveRef.current = null
+      }
+    }, 1500)
+  }, [])
 
   const currentConversation = currentIndex >= 0 ? conversations[currentIndex] : null
   const messages = currentConversation?.messages ?? []
@@ -34,14 +51,14 @@ export function useChat() {
     if (typeof updater === 'function') {
       setConversations(prev => {
         const next = updater(prev)
-        saveConversations(next)
+        scheduleSave(next)
         return next
       })
     } else {
-      saveConversations(updater)
+      scheduleSave(updater)
       setConversations(updater)
     }
-  }, [])
+  }, [scheduleSave])
 
   // 发送消息
   const sendMessage = useCallback((prompt: string) => {
@@ -282,12 +299,20 @@ export function useChat() {
     setError(null)
   }, [])
 
-  // Cleanup: abort connection on unmount
+  // Cleanup: abort connection on unmount，flush 未落盘的 persist
   useEffect(() => {
     return () => {
       if (connectionRef.current) {
         connectionRef.current.abort()
         connectionRef.current = null
+      }
+      if (persistTimerRef.current !== null) {
+        clearTimeout(persistTimerRef.current)
+        persistTimerRef.current = null
+      }
+      if (pendingSaveRef.current !== null) {
+        saveConversations(pendingSaveRef.current)
+        pendingSaveRef.current = null
       }
     }
   }, [])
