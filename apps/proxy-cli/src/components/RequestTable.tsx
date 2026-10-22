@@ -16,6 +16,7 @@ interface RequestTableProps {
 }
 
 const PAGE_SIZE = 100
+const MAX_CAP = 500
 
 // Session 颜色轮询 palette（亮色，白色文字可读，暗/亮主题均适用）
 const SESSION_PALETTE = [
@@ -72,7 +73,8 @@ export function RequestTable({
       // 新请求 + 保留的旧请求，按 timestamp 倒序
       const merged = [...newRequests, ...base]
       const sorted = merged.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-      return sorted
+      // 硬上限：超出丢最旧的（倒序数组尾部），加载更多路径不受此 cap 约束
+      return sorted.length > MAX_CAP ? sorted.slice(0, MAX_CAP) : sorted
     })
   }, [initialRequests])
 
@@ -80,25 +82,23 @@ export function RequestTable({
   const requestsWithSequence = useMemo(() => {
     const sessionGroups = new Map<string, RequestSummary[]>()
 
-    // 按 sessionId 分组
+    // 按 sessionId 分组一次
     allRequests.forEach(req => {
       const group = sessionGroups.get(req.sessionId) || []
       group.push(req)
       sessionGroups.set(req.sessionId, group)
     })
 
-    // 为每个分组内的请求按时间排序并添加序号
-    const result = allRequests.map(req => {
-      const group = sessionGroups.get(req.sessionId)!
-      // 按时间正序排列（最早的在前）
-      const sortedGroup = [...group].sort((a, b) =>
-        new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-      )
-      const sequence = sortedGroup.findIndex(r => r.compositeId === req.compositeId) + 1
-      return { ...req, sequence }
+    // 每组按时间正序 sort 一次，建立 compositeId → sequence 查表
+    const seqMap = new Map<string, number>()
+    sessionGroups.forEach(group => {
+      group
+        .slice()
+        .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+        .forEach((req, i) => seqMap.set(req.compositeId, i + 1))
     })
 
-    return result
+    return allRequests.map(req => ({ ...req, sequence: seqMap.get(req.compositeId) }))
   }, [allRequests])
 
   const displayedRequests = requestsWithSequence.slice(0, displayedCount)

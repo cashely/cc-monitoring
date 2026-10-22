@@ -200,6 +200,18 @@ export function useWebSocketData(): {
     }
   }, [refreshAll, connect, clearHeartbeatTimer])
 
+  // On tab refocus: pull latest data once so user doesn't see stale state.
+  // WS stays connected in background — only REST re-sync on visible.
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refreshAll().catch(() => {})
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange)
+  }, [refreshAll])
+
   // Auto-reconnect with exponential backoff (1s, 2s, 4s, max 8s)
   // Skip reconnect on first mount — initial connection is handled by mount effect
   useEffect(() => {
