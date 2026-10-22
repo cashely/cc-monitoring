@@ -57,8 +57,6 @@ export function ChatUI(): JSX.Element {
     error,
     sendMessage,
     newConversation,
-    mode,
-    setMode,
     thinkingLevel,
     setThinkingLevel
   } = useChat()
@@ -176,8 +174,6 @@ export function ChatUI(): JSX.Element {
       <div className="glass-strong px-4 py-2 flex flex-col gap-1.5">
         <ChatToolbar
           onNewConversation={newConversation}
-          mode={mode}
-          onModeChange={setMode}
           thinkingLevel={thinkingLevel}
           onThinkingLevelChange={setThinkingLevel}
         />
