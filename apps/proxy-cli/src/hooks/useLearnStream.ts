@@ -23,7 +23,7 @@ export interface LearnRound {
 
 export type LearnStatus = 'idle' | 'streaming' | 'done'
 
-// 学习模式流式 hook：每次任务新建 learn session（不传 sessionId），
+// 学习模式流式 hook：start 新建 learn session（不传 sessionId），followup 复用已下发的 sessionId 追问，
 // 按 round_start / round_end 把 SSE 事件分组累积成 rounds
 export function useLearnStream() {
   const [rounds, setRounds] = useState<LearnRound[]>([])
@@ -31,6 +31,8 @@ export function useLearnStream() {
   const [error, setError] = useState<string | null>(null)
   const [task, setTask] = useState<LearnTask | null>(null)
   const connectionRef = useRef<ReturnType<typeof createChatConnection> | null>(null)
+  // 后端通过 x-claude-code-session-id 下发的 pi sessionId，followup 复用以延续同一学习会话
+  const sessionIdRef = useRef<string | null>(null)
 
   // 所有 delta / tool 事件都归属「最后一个未结束的 round」（当前轮）
   const mutateLastRound = useCallback((type: string, fn: (r: LearnRound) => LearnRound) => {
@@ -46,19 +48,11 @@ export function useLearnStream() {
     })
   }, [])
 
-  const start = useCallback((t: LearnTask) => {
-    if (connectionRef.current) {
-      connectionRef.current.abort()
-      connectionRef.current = null
+  // 把 onSession / onData / onError / onDone 挂到一条连接上，start / followup 共用
+  const attachHandlers = useCallback((connection: ReturnType<typeof createChatConnection>) => {
+    connection.onSession = (id: string) => {
+      sessionIdRef.current = id
     }
-    setRounds([])
-    setError(null)
-    setTask(t)
-    setStatus('streaming')
-
-    // 每次学习任务都是新建 session：不传 sessionId
-    const connection = createChatConnection(t.payload, undefined, 'learn')
-    connectionRef.current = connection
 
     connection.onData = (type: string, data: any) => {
       switch (type) {
@@ -136,6 +130,38 @@ export function useLearnStream() {
     }
   }, [mutateLastRound])
 
+  const start = useCallback((t: LearnTask) => {
+    if (connectionRef.current) {
+      connectionRef.current.abort()
+      connectionRef.current = null
+    }
+    // 新任务重置 session，避免沿用上一次会话
+    sessionIdRef.current = null
+    setRounds([])
+    setError(null)
+    setTask(t)
+    setStatus('streaming')
+
+    // 每次学习任务都是新建 session：不传 sessionId
+    const connection = createChatConnection(t.payload, undefined, 'learn')
+    connectionRef.current = connection
+    attachHandlers(connection)
+  }, [attachHandlers])
+
+  // 追问：复用 sessionId 在同一学习会话中继续，不清空已有 rounds
+  const followup = useCallback((prompt: string) => {
+    if (connectionRef.current) {
+      connectionRef.current.abort()
+      connectionRef.current = null
+    }
+    setStatus('streaming')
+    setError(null)
+
+    const connection = createChatConnection(prompt, sessionIdRef.current ?? undefined, 'learn')
+    connectionRef.current = connection
+    attachHandlers(connection)
+  }, [attachHandlers])
+
   const cancel = useCallback(() => {
     if (connectionRef.current) {
       connectionRef.current.abort()
@@ -154,5 +180,5 @@ export function useLearnStream() {
     }
   }, [])
 
-  return { rounds, status, error, task, start, cancel }
+  return { rounds, status, error, task, start, followup, cancel }
 }

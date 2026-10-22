@@ -68,6 +68,8 @@
     "roundLearning": "Learning…",
     "roundDone": "Done",
     "learnPreparing": "Preparing…",
+    "learnFollowupPlaceholder": "Ask a follow-up…",
+    "learnFollowupSend": "Send",
     "emptyTitle": "AI Assistant Ready",
     "emptyDesc": "Start a conversation or pick a quick question below",
     "quickQ1": "Check proxy status",

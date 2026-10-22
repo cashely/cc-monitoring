@@ -70,6 +70,8 @@
     "roundLearning": "学习中…",
     "roundDone": "已完成",
     "learnPreparing": "准备中…",
+    "learnFollowupPlaceholder": "追问或补充问题…",
+    "learnFollowupSend": "发送",
     "emptyTitle": "AI 助手已就绪",
     "emptyDesc": "开始对话，或选择下方快捷提问",
     "quickQ1": "查看代理状态",
