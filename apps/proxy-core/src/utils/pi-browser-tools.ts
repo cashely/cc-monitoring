@@ -70,7 +70,9 @@ export function runEgoBrowser(
     child.on('close', (code) => {
       if (settled) return
       if (code === 0) {
-        finish(null, stdout)
+        // 新版 ego cliLog 走 stderr；stdout 非空用 stdout，否则回退 stderr（新旧兼容）
+        const out = stdout.trim() ? stdout : stderr
+        finish(null, out)
       } else {
         // 非 0 退出：stderr 可能含错误；stdout 仍作为错误消息的一部分返回
         const detail = stdout.trim() ? `\n--- stdout ---\n${stdout.trim()}` : ''
