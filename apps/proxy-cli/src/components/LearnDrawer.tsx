@@ -76,7 +76,7 @@ function RoundCard({
 // 学习任务抽屉：顶部来源 + 按 round 分组渲染流式过程
 export function LearnDrawer({ open, task, onClose }: LearnDrawerProps): JSX.Element {
   const { t } = useTranslation('app')
-  const { rounds, status, error, start, followup, cancel } = useLearnStream()
+  const { rounds, status, error, stage, start, followup, cancel } = useLearnStream()
   const [followupInput, setFollowupInput] = useState('')
 
   // task 就绪即启动流式（每次任务都是新对象），顺带清空追问输入
@@ -92,7 +92,7 @@ export function LearnDrawer({ open, task, onClose }: LearnDrawerProps): JSX.Elem
     onClose()
   }
 
-  // 发送追问：复用同一 learn session，不清空已有 rounds
+  // 发送追问：改走 chat 模式新建会话，不清空已有 rounds
   const handleFollowup = () => {
     const text = followupInput.trim()
     if (!text || status !== 'done') return
@@ -118,6 +118,25 @@ export function LearnDrawer({ open, task, onClose }: LearnDrawerProps): JSX.Elem
           >
             {task.label ?? task.payload}
           </span>
+          {stage && status === 'streaming' && (
+            <div
+              className="text-xs mt-1"
+              style={{ color: 'var(--color-text-secondary)' }}
+            >
+              {stage.name === 'outline' && t('chat.stageOutline')}
+              {stage.name === 'refine' && (
+                <>
+                  {t('chat.stageRefine', { index: stage.index + 1, total: stage.total })}
+                  {stage.failedCount > 0 && (
+                    <span className="ml-1">
+                      {t('chat.stageFailedSuffix', { count: stage.failedCount })}
+                    </span>
+                  )}
+                </>
+              )}
+              {stage.name === 'tag' && t('chat.stageTag')}
+            </div>
+          )}
         </div>
       )}
 
@@ -153,7 +172,7 @@ export function LearnDrawer({ open, task, onClose }: LearnDrawerProps): JSX.Elem
             {t('chat.roundDone')}
           </div>
 
-          {/* 追问输入区：同一学习会话继续，streaming 时禁用 */}
+          {/* 追问输入区：改走 chat 模式，streaming 时禁用 */}
           <div className="glass rounded-lg p-2 mt-2 flex items-center gap-2">
             <Input.TextArea
               value={followupInput}
