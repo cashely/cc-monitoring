@@ -10,6 +10,7 @@ import { getCallerDirname } from '../utils/esm-dirname.js'
 import { getConfigPath, getDisplayPath } from '../utils/paths.js'
 import { loadRequestDB, listRequestDB, type RequestSummary } from '../utils/request-writer.js'
 import { createPiSession, type PiSessionMode } from '../utils/pi-runtime.js'
+import { runLearnPipeline, type LearnPipelineEvents } from '../utils/pi-learn-orchestrator.js'
 import type { AgentSession } from '@earendil-works/pi-coding-agent'
 import { statusHistory } from '../utils/status-history.js'
 import { addDataClient, removeDataClient, pushStatsNotify, broadcastToDataClients, getDataClientCount } from './data-push.js'
@@ -26,7 +27,7 @@ interface ExecRequestBody {
   prompt: string
   stream?: boolean
   sessionId?: string  // pi 会话 ID，用于多轮对话
-  mode?: 'chat' | 'learn' | PiSessionMode  // 会话模式：chat=问答，learn=旧别名（→ outline），默认 chat
+  mode?: 'chat' | 'learn'  // 会话模式：chat=pi 多轮问答，learn=三阶段学习流水线（orchestrator），默认 chat
   thinkingLevel?: 'off' | 'minimal' | 'low' | 'medium' | 'high'
 }
 
@@ -260,6 +261,19 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
   // pi AgentSession 进程内注册表：key = sessionId（pi 自己生成）
   const piSessions = new Map<string, AgentSession>()
 
+  // learn 流水线非流式调用时的空事件桩（不订阅任何 SSE）
+  const noopLearnEvents: LearnPipelineEvents = {
+    stageStart: () => {},
+    stageItemStart: () => {},
+    stageItemEnd: () => {},
+    stageItemFailed: () => {},
+    stageEnd: () => {},
+    textDelta: () => {},
+    thinkingDelta: () => {},
+    toolStart: () => {},
+    toolEnd: () => {},
+  }
+
   // Exec endpoint: 通过嵌入的 pi SDK 跑 prompt，保持原 SSE/JSON 契约
   fastify.post<{ Body: ExecRequestBody }>('/ui/api/exec', async (request, reply) => {
     if (!checkAuth(request, config)) {
@@ -270,11 +284,6 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     const { prompt, stream = false, sessionId, mode } = request.body
-    // mode 分发：'chat' 或新四模式之一；旧 'learn' 兼容映射到 outline（Task 3 再接 orchestrator）
-    const resolvedMode: PiSessionMode =
-      mode === 'learn' ? 'outline'
-      : mode === 'outline' || mode === 'refine' || mode === 'tag' ? mode
-      : 'chat'
 
     if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
       return reply.code(400).send({
@@ -285,12 +294,111 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
 
     const port = config.server.port
 
-    // piSessions 按 `${mode}:${piSessionId}` 隔离：chat / learn 各自独立 session。
-    // 前端回传的 sessionId 不带 mode，先按 resolvedMode 精确查，找不到再按后缀兜底。
+    // 'learn' 走 orchestrator 一次性流水线（不驻留 pi session，不进 piSessions 注册表）。
+    // 其余值（含 outline/refine/tag）一律按 chat 处理：这些是内部 stage mode，不对外暴露。
+    if (mode === 'learn') {
+      if (!stream) {
+        // 非流式：跑完流水线，返回汇总（不返回 output 文本——流水线产物落盘）
+        try {
+          const result = await runLearnPipeline({ prompt, port, events: noopLearnEvents })
+          return {
+            success: true,
+            output: `slug=${result.slug} chunks=${result.chunksWritten} failed=${result.itemsFailed}`,
+          }
+        } catch (err: any) {
+          request.log.error({ err }, 'learn pipeline failed')
+          return reply.code(500).send({
+            success: false,
+            error: err?.message || 'learn pipeline failed',
+          })
+        }
+      }
+
+      // Streaming: SSE
+      reply.hijack()
+      const res = reply.raw
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        // learn 流水线不驻留 session，前端 followup 走 chat，此 header 置空即可
+        'x-claude-code-session-id': '',
+      })
+
+      const sendSSE = (event: string, data: string) => {
+        if (res.destroyed) return
+        res.write(`event: ${event}\ndata: ${data}\n\n`)
+      }
+
+      let finished = false
+      const finish = (code: number) => {
+        if (finished) return
+        finished = true
+        if (!res.destroyed) {
+          sendSSE('done', JSON.stringify({ code }))
+          res.end()
+        }
+      }
+
+      // SSE adapter: LearnPipelineEvents → SSE data events
+      const events: LearnPipelineEvents = {
+        stageStart: (stage, totalItems) =>
+          sendSSE('data', JSON.stringify({ type: 'stage_start', stage, totalItems })),
+        stageItemStart: (index, total, title) =>
+          sendSSE('data', JSON.stringify({ type: 'stage_item_start', index, total, title })),
+        stageItemEnd: (index, chunkId) =>
+          sendSSE('data', JSON.stringify({ type: 'stage_item_end', index, chunkId })),
+        stageItemFailed: (index, title, reason) =>
+          sendSSE('data', JSON.stringify({ type: 'stage_item_failed', index, title, reason })),
+        stageEnd: (stage) =>
+          sendSSE('data', JSON.stringify({ type: 'stage_end', stage })),
+        textDelta: (delta) =>
+          sendSSE('data', JSON.stringify({ type: 'text_delta', content: delta })),
+        thinkingDelta: (delta) =>
+          sendSSE('data', JSON.stringify({ type: 'thinking_delta', content: delta })),
+        toolStart: (e) =>
+          sendSSE('data', JSON.stringify({
+            type: 'tool_start',
+            toolCallId: e.toolCallId,
+            toolName: e.toolName,
+            args: e.args,
+          })),
+        toolEnd: (e) =>
+          sendSSE('data', JSON.stringify({
+            type: 'tool_end',
+            toolCallId: e.toolCallId,
+            toolName: e.toolName,
+            isError: e.isError,
+            durationMs: e.durationMs,
+            result: e.result,
+          })),
+      }
+
+      // 通道关闭时不做主动 abort（orchestrator 当前不暴露 abort API），
+      // 让 runLearnPipeline promise 自然 resolve/reject；res.write 已通过 res.destroyed 守卫。
+      res.on('close', () => {
+        // no-op: 仅防止悬挂引用；流水线继续跑到自然结束或每阶段超时
+      })
+
+      try {
+        await runLearnPipeline({ prompt, port, events })
+        finish(0)
+      } catch (err: any) {
+        request.log.error({ err }, 'learn pipeline failed')
+        if (!res.destroyed) {
+          sendSSE('error', JSON.stringify({ message: err?.message || 'learn pipeline failed' }))
+        }
+        finish(1)
+      }
+      return
+    }
+
+    // piSessions 按 `${mode}:${piSessionId}` 隔离：chat 各自独立 session。
+    // 前端回传的 sessionId 不带 mode，先按 'chat' 精确查，找不到再按后缀兜底。
     const sessionKey = (m: PiSessionMode, id: string) => `${m}:${id}`
     let existing: AgentSession | undefined
     if (sessionId) {
-      existing = piSessions.get(sessionKey(resolvedMode, sessionId))
+      existing = piSessions.get(sessionKey('chat', sessionId))
       if (!existing) {
         // 兜底：mode 不一致或旧数据，按 `:${sessionId}` 后缀反查
         for (const [key, s] of piSessions) {
@@ -302,7 +410,7 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
     let session: AgentSession
     if (isNewSession) {
       try {
-        session = await createPiSession({ port, mode: resolvedMode })
+        session = await createPiSession({ port, mode: 'chat' })
       } catch (err: any) {
         request.log.error({ err }, 'Failed to create pi session')
         return reply.code(500).send({
@@ -310,7 +418,7 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
           error: err?.message || 'Failed to initialize pi runtime'
         })
       }
-      piSessions.set(sessionKey(resolvedMode, session.sessionId), session)
+      piSessions.set(sessionKey('chat', session.sessionId), session)
     } else {
       // isNewSession 为 false 时 existing 必非 undefined（TS 窄化在循环赋值后丢失，这里显式断言）
       session = existing as AgentSession
