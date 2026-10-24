@@ -111,6 +111,37 @@ describe('useLearnStream', () => {
     expect(result.current.stage).toBeNull()
   })
 
+  it('Finding 4：followup 两次，第二次复用第一次 chat 连接下发的 sessionId', () => {
+    const learnConn = makeConn()
+    mockCreate.mockReturnValue(learnConn)
+    const { result } = renderHook(() => useLearnStream())
+
+    act(() => {
+      result.current.start({ source: 'url', payload: 'https://x.com' })
+    })
+    // learn 流水线结束（mode=learn）→ sessionId 被清空
+    act(() => { learnConn.onSession('pi-learn-1') })
+    act(() => { learnConn.onDone() })
+    expect(result.current.status).toBe('done')
+
+    // 第一次 followup：chat 模式，无 sessionId（learn 的已清）
+    const chatConn1 = makeConn()
+    mockCreate.mockReturnValue(chatConn1)
+    act(() => { result.current.followup('什么是 useState?') })
+    expect(mockCreate).toHaveBeenLastCalledWith('什么是 useState?', undefined, 'chat')
+
+    // 后端新建 chat session 并下发 sessionId；chat 模式 done 不清 sessionId
+    act(() => { chatConn1.onSession('pi-chat-1') })
+    act(() => { chatConn1.onDone() })
+    expect(result.current.status).toBe('done')
+
+    // 第二次 followup：必须复用 pi-chat-1，保留多轮上下文
+    const chatConn2 = makeConn()
+    mockCreate.mockReturnValue(chatConn2)
+    act(() => { result.current.followup('什么时候用它?') })
+    expect(mockCreate).toHaveBeenLastCalledWith('什么时候用它?', 'pi-chat-1', 'chat')
+  })
+
   it('resets stage when a new task starts', () => {
     const conn = makeConn()
     mockCreate.mockReturnValue(conn)

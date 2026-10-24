@@ -40,8 +40,11 @@ export function useLearnStream() {
   const [task, setTask] = useState<LearnTask | null>(null)
   const [stage, setStage] = useState<StageState | null>(null)
   const connectionRef = useRef<ReturnType<typeof createChatConnection> | null>(null)
-  // 后端通过 x-claude-code-session-id 下发的 pi sessionId；流水线无驻留 session，done 后即清空，followup 不复用
+  // 后端通过 x-claude-code-session-id 下发的 pi sessionId。
+  // learn 流水线无驻留 session（done 后即清空）；chat followup 应复用以保留多轮上下文。
   const sessionIdRef = useRef<string | null>(null)
+  // 当前连接模式：learn 流水线结束清 sessionId；chat followup 结束保留，下一轮复用
+  const connectionModeRef = useRef<'learn' | 'chat'>('learn')
 
   // 所有 delta / tool 事件都归属「最后一个未结束的 round」（当前轮）
   const mutateLastRound = useCallback((type: string, fn: (r: LearnRound) => LearnRound) => {
@@ -160,8 +163,11 @@ export function useLearnStream() {
     connection.onDone = () => {
       setStatus('done')
       connectionRef.current = null
-      // 学习流水线无驻留 session，done 后清掉下发的 pi sessionId
-      sessionIdRef.current = null
+      // learn 流水线无驻留 session，done 后清掉下发的 pi sessionId；
+      // chat followup 保留 sessionId，下一轮追问复用同一 pi session 保留上下文。
+      if (connectionModeRef.current === 'learn') {
+        sessionIdRef.current = null
+      }
     }
   }, [mutateLastRound])
 
@@ -170,7 +176,8 @@ export function useLearnStream() {
       connectionRef.current.abort()
       connectionRef.current = null
     }
-    // 新任务重置 session，避免沿用上一次会话
+    // 新学习任务：重置 session，避免沿用上一次 learn/chat 会话
+    connectionModeRef.current = 'learn'
     sessionIdRef.current = null
     setRounds([])
     setError(null)
@@ -184,17 +191,19 @@ export function useLearnStream() {
     attachHandlers(connection)
   }, [attachHandlers])
 
-  // 追问：流水线无驻留 session，改走 chat 模式新建会话，不复用 learn 的 sessionId
+  // 追问：走 chat 模式。首次追问时 learn sessionId 已被清掉（传 undefined），
+  // 后端新建 chat session 后通过 onSession 下发；后续追问复用该 sessionId 保留多轮上下文。
   const followup = useCallback((prompt: string) => {
     if (connectionRef.current) {
       connectionRef.current.abort()
       connectionRef.current = null
     }
+    connectionModeRef.current = 'chat'
     setStatus('streaming')
     setError(null)
     setStage(null)
 
-    const connection = createChatConnection(prompt, undefined, 'chat')
+    const connection = createChatConnection(prompt, sessionIdRef.current ?? undefined, 'chat')
     connectionRef.current = connection
     attachHandlers(connection)
   }, [attachHandlers])

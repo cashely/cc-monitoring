@@ -41,6 +41,35 @@ class FakeSession {
         toolName: 'add_topic',
         args: { slug: 'x', title: 't', summary: 's', tags },
       })
+      // Finding 1：成功判定 deferred 到 tool_execution_end 且 isError=false
+      this.emit({
+        type: 'tool_execution_end',
+        toolCallId: 'call-1',
+        toolName: 'add_topic',
+        isError: false,
+        durationMs: 12,
+        result: { content: [{ type: 'text', text: 'ok' }] },
+      })
+    }
+  }
+
+  /** add_topic 带非空 tags 但工具执行失败（upsert 抛错等） → orchestrator 必须重试 */
+  static addTopicErrorHandler(tags: string[]): SessionHandler {
+    return async function (this: FakeSession) {
+      this.emit({
+        type: 'tool_execution_start',
+        toolCallId: 'call-1',
+        toolName: 'add_topic',
+        args: { slug: 'x', title: 't', summary: 's', tags },
+      })
+      this.emit({
+        type: 'tool_execution_end',
+        toolCallId: 'call-1',
+        toolName: 'add_topic',
+        isError: true,
+        durationMs: 5,
+        result: { content: [{ type: 'text', text: 'upsertTopic failed: invalid slug' }] },
+      })
     }
   }
 }
@@ -323,5 +352,90 @@ describe('pi-learn-orchestrator', () => {
 
     expect(result.slug).toBe(slug)
     expect(events.calls).toContain('stageEnd:tag')
+  })
+
+  test('Finding 1：S3 add_topic tags 非空但 tool_execution_end isError=true → 不算成功，重试后成功', async () => {
+    const items = [{ id: 'a', title: '概念A', oneLine: 'aaa' }]
+    const slug = 'err-tag-topic'
+
+    await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
+    await fsp.writeFile(
+      path.join(tmpDir, slug, 'index.json'),
+      JSON.stringify({ slug, title: 'T', summary: '(refining)', tags: [], chunks: [
+        { id: 'chunk-001', title: '概念A', summary: 'aaa', tags: [] },
+      ] }, null, 2),
+    )
+    await fsp.writeFile(path.join(tmpDir, slug, 'chunks', 'chunk-001.md'), '# A')
+
+    // S1: 写 outline.json
+    mockCreatePiSession.mockImplementationOnce(async () => {
+      return new FakeSession(async () => {
+        await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
+        await fsp.writeFile(
+          path.join(tmpDir, slug, 'outline.json'),
+          JSON.stringify({ slug, source: 'source.md', items }, null, 2),
+        )
+      }) as any
+    })
+    // S2 item0: chunk 已存在
+    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(async () => {}) as any)
+    // S3 try0: add_topic 带非空 tags 但工具执行失败 → 必须重试
+    mockCreatePiSession.mockImplementationOnce(async () => {
+      return new FakeSession(FakeSession.addTopicErrorHandler(['bad-tag'])) as any
+    })
+    // S3 try1: add_topic 成功
+    mockCreatePiSession.mockImplementationOnce(async () => {
+      return new FakeSession(FakeSession.addTopicHandler(['real-tag'])) as any
+    })
+
+    const events = makeEvents()
+    const result = await runLearnPipeline({ prompt: 'x', port: 9999, events, docsDir: tmpDir })
+
+    expect(result.slug).toBe(slug)
+    expect(events.calls).toContain('stageEnd:tag')
+    // S1(1) + S2(1) + S3 两次重试 = 4 次 session
+    expect(mockCreatePiSession).toHaveBeenCalledTimes(4)
+  })
+
+  test('Finding 2：S2 item 写了 chunk-001.md 但从未调 add_chunk（index.json 无 chunkId）→ item 失败', async () => {
+    const items = [{ id: 'a', title: '概念A', oneLine: 'aaa' }]
+    const slug = 'orphan-topic'
+
+    // index.json 存在但 chunks 为空（add_chunk 没被调）
+    await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
+    await fsp.writeFile(
+      path.join(tmpDir, slug, 'index.json'),
+      JSON.stringify({ slug, title: 'O', summary: '(refining)', tags: [], chunks: [] }, null, 2),
+    )
+
+    // S1: 写 outline.json
+    mockCreatePiSession.mockImplementationOnce(async () => {
+      return new FakeSession(async () => {
+        await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
+        await fsp.writeFile(
+          path.join(tmpDir, slug, 'outline.json'),
+          JSON.stringify({ slug, source: 'source.md', items }, null, 2),
+        )
+      }) as any
+    })
+    // S2 item0: 两次重试都只写 chunk-001.md，从不更新 index.json（add_chunk 未调用）
+    const writeOrphan = async () => {
+      await fsp.writeFile(path.join(tmpDir, slug, 'chunks', 'chunk-001.md'), '# A')
+    }
+    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(async () => { await writeOrphan() }) as any)
+    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(async () => { await writeOrphan() }) as any)
+    // S3: 兜底成功（index.json chunks 为空也能跑，add_topic 只覆盖元数据）
+    mockCreatePiSession.mockImplementation(async () => {
+      return new FakeSession(FakeSession.addTopicHandler(['tag1'])) as any
+    })
+
+    const events = makeEvents()
+    const result = await runLearnPipeline({ prompt: 'x', port: 9999, events, docsDir: tmpDir })
+
+    expect(result.chunksWritten).toBe(0)
+    expect(result.itemsFailed).toBe(1)
+    const failed = events.calls.filter((c) => c.startsWith('stageItemFailed:'))
+    expect(failed).toHaveLength(1)
+    expect(failed[0]).toContain('add_chunk 未调用')
   })
 })

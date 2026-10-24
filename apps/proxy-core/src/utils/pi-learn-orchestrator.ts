@@ -49,6 +49,31 @@ interface SessionLike {
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/
 
+// 每阶段（含 S2 每个 item prompt）独立超时：5 分钟。
+// 防止 pi session 在 stuck LLM 响应上无限挂起，导致 SSE 通道常开、前端永久转圈。
+const STAGE_TIMEOUT_MS = 5 * 60 * 1000
+
+/**
+ * Promise.race 包一层超时。超时触发时调用 abortFn（session.abort()），
+ * 然后 reject；正常 settle 时清掉 timer，避免泄漏。
+ */
+function withTimeout<T>(p: Promise<T>, ms: number, abortFn: () => Promise<void>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeoutP = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => {
+      // 触发 abort，尽量让底层 fetch/pi session 提前收尾；reject 用明确错误
+      abortFn().catch(() => {})
+      reject(new Error(`stage 超时 ${ms}ms`))
+    }, ms)
+  })
+  return Promise.race([
+    p.finally(() => {
+      if (timer) clearTimeout(timer)
+    }),
+    timeoutP,
+  ])
+}
+
 /** 列出 docsDir 下当前已有 outline.json 的 slug 集合 */
 function snapshotOutlinedSlugs(docsDir: string): Set<string> {
   const out = new Set<string>()
@@ -80,6 +105,10 @@ async function runPrompt(
   events: LearnPipelineEvents,
 ): Promise<RunPromptResult> {
   const result: RunPromptResult = { addTopicCalled: false }
+  // Finding 1：tool_execution_start 时只记录「即将调 add_topic 且 tags 非空」，
+  // 真正置位必须等 tool_execution_end 且 isError=false。否则工具执行失败（upsert
+  // 抛错/非法 slug/JSON 写失败）时重试循环会误判成功。
+  let pendingAddTopicWithTags = false
   const unsub = session.subscribe((ev: any) => {
     try {
       if (ev.type === 'message_update') {
@@ -95,17 +124,17 @@ async function runPrompt(
           toolName: ev.toolName,
           args: ev.args,
         })
-        // S3 成功判定：add_topic 被调且 tags 非空
         if (ev.toolName === 'add_topic') {
           const tags = (ev.args as any)?.tags
-          if (Array.isArray(tags) && tags.length > 0) {
-            result.addTopicCalled = true
-          }
+          pendingAddTopicWithTags = Array.isArray(tags) && tags.length > 0
         }
       } else if (ev.type === 'tool_execution_end') {
         const resultText = Array.isArray(ev.result?.content)
           ? ev.result.content.map((c: any) => (c?.type === 'text' ? c.text : '')).join('\n')
           : ''
+        if (ev.toolName === 'add_topic' && pendingAddTopicWithTags && !ev.isError) {
+          result.addTopicCalled = true
+        }
         events.toolEnd({
           toolCallId: ev.toolCallId,
           toolName: ev.toolName,
@@ -119,8 +148,15 @@ async function runPrompt(
     }
   })
   try {
-    await session.prompt(promptText)
-    await session.waitForIdle()
+    // Finding 3：整个 prompt + waitForIdle 包 5 分钟超时；超时 abort 并抛错。
+    await withTimeout(
+      (async () => {
+        await session.prompt(promptText)
+        await session.waitForIdle()
+      })(),
+      STAGE_TIMEOUT_MS,
+      () => session.abort(),
+    )
   } finally {
     unsub()
   }
@@ -183,6 +219,7 @@ async function runRefineStage(
           `请读 source.md 相关段落，写 chunks/${chunkId}.md，然后调 add_chunk 带 tags`
 
         let ok = false
+        let failReason = 'chunk 文件未生成'
         for (let attempt = 0; attempt < 2 && !ok; attempt++) {
           const session = (await createPiSession({ port: opts.port, mode: 'refine' })) as unknown as SessionLike
           await runPrompt(session, prompt, events)
@@ -195,12 +232,32 @@ async function runRefineStage(
           }
         }
 
+        // Finding 2：chunk 文件非空不等于 add_chunk 被调。校验 index.json.chunks
+        // 里真的有这个 chunkId，否则文件是孤儿（S3 从 index.json 读 chunk 列表会静默跳过）。
+        if (ok) {
+          let chunkRegistered = false
+          try {
+            const idxPath = path.join(opts.docsDir, slug, 'index.json')
+            const idx = JSON.parse(fs.readFileSync(idxPath, 'utf8')) as {
+              chunks?: Array<{ id: string }>
+            }
+            chunkRegistered = (idx.chunks ?? []).some((c) => c.id === chunkId)
+          } catch {
+            // index.json 读失败/JSON 坏 → 当作未注册
+            chunkRegistered = false
+          }
+          if (!chunkRegistered) {
+            ok = false
+            failReason = 'add_chunk 未调用'
+          }
+        }
+
         if (ok) {
           chunksWritten++
           events.stageItemEnd(i, chunkId)
         } else {
           itemsFailed++
-          events.stageItemFailed(i, item.title, 'chunk 文件未生成')
+          events.stageItemFailed(i, item.title, failReason)
         }
       } catch (e: any) {
         // per-item 任意错误（createPiSession 失败、prompt 抛错等）→ 不中断整个 refine 阶段
