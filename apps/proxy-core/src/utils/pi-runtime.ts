@@ -205,6 +205,14 @@ const err = (e: unknown) => ({ content: [{ type: 'text' as const, text: `error: 
 
 interface OutlineItemParam { id: string; title: string; oneLine: string }
 
+// 与 knowledge-store TOPIC_RE 保持一致：防路径穿越（../、绝对路径、反斜杠等）
+const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/
+function assertSlug(slug: string, field: string): void {
+  if (!SLUG_RE.test(slug)) {
+    throw new Error(`invalid ${field}: ${slug}`)
+  }
+}
+
 /** add_outline：写 outline.json + seed topic 索引 */
 function buildAddOutlineTool(): ToolDefinition {
   return {
@@ -222,9 +230,11 @@ function buildAddOutlineTool(): ToolDefinition {
     }),
     async execute(_id, params: { desiredSlug: string; title: string; items: OutlineItemParam[] }) {
       try {
+        assertSlug(params.desiredSlug, 'desiredSlug')
         let slug = params.desiredSlug
         let n = 2
         while (fs.existsSync(path.join(docsDir, slug))) {
+          if (n > 100) throw new Error('slug suffix exhaustion (>100 attempts)')
           slug = `${params.desiredSlug}-${n}`
           n++
         }
@@ -255,6 +265,7 @@ function buildReadSourceTool(): ToolDefinition {
     parameters: Type.Object({ topic: Type.String({ description: '主题 slug' }) }),
     async execute(_id, params: { topic: string }) {
       try {
+        assertSlug(params.topic, 'topic')
         const p = path.join(docsDir, params.topic, 'source.md')
         return ok(fs.readFileSync(p, 'utf8'))
       } catch (e) { return err(e) }
