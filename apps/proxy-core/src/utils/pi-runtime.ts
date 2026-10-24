@@ -2,7 +2,7 @@
 // - ModelRuntime 懒加载，全局单例
 // - registerProvider 注册一个 "ccm" provider，走 anthropic-messages 协议到本地 proxy
 // - createPiSession() 返回一个新 AgentSession，cwd 钉死在 docsDir
-// - 按 chat / learn 两种模式挂载不同工具集
+// - 按 chat / outline / refine / tag 四种模式挂载不同工具集 + system prompt
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -13,7 +13,6 @@ import {
   DefaultResourceLoader,
   ModelRuntime,
   createWriteToolDefinition,
-  createEditToolDefinition,
   type AgentSession,
   type BeforeAgentStartEvent,
   type BeforeAgentStartEventResult,
@@ -21,10 +20,7 @@ import {
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent'
 import { dataDir } from './paths.js'
-import {
-  sandboxWriteOps,
-  sandboxEditOps,
-} from './pi-sandbox-ops.js'
+import { sandboxWriteOps } from './pi-sandbox-ops.js'
 import { browserTools } from './pi-browser-tools.js'
 import { knowledgeStore } from './knowledge-store.js'
 
@@ -83,7 +79,7 @@ async function getRuntime(port: number): Promise<ModelRuntime> {
 
 // ============================================================
 
-export type PiSessionMode = 'chat' | 'learn'
+export type PiSessionMode = 'chat' | 'outline' | 'refine' | 'tag'
 
 export interface CreatePiSessionOptions {
   cwd?: string
@@ -91,72 +87,183 @@ export interface CreatePiSessionOptions {
   mode: PiSessionMode
 }
 
-// 默认 system prompt 兜底（system.md 不存在时使用）
-const DEFAULT_SYSTEM_PROMPT = `You are a knowledge management AI operating inside a sandbox.
-Your knowledge directory (~/.cc-monitoring/docs) stores a **dictionary**: concise, distilled entries a future reader can look up. You do NOT copy source text — you digest it.
+const KB_STRUCTURE = `Your knowledge directory (~/.cc-monitoring/docs) stores a **dictionary**: concise, distilled entries a future reader can look up. You do NOT copy source text — you digest it.
 
 STRUCTURE:
 - Each topic is a subfolder: docs/<topic-slug>/
 - Each topic has docs/<slug>/index.json (metadata + chunk list, NO body)
 - Bodies live in docs/<topic-slug>/chunks/chunk-NNN.md
-- Root docs/index.json lists all topics as JSON
+- Root docs/index.json lists all topics as JSON`
 
-CHAT MODE (answer questions):
+export const CHAT_SYSTEM_PROMPT = `You are a knowledge management AI operating inside a sandbox.
+${KB_STRUCTURE}
+
+ANSWERING QUESTIONS:
 1. Call list_topics to see available topics
 2. If topic is unclear, call search_chunks(query) to find relevant chunks across topics
 3. Call get_topic(topic) to see that topic's chunk list
 4. Call read_chunk(topic, chunk_id) for relevant chunks — only read chunks you need
 5. Prefer answering from knowledge base chunks when relevant content exists; cite which chunks you used
-6. If no relevant chunk exists, answer from your general knowledge; if you truly don't know, say so
+6. If no relevant chunk exists, answer from your general knowledge; if you truly don't know, say so`
 
-LEARN MODE (distill material into a dictionary — NOT a copy of the source):
-0. First READ all input material end-to-end. Do NOT start writing chunk-by-chunk as you read. Before writing, internally outline the distinct concepts you extracted. Only then begin.
-1. Call list_topics first to check for existing similar topics — reuse, don't duplicate
-2. Use browser tools to read web pages if the input is a URL
-3. For each concept, produce a dictionary entry. An entry is a STAND-ALONE, retrievable note — the future reader has NO access to the source document. It must make sense alone.
-4. Write each chunk as markdown with this structure (write in the source document's language):
+export const OUTLINE_SYSTEM_PROMPT = `You are an outline-phase worker. Your job: read the source material end-to-end, save it as source.md, then propose an outline of dictionary entries. Do NOT write chunks.
 
-   \`\`\`
-   # <term or concept name>
+${KB_STRUCTURE}
 
-   - 定义 / Definition: <one sentence, in your own words>
-   - 是什么 / What it is: <2-4 bullets, the core idea>
-   - 不是什么 / What it is NOT: <common confusions, if any>
-   - 关键点 / Key points: <3-6 bullets, the load-bearing facts>
-   - 适用场景 / When to use: <where this applies>
-   - 误区 / Pitfalls: <common mistakes, edge cases>
-   - 来源 / Source: <url>
-   \`\`\`
+WORKFLOW:
+1. Use browser tools to fetch the source URL (browser_navigate / browser_fetch).
+2. Write the full fetched content to docs/<topic>/source.md using the write tool — the orchestrator will later hand this file to the refine worker.
+3. Internally outline the DISTINCT concepts extracted from the material. One concept = one future chunk. Do not bundle unrelated ideas.
+4. Call add_outline(desiredSlug, title, items) ONCE at the end:
+   - desiredSlug: lowercase hyphenated slug you propose (e.g. react-hooks)
+   - title: human-readable topic title
+   - items: array of { id, title, oneLine } — id is short stable slug per item (e.g. "use-state"), oneLine is a single-sentence definition
 
-5. RULES — these are hard constraints:
-   - NO large quotes. A short quote (≤2 sentences) is allowed ONLY as evidence under a bullet you already wrote in your own words.
-   - Every bullet must be YOU re-expressing the idea. If you find yourself copying sentences, stop and rephrase.
-   - One concept per chunk. Do not bundle unrelated ideas into one entry.
-   - If the material is thin on a concept, write what exists; do NOT invent content to fill sections. Omit empty sections.
-6. Write chunks to docs/<topic-slug>/chunks/chunk-NNN.md (number sequentially from 001)
-7. Call add_topic(slug, title, summary, tags) to register/update the topic in the index
-8. Call add_chunk(topic, chunk_id, title, summary) for each chunk you wrote
-9. Do NOT write or edit index.json files directly — use add_topic/add_chunk tools
+HARD RULES:
+- Do NOT write chunk files. Do NOT call add_chunk or add_topic.
+- Do NOT summarize prematurely — outline only; distillation happens later.
+- After add_outline succeeds, print the returned slug and item count. Stop.`
 
-FINISHING:
-- After all chunks are written, output a plain summary: the topic created/updated, and the list of chunk titles. Do NOT ask the user what to deepen next. The learning task is complete.
-`
+export const REFINE_SYSTEM_PROMPT = `You are a refine-phase worker. For ONE item from the topic's outline, produce a single dictionary chunk.
 
-/** 从 ~/.cc-monitoring/pi/system.md 读取自定义 system prompt，不存在则用兜底文本 */
-function loadSystemPrompt(): string {
+${KB_STRUCTURE}
+
+WORKFLOW:
+1. Call read_source(topic) to load the saved source.md full text.
+2. Focus on your assigned item. Do NOT distill other items.
+3. Write ONE chunk file docs/<topic>/chunks/chunk-NNN.md (number sequentially from 001) using the write tool, in the source document's language, with this structure:
+
+\`\`\`
+# <term or concept name>
+
+- 定义 / Definition: <one sentence, in your own words>
+- 是什么 / What it is: <2-4 bullets, the core idea>
+- 不是什么 / What it is NOT: <common confusions, if any>
+- 关键点 / Key points: <3-6 bullets, the load-bearing facts>
+- 适用场景 / When to use: <where this applies>
+- 误区 / Pitfalls: <common mistakes, edge cases>
+- 来源 / Source: <url>
+\`\`\`
+
+4. Call add_chunk(topic, chunk_id, title, summary, tags) to register it.
+   - tags: 3-6 lowercase hyphenated tags describing the concept (synonyms, key terms).
+
+HARD RULES:
+- NO large quotes. A short quote (≤2 sentences) is allowed ONLY as evidence under a bullet you already wrote in your own words.
+- Every bullet must be YOU re-expressing the idea. If you find yourself copying sentences, stop and rephrase.
+- One concept per chunk.
+- If the material is thin on a concept, write what exists; do NOT invent content. Omit empty sections.
+- Do NOT call add_topic. Do NOT write index.json.`
+
+export const TAG_SYSTEM_PROMPT = `You are a tag-phase worker. Enrich an existing topic with rich, retrieval-friendly tags.
+
+${KB_STRUCTURE}
+
+WORKFLOW:
+1. Call get_topic(slug) to list this topic's chunks.
+2. Call read_chunk for the chunks to understand the actual content.
+3. Generate 5 categories of tags (10-20 total), all lowercase hyphenated:
+   - synonyms: alternate names / aliases
+   - hypernym: broader parent concept (e.g. "state-management" for redux)
+   - trigger-scenarios: situations where a reader would reach for this (e.g. "form-validation")
+   - confusable: things this is often mixed up with
+   - typical-questions: questions a reader might search (e.g. "how-does-usestate-work")
+4. Call add_topic(slug, title, summary, tags) to OVERWRITE the topic's tags + metadata. Reuse the existing title and summary from get_topic; do not change them.
+
+HARD RULES:
+- Do NOT write chunk files. Do NOT call add_chunk.
+- Do NOT invent tags the content does not support.`
+
+/** 从 ~/.cc-monitoring/pi/system.md 读取自定义 system prompt（仅 chat 模式覆盖） */
+function loadChatSystemPrompt(): string {
   const mdPath = path.join(agentDir, 'system.md')
   try {
     return fs.readFileSync(mdPath, 'utf8')
   } catch {
-    return DEFAULT_SYSTEM_PROMPT
+    return CHAT_SYSTEM_PROMPT
   }
 }
 
-/** 构造知识检索领域工具（chat / learn 共用） */
-function buildKnowledgeTools(): ToolDefinition[] {
-  const ok = (text: string) => ({ content: [{ type: 'text' as const, text }], details: undefined })
-  const err = (e: unknown) => ({ content: [{ type: 'text' as const, text: `error: ${e instanceof Error ? e.message : String(e)}` }], details: undefined })
+function systemPromptForMode(mode: PiSessionMode): string {
+  switch (mode) {
+    case 'chat':
+      return loadChatSystemPrompt()
+    case 'outline':
+      return OUTLINE_SYSTEM_PROMPT
+    case 'refine':
+      return REFINE_SYSTEM_PROMPT
+    case 'tag':
+      return TAG_SYSTEM_PROMPT
+  }
+}
 
+// ============================================================
+// 工具构造
+
+const ok = (text: string) => ({ content: [{ type: 'text' as const, text }], details: undefined })
+const err = (e: unknown) => ({ content: [{ type: 'text' as const, text: `error: ${e instanceof Error ? e.message : String(e)}` }], details: undefined })
+
+interface OutlineItemParam { id: string; title: string; oneLine: string }
+
+/** add_outline：写 outline.json + seed topic 索引 */
+function buildAddOutlineTool(): ToolDefinition {
+  return {
+    name: 'add_outline',
+    label: 'add_outline',
+    description: '登记一个新主题的大纲：写 <slug>/outline.json 并在索引中 seed 占位 topic。outline 阶段只调用这一次。',
+    parameters: Type.Object({
+      desiredSlug: Type.String({ description: '期望的小写连字符 slug，如 react-hooks' }),
+      title: Type.String(),
+      items: Type.Array(Type.Object({
+        id: Type.String({ description: '条目稳定 id，如 use-state' }),
+        title: Type.String(),
+        oneLine: Type.String({ description: '一句话定义' }),
+      })),
+    }),
+    async execute(_id, params: { desiredSlug: string; title: string; items: OutlineItemParam[] }) {
+      try {
+        let slug = params.desiredSlug
+        let n = 2
+        while (fs.existsSync(path.join(docsDir, slug))) {
+          slug = `${params.desiredSlug}-${n}`
+          n++
+        }
+        const topicDir = path.join(docsDir, slug)
+        fs.mkdirSync(path.join(topicDir, 'chunks'), { recursive: true })
+        fs.writeFileSync(
+          path.join(topicDir, 'outline.json'),
+          JSON.stringify({ slug, source: 'source.md', items: params.items }, null, 2),
+        )
+        await knowledgeStore.upsertTopic({
+          slug,
+          title: params.title,
+          summary: '(refining)',
+          tags: [],
+        })
+        return ok(JSON.stringify({ slug, itemCount: params.items.length }))
+      } catch (e) { return err(e) }
+    },
+  }
+}
+
+/** read_source：refine 阶段读 source.md 全文 */
+function buildReadSourceTool(): ToolDefinition {
+  return {
+    name: 'read_source',
+    label: 'read_source',
+    description: '读取该主题 source.md 全文（outline 阶段写入的原料）。refine 阶段第一步调用。',
+    parameters: Type.Object({ topic: Type.String({ description: '主题 slug' }) }),
+    async execute(_id, params: { topic: string }) {
+      try {
+        const p = path.join(docsDir, params.topic, 'source.md')
+        return ok(fs.readFileSync(p, 'utf8'))
+      } catch (e) { return err(e) }
+    },
+  }
+}
+
+/** 知识检索领域工具 */
+function buildKnowledgeTools(): ToolDefinition[] {
   return [
     {
       name: 'list_topics',
@@ -227,15 +334,16 @@ function buildKnowledgeTools(): ToolDefinition[] {
         chunk_id: Type.String({ description: '如 chunk-001' }),
         title: Type.String(),
         summary: Type.String(),
+        tags: Type.Array(Type.String({ description: '小写连字符标签，3-6 个' })),
       }),
-      async execute(_id, params: { topic: string; chunk_id: string; title: string; summary: string }) {
+      async execute(_id, params: { topic: string; chunk_id: string; title: string; summary: string; tags: string[] }) {
         try {
           await knowledgeStore.upsertChunkRef({
             topic: params.topic,
             chunkId: params.chunk_id,
             title: params.title,
             summary: params.summary,
-            tags: [],
+            tags: params.tags,
           })
           return ok('chunk ref added')
         } catch (e) { return err(e) }
@@ -244,33 +352,37 @@ function buildKnowledgeTools(): ToolDefinition[] {
   ]
 }
 
+const KNOWLEDGE_TOOLS = buildKnowledgeTools()
+const KT = (name: string): ToolDefinition => KNOWLEDGE_TOOLS.find((t) => t.name === name)!
+
+const WRITE_TOOL = createWriteToolDefinition(docsDir, { operations: sandboxWriteOps }) as ToolDefinition
+
 /** 按模式构建工具集（ToolDefinition 数组，用于 customTools） */
 function buildModeTools(mode: PiSessionMode): ToolDefinition[] {
-  const knowledgeTools = buildKnowledgeTools()
-
-  if (mode === 'chat') {
-    // chat：只用领域工具，移除通用 read/grep/find/ls（防全量灌入）
-    return knowledgeTools
+  switch (mode) {
+    case 'chat':
+      return [KT('list_topics'), KT('get_topic'), KT('search_chunks'), KT('read_chunk')]
+    case 'outline':
+      return [...browserTools, WRITE_TOOL, buildAddOutlineTool()]
+    case 'refine':
+      return [buildReadSourceTool(), WRITE_TOOL, KT('add_chunk')]
+    case 'tag':
+      return [KT('list_topics'), KT('get_topic'), KT('read_chunk'), KT('add_topic')]
   }
-
-  // learn：领域工具（查重/读现有）+ write/edit + browser
-  // 注意：createXxxToolDefinition 返回带具体 schema 的 ToolDefinition<TParams, ...>，
-  // 与无泛型的 ToolDefinition 在 renderCall 上不协变，需要 as ToolDefinition 抹平。
-  return [
-    ...knowledgeTools,
-    createWriteToolDefinition(docsDir, { operations: sandboxWriteOps }) as ToolDefinition,
-    createEditToolDefinition(docsDir, { operations: sandboxEditOps }) as ToolDefinition,
-    ...browserTools,
-  ]
 }
 
 /** 按模式构建工具白名单（tools 字段，全小写） */
 function buildToolAllowlist(mode: PiSessionMode): string[] {
-  const base = ['list_topics', 'get_topic', 'search_chunks', 'read_chunk']
-  if (mode === 'chat') {
-    return base
+  switch (mode) {
+    case 'chat':
+      return ['list_topics', 'get_topic', 'search_chunks', 'read_chunk']
+    case 'outline':
+      return [...browserTools.map((t) => t.name), 'write', 'add_outline']
+    case 'refine':
+      return ['read_source', 'write', 'add_chunk']
+    case 'tag':
+      return ['list_topics', 'get_topic', 'read_chunk', 'add_topic']
   }
-  return [...base, 'add_topic', 'add_chunk', 'write', 'edit', ...browserTools.map((t) => t.name)]
 }
 
 export async function createPiSession(options: CreatePiSessionOptions): Promise<AgentSession> {
@@ -289,7 +401,7 @@ export async function createPiSession(options: CreatePiSessionOptions): Promise<
   // 所以先放一个可变变量，返回 session 后再填值。
   let currentSessionId = ''
 
-  const systemPrompt = loadSystemPrompt()
+  const systemPrompt = systemPromptForMode(options.mode)
   const modeTools = buildModeTools(options.mode)
   const toolAllowlist = buildToolAllowlist(options.mode)
 

@@ -9,7 +9,7 @@ import { getProcessStatus, startProcess, stopProcess, reloadProcess } from '../u
 import { getCallerDirname } from '../utils/esm-dirname.js'
 import { getConfigPath, getDisplayPath } from '../utils/paths.js'
 import { loadRequestDB, listRequestDB, type RequestSummary } from '../utils/request-writer.js'
-import { createPiSession } from '../utils/pi-runtime.js'
+import { createPiSession, type PiSessionMode } from '../utils/pi-runtime.js'
 import type { AgentSession } from '@earendil-works/pi-coding-agent'
 import { statusHistory } from '../utils/status-history.js'
 import { addDataClient, removeDataClient, pushStatsNotify, broadcastToDataClients, getDataClientCount } from './data-push.js'
@@ -26,7 +26,7 @@ interface ExecRequestBody {
   prompt: string
   stream?: boolean
   sessionId?: string  // pi 会话 ID，用于多轮对话
-  mode?: 'chat' | 'learn'  // 会话模式：chat=只读问答，learn=浏览器学习，默认 chat
+  mode?: 'chat' | 'learn' | PiSessionMode  // 会话模式：chat=问答，learn=旧别名（→ outline），默认 chat
   thinkingLevel?: 'off' | 'minimal' | 'low' | 'medium' | 'high'
 }
 
@@ -270,8 +270,11 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     const { prompt, stream = false, sessionId, mode } = request.body
-    // mode 只认 'learn'，其余一律按 chat 处理（默认只读问答）
-    const resolvedMode: 'chat' | 'learn' = mode === 'learn' ? 'learn' : 'chat'
+    // mode 分发：'chat' 或新四模式之一；旧 'learn' 兼容映射到 outline（Task 3 再接 orchestrator）
+    const resolvedMode: PiSessionMode =
+      mode === 'learn' ? 'outline'
+      : mode === 'outline' || mode === 'refine' || mode === 'tag' ? mode
+      : 'chat'
 
     if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
       return reply.code(400).send({
@@ -284,7 +287,7 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
 
     // piSessions 按 `${mode}:${piSessionId}` 隔离：chat / learn 各自独立 session。
     // 前端回传的 sessionId 不带 mode，先按 resolvedMode 精确查，找不到再按后缀兜底。
-    const sessionKey = (m: 'chat' | 'learn', id: string) => `${m}:${id}`
+    const sessionKey = (m: PiSessionMode, id: string) => `${m}:${id}`
     let existing: AgentSession | undefined
     if (sessionId) {
       existing = piSessions.get(sessionKey(resolvedMode, sessionId))
