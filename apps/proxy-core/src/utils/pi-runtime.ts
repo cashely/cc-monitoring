@@ -235,6 +235,7 @@ function buildKnowledgeTools(): ToolDefinition[] {
             chunkId: params.chunk_id,
             title: params.title,
             summary: params.summary,
+            tags: [],
           })
           return ok('chunk ref added')
         } catch (e) { return err(e) }

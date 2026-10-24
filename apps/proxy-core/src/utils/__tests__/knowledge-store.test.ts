@@ -49,7 +49,7 @@ describe('knowledge-store', () => {
     const detail = await store.getTopic('react-hooks')
     expect(detail.title).toBe('React Hooks 参考')
     expect(detail.tags).toEqual(['react', 'hooks'])
-    expect(detail.chunks).toEqual([{ id: 'chunk-001', title: '状态管理', summary: 'useState 用于组件状态' }])
+    expect(detail.chunks).toEqual([{ id: 'chunk-001', title: '状态管理', summary: 'useState 用于组件状态', tags: [] }])
   })
 
   it('readChunk 返回单片正文', async () => {
@@ -87,7 +87,7 @@ describe('knowledge-store', () => {
     const root = await makeTmpDocs()
     const store = createKnowledgeStore(root)
     // 先登记一个额外 chunk ref
-    await store.upsertChunkRef({ topic: 'react-hooks', chunkId: 'chunk-002', title: 'T2', summary: 'S2' })
+    await store.upsertChunkRef({ topic: 'react-hooks', chunkId: 'chunk-002', title: 'T2', summary: 'S2', tags: [] })
 
     await store.upsertTopic({
       slug: 'react-hooks',
@@ -110,8 +110,8 @@ describe('knowledge-store', () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-chunk-'))
     const store = createKnowledgeStore(dir)
     await store.upsertTopic({ slug: 't1', title: 'T1', summary: 's', tags: [] })
-    await store.upsertChunkRef({ topic: 't1', chunkId: 'chunk-001', title: 'c1', summary: 's1' })
-    await store.upsertChunkRef({ topic: 't1', chunkId: 'chunk-002', title: 'c2', summary: 's2' })
+    await store.upsertChunkRef({ topic: 't1', chunkId: 'chunk-001', title: 'c1', summary: 's1', tags: [] })
+    await store.upsertChunkRef({ topic: 't1', chunkId: 'chunk-002', title: 'c2', summary: 's2', tags: [] })
     const detail = await store.getTopic('t1')
     expect(detail.chunks).toHaveLength(2)
     expect(detail.chunks.map(c => c.id)).toEqual(['chunk-001', 'chunk-002'])
@@ -121,7 +121,99 @@ describe('knowledge-store', () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-no-topic-'))
     const store = createKnowledgeStore(dir)
     await expect(
-      store.upsertChunkRef({ topic: 'ghost', chunkId: 'chunk-001', title: 'c', summary: 's' }),
+      store.upsertChunkRef({ topic: 'ghost', chunkId: 'chunk-001', title: 'c', summary: 's', tags: [] }),
     ).rejects.toThrow(/topic not found: ghost/)
+  })
+
+  it('tags: upsertChunkRef 落盘 tags，重复调用覆写 tags', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-tags-'))
+    const store = createKnowledgeStore(dir)
+    await store.upsertTopic({ slug: 't1', title: 'T1', summary: 's', tags: [] })
+    await store.upsertChunkRef({ topic: 't1', chunkId: 'chunk-001', title: 'c1', summary: 's1', tags: ['redis', '缓存'] })
+
+    // 落盘验证
+    const raw = JSON.parse(await fs.readFile(path.join(dir, 't1', 'index.json'), 'utf8'))
+    expect(raw.chunks[0].tags).toEqual(['redis', '缓存'])
+
+    // 读回
+    const detail = await store.getTopic('t1')
+    expect(detail.chunks[0].tags).toEqual(['redis', '缓存'])
+
+    // 同 chunk 再调 → tags 被覆写
+    await store.upsertChunkRef({ topic: 't1', chunkId: 'chunk-001', title: 'c1', summary: 's1', tags: ['new'] })
+    const detail2 = await store.getTopic('t1')
+    expect(detail2.chunks[0].tags).toEqual(['new'])
+  })
+
+  it('tags: 旧 chunk（无 tags 字段）读回为 []，不抛错', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-oldtags-'))
+    await fs.mkdir(path.join(dir, 'old', 'chunks'), { recursive: true })
+    await fs.writeFile(path.join(dir, 'old', 'index.json'), JSON.stringify({
+      slug: 'old', title: 'Old', summary: 'so', tags: [],
+      chunks: [{ id: 'chunk-001', title: 'oc', summary: 'os' }],
+    }), 'utf8')
+    const store = createKnowledgeStore(dir)
+    const detail = await store.getTopic('old')
+    expect(detail.chunks[0].tags).toEqual([])
+  })
+
+  it('searchChunks 五路匹配：body / title / summary / topic.tags / chunk.tags', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-redis-'))
+    await fs.mkdir(path.join(dir, 'redis', 'chunks'), { recursive: true })
+    await fs.writeFile(path.join(dir, 'redis', 'index.json'), JSON.stringify({
+      slug: 'redis', title: 'Redis', summary: 'sr', tags: ['nosql'],
+      chunks: [
+        { id: 'chunk-001', title: '缓存详解', summary: '缓存摘要', tags: ['缓存', 'cache', 'KV存储'] },
+        { id: 'chunk-002', title: '主从复制', summary: 'replication 摘要', tags: [] },
+      ],
+    }), 'utf8')
+    await fs.writeFile(path.join(dir, 'redis', 'chunks', 'chunk-001.md'),
+      '# 缓存详解\n\n正文讲缓存。', 'utf8')
+    await fs.writeFile(path.join(dir, 'redis', 'chunks', 'chunk-002.md'),
+      '# 故障转移\n\n正文讲哨兵。', 'utf8')
+    const store = createKnowledgeStore(dir)
+
+    // body
+    expect(await store.searchChunks('缓存')).toEqual([
+      { topic: 'redis', chunkId: 'chunk-001', title: '缓存详解' },
+    ])
+    // chunk.tags
+    expect(await store.searchChunks('cache')).toEqual([
+      { topic: 'redis', chunkId: 'chunk-001', title: '缓存详解' },
+    ])
+    // topic.tags（命中该 topic 下所有 chunk）
+    expect(await store.searchChunks('nosql')).toEqual([
+      { topic: 'redis', chunkId: 'chunk-001', title: '缓存详解' },
+      { topic: 'redis', chunkId: 'chunk-002', title: '故障转移' },
+    ])
+    // title（chunk-002 正文不含「主从复制」）
+    expect(await store.searchChunks('主从复制')).toEqual([
+      { topic: 'redis', chunkId: 'chunk-002', title: '故障转移' },
+    ])
+    // summary
+    expect(await store.searchChunks('replication')).toEqual([
+      { topic: 'redis', chunkId: 'chunk-002', title: '故障转移' },
+    ])
+    // 无命中
+    expect(await store.searchChunks('不存在的词xyz')).toEqual([])
+  })
+
+  it('searchChunks 旧数据 chunk 无 tags 字段仍按 body 命中', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-oldsearch-'))
+    await fs.mkdir(path.join(dir, 'redis', 'chunks'), { recursive: true })
+    await fs.writeFile(path.join(dir, 'redis', 'index.json'), JSON.stringify({
+      slug: 'redis', title: 'Redis', summary: 'sr', tags: ['nosql'],
+      chunks: [{ id: 'chunk-001', title: '缓存详解', summary: '缓存摘要' }],
+    }), 'utf8')
+    await fs.writeFile(path.join(dir, 'redis', 'chunks', 'chunk-001.md'),
+      '# 缓存详解\n\n正文讲缓存。', 'utf8')
+    const store = createKnowledgeStore(dir)
+    expect(await store.searchChunks('缓存')).toEqual([
+      { topic: 'redis', chunkId: 'chunk-001', title: '缓存详解' },
+    ])
+    // 旧数据 chunk 无 tags：搜 chunk tag 不命中，但 topic.tags 仍命中
+    expect(await store.searchChunks('nosql')).toEqual([
+      { topic: 'redis', chunkId: 'chunk-001', title: '缓存详解' },
+    ])
   })
 })
