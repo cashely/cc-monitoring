@@ -107,8 +107,8 @@ describe('useLearnStream', () => {
     act(() => {
       conn.onData('stage_end', { type: 'stage_end', stage: 'refine' })
     })
-    // stage_end 保留最后摘要
-    expect(result.current.stage).toEqual({ name: 'refine', index: 0, total: 3, failedCount: 1 })
+    // stage_end 清进度
+    expect(result.current.stage).toBeNull()
   })
 
   it('resets stage when a new task starts', () => {

@@ -100,7 +100,8 @@ export function useLearnStream() {
           break
         }
         case 'stage_end': {
-          // 保留最后阶段摘要，下一阶段 stage_start 会重置
+          // 清进度：下一阶段 stage_start 会重新设置；最终阶段结束后进度行隐藏
+          setStage(null)
           break
         }
         case 'text_delta': {
@@ -152,6 +153,7 @@ export function useLearnStream() {
     connection.onError = (message: string) => {
       setError(message)
       setStatus('done')
+      setStage(null)
       connectionRef.current = null
     }
 

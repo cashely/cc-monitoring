@@ -118,7 +118,7 @@ export function LearnDrawer({ open, task, onClose }: LearnDrawerProps): JSX.Elem
           >
             {task.label ?? task.payload}
           </span>
-          {stage && status === 'streaming' && (
+          {stage && (
             <div
               className="text-xs mt-1"
               style={{ color: 'var(--color-text-secondary)' }}
