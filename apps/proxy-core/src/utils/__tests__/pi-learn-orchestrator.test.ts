@@ -32,6 +32,17 @@ class FakeSession {
   emit(ev: any): void {
     for (const l of this.listeners) l(ev)
   }
+  /** 返回一个 handler：模拟 LLM 调了一次 add_topic（在 prompt 内 emit，确保 subscribe 后能收到） */
+  static addTopicHandler(tags: string[]): SessionHandler {
+    return async function (this: FakeSession) {
+      this.emit({
+        type: 'tool_execution_start',
+        toolCallId: 'call-1',
+        toolName: 'add_topic',
+        args: { slug: 'x', title: 't', summary: 's', tags },
+      })
+    }
+  }
 }
 
 function makeEvents(): LearnPipelineEvents & { calls: string[] } {
@@ -116,16 +127,6 @@ describe('pi-learn-orchestrator', () => {
     mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(async () => {}) as any)
     mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(async () => { await writeChunk(2) }) as any)
 
-    // S3 happy path: 写 tags
-    mockCreatePiSession.mockImplementationOnce(async () => {
-      return new FakeSession(async () => {
-        const idxPath = path.join(tmpDir, slug, 'index.json')
-        const idx = JSON.parse(await fsp.readFile(idxPath, 'utf8'))
-        idx.tags = ['react', 'hooks', 'state-management']
-        await fsp.writeFile(idxPath, JSON.stringify(idx, null, 2))
-      }) as any
-    })
-
     // 手动 seed index.json（真实流程由 add_outline 工具做，测试里没跑）
     await fsp.mkdir(path.join(tmpDir, slug), { recursive: true })
     await fsp.writeFile(
@@ -135,6 +136,11 @@ describe('pi-learn-orchestrator', () => {
         { id: 'chunk-003', title: '概念C', summary: 'ccc', tags: [] },
       ] }, null, 2),
     )
+
+    // S3: 兜底 mock（mockImplementationOnce 已用完），handler 内 emit add_topic
+    mockCreatePiSession.mockImplementation(async () => {
+      return new FakeSession(FakeSession.addTopicHandler(['react', 'hooks'])) as any
+    })
 
     const events = makeEvents()
     const result = await runLearnPipeline({
@@ -154,7 +160,7 @@ describe('pi-learn-orchestrator', () => {
     expect(failed[0]).toContain('stageItemFailed:1:')
   })
 
-  test('S3 happy path：add_topic 被调用 → tags 非空 → stageEnd(tag)', async () => {
+  test('S3 happy path：add_topic 被调用且 tags 非空 → stageEnd(tag)', async () => {
     const items = [{ id: 'a', title: '概念A', oneLine: 'aaa' }]
     const slug = 'happy-topic'
 
@@ -180,14 +186,9 @@ describe('pi-learn-orchestrator', () => {
     })
     // S2 item0: chunk-001.md 已存在，session 啥也不做
     mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(async () => {}) as any)
-    // S3: 写 tags
+    // S3: handler 内 emit add_topic 带非空 tags
     mockCreatePiSession.mockImplementationOnce(async () => {
-      return new FakeSession(async () => {
-        const idxPath = path.join(tmpDir, slug, 'index.json')
-        const idx = JSON.parse(await fsp.readFile(idxPath, 'utf8'))
-        idx.tags = ['synonym-a', 'hypernym-b', 'scenario-c', 'confusable-d', 'question-e']
-        await fsp.writeFile(idxPath, JSON.stringify(idx, null, 2))
-      }) as any
+      return new FakeSession(FakeSession.addTopicHandler(['synonym-a', 'hypernym-b'])) as any
     })
 
     const events = makeEvents()
@@ -201,6 +202,126 @@ describe('pi-learn-orchestrator', () => {
     expect(result.slug).toBe(slug)
     expect(events.calls).toContain('stageEnd:outline')
     expect(events.calls).toContain('stageEnd:refine')
+    expect(events.calls).toContain('stageEnd:tag')
+  })
+
+  test('S1 outline.json parse 失败 → stageEnd(outline) 仍发出，再 throw', async () => {
+    const slug = 'broken-topic'
+    await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
+    // 写一个非法 JSON 的 outline.json
+    await fsp.writeFile(path.join(tmpDir, slug, 'outline.json'), '{not valid json', 'utf8')
+
+    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(async () => {}) as any)
+
+    const events = makeEvents()
+    await expect(
+      runLearnPipeline({ prompt: 'x', port: 9999, events, docsDir: tmpDir }),
+    ).rejects.toThrow()
+
+    // stageEnd 必须在 throw 之前发出
+    expect(events.calls).toContain('stageEnd:outline')
+  })
+
+  test('S2 createPiSession 抛错 → stageItemFailed 发出，pipeline 继续', async () => {
+    const items = [
+      { id: 'a', title: '概念A', oneLine: 'aaa' },
+      { id: 'b', title: '概念B', oneLine: 'bbb' },
+    ]
+    const slug = 'err-topic'
+
+    // S1: 写 outline.json
+    mockCreatePiSession.mockImplementationOnce(async () => {
+      return new FakeSession(async () => {
+        await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
+        await fsp.writeFile(
+          path.join(tmpDir, slug, 'outline.json'),
+          JSON.stringify({ slug, source: 'source.md', items }, null, 2),
+        )
+      }) as any
+    })
+    // S2 item0: createPiSession 抛错（模拟 pi runtime 挂了）
+    mockCreatePiSession.mockImplementationOnce(async () => {
+      throw new Error('port down')
+    })
+    // S2 item1: 成功写 chunk-002.md
+    mockCreatePiSession.mockImplementationOnce(async () => {
+      return new FakeSession(async () => {
+        await fsp.writeFile(
+          path.join(tmpDir, slug, 'chunks', 'chunk-002.md'),
+          '# 概念B',
+        )
+      }) as any
+    })
+    // S3: handler 内 emit add_topic
+    mockCreatePiSession.mockImplementation(async () => {
+      return new FakeSession(FakeSession.addTopicHandler(['tag1'])) as any
+    })
+
+    await fsp.mkdir(path.join(tmpDir, slug), { recursive: true })
+    await fsp.writeFile(
+      path.join(tmpDir, slug, 'index.json'),
+      JSON.stringify({ slug, title: 'Err', summary: '(refining)', tags: [], chunks: [
+        { id: 'chunk-002', title: '概念B', summary: 'bbb', tags: [] },
+      ] }, null, 2),
+    )
+
+    const events = makeEvents()
+    const result = await runLearnPipeline({
+      prompt: 'x', port: 9999, events, docsDir: tmpDir,
+    })
+
+    // item0 失败（port down），item1 成功
+    expect(result.itemsFailed).toBe(1)
+    expect(result.chunksWritten).toBe(1)
+    // stageItemFailed 必须发出，reason 含 port down
+    const failed = events.calls.filter((c) => c.startsWith('stageItemFailed:'))
+    expect(failed).toHaveLength(1)
+    expect(failed[0]).toContain('port down')
+    // stageEnd(refine) 必须发出
+    expect(events.calls).toContain('stageEnd:refine')
+  })
+
+  test('S3 add_topic 带空 tags → 视为失败，重试一次；第二次非空 → 成功', async () => {
+    const items = [{ id: 'a', title: '概念A', oneLine: 'aaa' }]
+    const slug = 'retry-topic'
+
+    // 预 seed
+    await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
+    await fsp.writeFile(
+      path.join(tmpDir, slug, 'index.json'),
+      JSON.stringify({ slug, title: 'Retry', summary: '(refining)', tags: [], chunks: [
+        { id: 'chunk-001', title: '概念A', summary: 'aaa', tags: [] },
+      ] }, null, 2),
+    )
+    await fsp.writeFile(path.join(tmpDir, slug, 'chunks', 'chunk-001.md'), '# A')
+
+    // S1: 写 outline.json
+    mockCreatePiSession.mockImplementationOnce(async () => {
+      return new FakeSession(async () => {
+        await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
+        await fsp.writeFile(
+          path.join(tmpDir, slug, 'outline.json'),
+          JSON.stringify({ slug, source: 'source.md', items }, null, 2),
+        )
+      }) as any
+    })
+    // S2 item0: chunk 已存在
+    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(async () => {}) as any)
+    // S3 try0: add_topic 带空 tags → 不算成功
+    mockCreatePiSession.mockImplementationOnce(async () => {
+      return new FakeSession(FakeSession.addTopicHandler([])) as any
+    })
+    // S3 try1: add_topic 带非空 tags → 成功
+    mockCreatePiSession.mockImplementationOnce(async () => {
+      return new FakeSession(FakeSession.addTopicHandler(['real-tag'])) as any
+    })
+
+    const events = makeEvents()
+    const result = await runLearnPipeline({
+      prompt: 'x', port: 9999, events, docsDir: tmpDir,
+    })
+
+    expect(result.slug).toBe(slug)
     expect(events.calls).toContain('stageEnd:tag')
   })
 })

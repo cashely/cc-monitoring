@@ -65,8 +65,21 @@ function snapshotOutlinedSlugs(docsDir: string): Set<string> {
   return out
 }
 
-/** 跑一次 prompt，透传 text/tool 事件到 events；resolve 当 prompt 自然结束 */
-async function runPrompt(session: SessionLike, promptText: string, events: LearnPipelineEvents): Promise<void> {
+interface RunPromptResult {
+  /** 本 session 内是否成功调了 add_topic 且 tags 非空 */
+  addTopicCalled: boolean
+}
+
+/**
+ * 跑一次 prompt，透传 text/tool 事件到 events；resolve 当 prompt 自然结束。
+ * 同时返回本 session 内关键工具调用的标志位（用于 S3 成功判定）。
+ */
+async function runPrompt(
+  session: SessionLike,
+  promptText: string,
+  events: LearnPipelineEvents,
+): Promise<RunPromptResult> {
+  const result: RunPromptResult = { addTopicCalled: false }
   const unsub = session.subscribe((ev: any) => {
     try {
       if (ev.type === 'message_update') {
@@ -82,6 +95,13 @@ async function runPrompt(session: SessionLike, promptText: string, events: Learn
           toolName: ev.toolName,
           args: ev.args,
         })
+        // S3 成功判定：add_topic 被调且 tags 非空
+        if (ev.toolName === 'add_topic') {
+          const tags = (ev.args as any)?.tags
+          if (Array.isArray(tags) && tags.length > 0) {
+            result.addTopicCalled = true
+          }
+        }
       } else if (ev.type === 'tool_execution_end') {
         const resultText = Array.isArray(ev.result?.content)
           ? ev.result.content.map((c: any) => (c?.type === 'text' ? c.text : '')).join('\n')
@@ -104,6 +124,7 @@ async function runPrompt(session: SessionLike, promptText: string, events: Learn
   } finally {
     unsub()
   }
+  return result
 }
 
 // ============================================================
@@ -114,23 +135,25 @@ async function runOutlineStage(
   events: LearnPipelineEvents,
 ): Promise<{ slug: string; items: OutlineItem[] }> {
   events.stageStart('outline')
-  const before = snapshotOutlinedSlugs(opts.docsDir)
+  try {
+    const before = snapshotOutlinedSlugs(opts.docsDir)
 
-  const session = (await createPiSession({ port: opts.port, mode: 'outline' })) as unknown as SessionLike
-  await runPrompt(session, opts.prompt, events)
+    const session = (await createPiSession({ port: opts.port, mode: 'outline' })) as unknown as SessionLike
+    await runPrompt(session, opts.prompt, events)
 
-  const after = snapshotOutlinedSlugs(opts.docsDir)
-  const newSlugs = [...after].filter((s) => !before.has(s))
-  if (newSlugs.length === 0) {
+    const after = snapshotOutlinedSlugs(opts.docsDir)
+    const newSlugs = [...after].filter((s) => !before.has(s))
+    if (newSlugs.length === 0) {
+      throw new Error('outline 未生成')
+    }
+    // 理论上 S1 只该调一次 add_outline；多个时取最后一个
+    const slug = newSlugs[newSlugs.length - 1]
+    const outlinePath = path.join(opts.docsDir, slug, 'outline.json')
+    const outline = JSON.parse(fs.readFileSync(outlinePath, 'utf8')) as { slug: string; items: OutlineItem[] }
+    return { slug, items: outline.items }
+  } finally {
     events.stageEnd('outline')
-    throw new Error('outline 未生成')
   }
-  // 理论上 S1 只该调一次 add_outline；多个时取最后一个
-  const slug = newSlugs[newSlugs.length - 1]
-  const outlinePath = path.join(opts.docsDir, slug, 'outline.json')
-  const outline = JSON.parse(fs.readFileSync(outlinePath, 'utf8')) as { slug: string; items: OutlineItem[] }
-  events.stageEnd('outline')
-  return { slug, items: outline.items }
 }
 
 // ============================================================
@@ -146,40 +169,48 @@ async function runRefineStage(
   let chunksWritten = 0
   let itemsFailed = 0
 
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i]
-    const chunkId = `chunk-${String(i + 1).padStart(3, '0')}`
-    events.stageItemStart(i, items.length, item.title)
+  try {
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i]
+      const chunkId = `chunk-${String(i + 1).padStart(3, '0')}`
+      events.stageItemStart(i, items.length, item.title)
 
-    const prompt =
-      `主题 slug: ${slug}\n` +
-      `概念: ${item.title}\n` +
-      `说明: ${item.oneLine}\n` +
-      `请读 source.md 相关段落，写 chunks/${chunkId}.md，然后调 add_chunk 带 tags`
-
-    let ok = false
-    for (let attempt = 0; attempt < 2 && !ok; attempt++) {
-      const session = (await createPiSession({ port: opts.port, mode: 'refine' })) as unknown as SessionLike
-      await runPrompt(session, prompt, events)
-      const chunkPath = path.join(opts.docsDir, slug, 'chunks', `${chunkId}.md`)
       try {
-        const stat = fs.statSync(chunkPath)
-        if (stat.size > 0) ok = true
-      } catch {
-        // 不存在 → 重试
+        const prompt =
+          `主题 slug: ${slug}\n` +
+          `概念: ${item.title}\n` +
+          `说明: ${item.oneLine}\n` +
+          `请读 source.md 相关段落，写 chunks/${chunkId}.md，然后调 add_chunk 带 tags`
+
+        let ok = false
+        for (let attempt = 0; attempt < 2 && !ok; attempt++) {
+          const session = (await createPiSession({ port: opts.port, mode: 'refine' })) as unknown as SessionLike
+          await runPrompt(session, prompt, events)
+          const chunkPath = path.join(opts.docsDir, slug, 'chunks', `${chunkId}.md`)
+          try {
+            const stat = fs.statSync(chunkPath)
+            if (stat.size > 0) ok = true
+          } catch {
+            // 不存在 → 重试
+          }
+        }
+
+        if (ok) {
+          chunksWritten++
+          events.stageItemEnd(i, chunkId)
+        } else {
+          itemsFailed++
+          events.stageItemFailed(i, item.title, 'chunk 文件未生成')
+        }
+      } catch (e: any) {
+        // per-item 任意错误（createPiSession 失败、prompt 抛错等）→ 不中断整个 refine 阶段
+        itemsFailed++
+        events.stageItemFailed(i, item.title, e?.message || String(e))
       }
     }
-
-    if (ok) {
-      chunksWritten++
-      events.stageItemEnd(i, chunkId)
-    } else {
-      itemsFailed++
-      events.stageItemFailed(i, item.title, 'chunk 文件未生成')
-    }
+  } finally {
+    events.stageEnd('refine')
   }
-
-  events.stageEnd('refine')
   return { chunksWritten, itemsFailed }
 }
 
@@ -192,43 +223,41 @@ async function runTagStage(
   events: LearnPipelineEvents,
 ): Promise<void> {
   events.stageStart('tag')
-
-  const topicIdxPath = path.join(opts.docsDir, slug, 'index.json')
-  const topicIdx = JSON.parse(fs.readFileSync(topicIdxPath, 'utf8')) as {
-    title: string
-    summary: string
-    chunks: Array<{ id: string; title: string; summary: string }>
-  }
-  const chunkListing = (topicIdx.chunks ?? [])
-    .map((c) => `- ${c.id}: ${c.title} — ${c.summary}`)
-    .join('\n')
-
-  const prompt =
-    `主题 slug: ${slug}\n` +
-    `现有 title: ${topicIdx.title}\n` +
-    `现有 summary: ${topicIdx.summary}\n` +
-    `已有 chunks:\n${chunkListing}\n\n` +
-    `请用 read_chunk 读 chunks 实际内容，为该主题生成 5 类富 tags（同义/上位/触发场景/易混淆/典型提问，共 10-20 个小写连字符），` +
-    `然后调 add_topic({ slug, title, summary, tags }) 覆盖主题元数据。title/summary 复用现有值，不要改。`
-
-  let tagged = false
-  for (let attempt = 0; attempt < 2 && !tagged; attempt++) {
-    const session = (await createPiSession({ port: opts.port, mode: 'tag' })) as unknown as SessionLike
-    await runPrompt(session, prompt, events)
-    // 重新读 index.json：tags 非空说明 add_topic 真的被调了（S1 seed 时 tags=[]）
-    try {
-      const after = JSON.parse(fs.readFileSync(topicIdxPath, 'utf8')) as { tags?: string[] }
-      if (Array.isArray(after.tags) && after.tags.length > 0) tagged = true
-    } catch {
-      // 重新读失败 → 不算 tagged，进入重试
+  try {
+    const topicIdxPath = path.join(opts.docsDir, slug, 'index.json')
+    const topicIdx = JSON.parse(fs.readFileSync(topicIdxPath, 'utf8')) as {
+      title: string
+      summary: string
+      chunks: Array<{ id: string; title: string; summary: string }>
     }
-  }
+    const chunkListing = (topicIdx.chunks ?? [])
+      .map((c) => `- ${c.id}: ${c.title} — ${c.summary}`)
+      .join('\n')
 
-  if (!tagged) {
+    const prompt =
+      `主题 slug: ${slug}\n` +
+      `现有 title: ${topicIdx.title}\n` +
+      `现有 summary: ${topicIdx.summary}\n` +
+      `已有 chunks:\n${chunkListing}\n\n` +
+      `请用 read_chunk 读 chunks 实际内容，为该主题生成 5 类富 tags（同义/上位/触发场景/易混淆/典型提问，共 10-20 个小写连字符），` +
+      `然后调 add_topic({ slug, title, summary, tags }) 覆盖主题元数据。title/summary 复用现有值，不要改。`
+
+    let tagged = false
+    for (let attempt = 0; attempt < 2 && !tagged; attempt++) {
+      const session = (await createPiSession({ port: opts.port, mode: 'tag' })) as unknown as SessionLike
+      const res = await runPrompt(session, prompt, events)
+      if (res.addTopicCalled) {
+        tagged = true
+        break
+      }
+    }
+
+    if (!tagged) {
+      throw new Error('add_topic 未调用')
+    }
+  } finally {
     events.stageEnd('tag')
-    throw new Error('add_topic 未调用')
   }
-  events.stageEnd('tag')
 }
 
 // ============================================================
