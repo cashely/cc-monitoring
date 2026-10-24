@@ -23,16 +23,28 @@ export interface LearnRound {
 
 export type LearnStatus = 'idle' | 'streaming' | 'done'
 
-// 学习模式流式 hook：start 新建 learn session（不传 sessionId），followup 复用已下发的 sessionId 追问，
-// 按 round_start / round_end 把 SSE 事件分组累积成 rounds
+// 3 阶段流水线进度：outline 大纲生成 / refine 逐条细化 / tag 富 tag 索引
+export interface StageState {
+  name: 'outline' | 'refine' | 'tag'
+  index: number
+  total: number
+  failedCount: number
+}
+
+// 学习模式流式 hook：start 新建 learn session（不传 sessionId），followup 改走 chat 模式新建会话，
+// 按 round_start / round_end 把 SSE 事件分组累积成 rounds，并按 stage_* 事件展示 3 阶段进度
 export function useLearnStream() {
   const [rounds, setRounds] = useState<LearnRound[]>([])
   const [status, setStatus] = useState<LearnStatus>('idle')
   const [error, setError] = useState<string | null>(null)
   const [task, setTask] = useState<LearnTask | null>(null)
+  const [stage, setStage] = useState<StageState | null>(null)
   const connectionRef = useRef<ReturnType<typeof createChatConnection> | null>(null)
-  // 后端通过 x-claude-code-session-id 下发的 pi sessionId，followup 复用以延续同一学习会话
+  // 后端通过 x-claude-code-session-id 下发的 pi sessionId。
+  // learn 流水线无驻留 session（done 后即清空）；chat followup 应复用以保留多轮上下文。
   const sessionIdRef = useRef<string | null>(null)
+  // 当前连接模式：learn 流水线结束清 sessionId；chat followup 结束保留，下一轮复用
+  const connectionModeRef = useRef<'learn' | 'chat'>('learn')
 
   // 所有 delta / tool 事件都归属「最后一个未结束的 round」（当前轮）
   const mutateLastRound = useCallback((type: string, fn: (r: LearnRound) => LearnRound) => {
@@ -70,6 +82,29 @@ export function useLearnStream() {
           setRounds(prev =>
             prev.map(r => (r.roundIndex === idx ? { ...r, done: true } : r))
           )
+          break
+        }
+        case 'stage_start': {
+          // 新阶段开始：重置进度（refine 带 totalItems）
+          const name = data?.stage as StageState['name']
+          setStage({ name, index: 0, total: data?.totalItems ?? 0, failedCount: 0 })
+          break
+        }
+        case 'stage_item_start': {
+          setStage(prev => (prev ? { ...prev, index: data?.index ?? 0 } : prev))
+          break
+        }
+        case 'stage_item_end': {
+          // index 已在 item_start 设置，无需变更
+          break
+        }
+        case 'stage_item_failed': {
+          setStage(prev => (prev ? { ...prev, failedCount: prev.failedCount + 1 } : prev))
+          break
+        }
+        case 'stage_end': {
+          // 清进度：下一阶段 stage_start 会重新设置；最终阶段结束后进度行隐藏
+          setStage(null)
           break
         }
         case 'text_delta': {
@@ -121,12 +156,18 @@ export function useLearnStream() {
     connection.onError = (message: string) => {
       setError(message)
       setStatus('done')
+      setStage(null)
       connectionRef.current = null
     }
 
     connection.onDone = () => {
       setStatus('done')
       connectionRef.current = null
+      // learn 流水线无驻留 session，done 后清掉下发的 pi sessionId；
+      // chat followup 保留 sessionId，下一轮追问复用同一 pi session 保留上下文。
+      if (connectionModeRef.current === 'learn') {
+        sessionIdRef.current = null
+      }
     }
   }, [mutateLastRound])
 
@@ -135,10 +176,12 @@ export function useLearnStream() {
       connectionRef.current.abort()
       connectionRef.current = null
     }
-    // 新任务重置 session，避免沿用上一次会话
+    // 新学习任务：重置 session，避免沿用上一次 learn/chat 会话
+    connectionModeRef.current = 'learn'
     sessionIdRef.current = null
     setRounds([])
     setError(null)
+    setStage(null)
     setTask(t)
     setStatus('streaming')
 
@@ -148,16 +191,19 @@ export function useLearnStream() {
     attachHandlers(connection)
   }, [attachHandlers])
 
-  // 追问：复用 sessionId 在同一学习会话中继续，不清空已有 rounds
+  // 追问：走 chat 模式。首次追问时 learn sessionId 已被清掉（传 undefined），
+  // 后端新建 chat session 后通过 onSession 下发；后续追问复用该 sessionId 保留多轮上下文。
   const followup = useCallback((prompt: string) => {
     if (connectionRef.current) {
       connectionRef.current.abort()
       connectionRef.current = null
     }
+    connectionModeRef.current = 'chat'
     setStatus('streaming')
     setError(null)
+    setStage(null)
 
-    const connection = createChatConnection(prompt, sessionIdRef.current ?? undefined, 'learn')
+    const connection = createChatConnection(prompt, sessionIdRef.current ?? undefined, 'chat')
     connectionRef.current = connection
     attachHandlers(connection)
   }, [attachHandlers])
@@ -180,5 +226,5 @@ export function useLearnStream() {
     }
   }, [])
 
-  return { rounds, status, error, task, start, followup, cancel }
+  return { rounds, status, error, task, stage, start, followup, cancel }
 }

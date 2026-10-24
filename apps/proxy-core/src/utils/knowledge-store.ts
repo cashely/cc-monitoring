@@ -8,7 +8,7 @@ const TOPIC_RE = /^[a-z0-9][a-z0-9-]*$/
 const CHUNK_RE = /^chunk-\d{3}$/
 
 export interface TopicSummary { slug: string; title: string; summary: string; tags: string[] }
-export interface ChunkRef { id: string; title: string; summary: string }
+export interface ChunkRef { id: string; title: string; summary: string; tags: string[] }
 export interface TopicDetail { title: string; tags: string[]; sources: unknown[]; chunks: ChunkRef[] }
 export interface ChunkHit { topic: string; chunkId: string; title: string }
 
@@ -21,7 +21,7 @@ export interface KnowledgeStore {
   searchChunks(query: string): Promise<ChunkHit[]>
   readChunk(topic: string, chunkId: string): Promise<string>
   upsertTopic(input: { slug: string; title: string; summary: string; tags: string[] }): Promise<void>
-  upsertChunkRef(input: { topic: string; chunkId: string; title: string; summary: string }): Promise<void>
+  upsertChunkRef(input: { topic: string; chunkId: string; title: string; summary: string; tags: string[] }): Promise<void>
 }
 
 function assertTopic(topic: string): void {
@@ -76,7 +76,14 @@ export function createKnowledgeStore(root: string): KnowledgeStore {
       title: meta.title || topic,
       tags: Array.isArray(meta.tags) ? meta.tags : [],
       sources: [],
-      chunks: Array.isArray(meta.chunks) ? meta.chunks : [],
+      chunks: Array.isArray(meta.chunks)
+        ? meta.chunks.map(c => ({
+            id: c.id,
+            title: c.title,
+            summary: c.summary,
+            tags: Array.isArray(c.tags) ? c.tags : [],
+          }))
+        : [],
     }
   }
 
@@ -111,10 +118,10 @@ export function createKnowledgeStore(root: string): KnowledgeStore {
     await fs.writeFile(topicPath, JSON.stringify(topicIdx, null, 2), 'utf8')
   }
 
-  async function upsertChunkRef(input: { topic: string; chunkId: string; title: string; summary: string }): Promise<void> {
+  async function upsertChunkRef(input: { topic: string; chunkId: string; title: string; summary: string; tags: string[] }): Promise<void> {
     assertTopic(input.topic)
     assertChunkId(input.chunkId)
-    const { topic, chunkId, title, summary } = input
+    const { topic, chunkId, title, summary, tags } = input
     const topicPath = path.join(root, topic, 'index.json')
     let topicIdx: TopicIndex
     try {
@@ -131,8 +138,9 @@ export function createKnowledgeStore(root: string): KnowledgeStore {
     if (existing) {
       existing.title = title
       existing.summary = summary
+      existing.tags = tags
     } else {
-      topicIdx.chunks.push({ id: chunkId, title, summary })
+      topicIdx.chunks.push({ id: chunkId, title, summary, tags })
     }
     await fs.writeFile(topicPath, JSON.stringify(topicIdx, null, 2), 'utf8')
   }
@@ -141,6 +149,8 @@ export function createKnowledgeStore(root: string): KnowledgeStore {
     if (!query.trim()) return []
     const hits: ChunkHit[] = []
     const q = query.toLowerCase()
+    // topic index 本函数作用域缓存，避免每个 chunk 重复读
+    const topicIndexCache = new Map<string, TopicIndex | null>()
     let entries: string[]
     try {
       entries = await fs.readdir(root)
@@ -149,6 +159,15 @@ export function createKnowledgeStore(root: string): KnowledgeStore {
     }
     for (const topic of entries) {
       if (!TOPIC_RE.test(topic)) continue
+      if (!topicIndexCache.has(topic)) {
+        const idx = await readJsonOr<TopicIndex | null>(path.join(root, topic, 'index.json'), null)
+        topicIndexCache.set(topic, idx)
+      }
+      const topicIdx = topicIndexCache.get(topic) ?? null
+      const topicTags = topicIdx && Array.isArray(topicIdx.tags) ? topicIdx.tags : []
+      const chunkRefs = topicIdx && Array.isArray(topicIdx.chunks) ? topicIdx.chunks : []
+      const topicTagHit = topicTags.some(t => t.toLowerCase().includes(q))
+
       const chunksDir = path.join(root, topic, 'chunks')
       let files: string[]
       try {
@@ -157,10 +176,19 @@ export function createKnowledgeStore(root: string): KnowledgeStore {
         continue
       }
       for (const file of files) {
-        if (!CHUNK_RE.test(file.replace(/\.md$/, ''))) continue
+        const chunkId = file.replace(/\.md$/, '')
+        if (!CHUNK_RE.test(chunkId)) continue
         const text = await fs.readFile(path.join(chunksDir, file), 'utf8')
-        if (text.toLowerCase().includes(q)) {
-          hits.push({ topic, chunkId: file.replace(/\.md$/, ''), title: parseChunkTitle(text) })
+        const ref = chunkRefs.find(c => c.id === chunkId)
+        const refTags = ref && Array.isArray(ref.tags) ? ref.tags : []
+        const hit =
+          text.toLowerCase().includes(q) ||
+          (ref?.title ?? '').toLowerCase().includes(q) ||
+          (ref?.summary ?? '').toLowerCase().includes(q) ||
+          topicTagHit ||
+          refTags.some(t => t.toLowerCase().includes(q))
+        if (hit) {
+          hits.push({ topic, chunkId, title: parseChunkTitle(text) })
         }
       }
     }

@@ -1,0 +1,334 @@
+// pi-learn-orchestrator: S1/S2/S3 三阶段 learn 流水线
+// - S1 outline: 单次 outline session，写 outline.json + seed topic
+// - S2 refine: 对 outline.items 逐项开新 refine session，写 chunks/chunk-NNN.md
+// - S3 tag: 单次 tag session，读 chunks 后调 add_topic 写富 tags
+//
+// slug 检测策略：S1 开始前 snapshot docsDir 下已有 outline.json 的 slug 集合，
+// S1 结束后 diff 出新出现的 slug。比「扫最新 mtime」稳健（不受历史目录干扰），
+// 比「解析 assistant 文本」可靠（文本返回非结构化），也不用改 pi-runtime。
+
+import fs from 'node:fs'
+import path from 'node:path'
+import { dataDir } from './paths.js'
+import { createPiSession } from './pi-runtime.js'
+
+export interface OutlineItem {
+  id: string
+  title: string
+  oneLine: string
+}
+
+export interface LearnPipelineEvents {
+  stageStart(stage: 'outline' | 'refine' | 'tag', totalItems?: number): void
+  stageItemStart(index: number, total: number, title: string): void
+  stageItemEnd(index: number, chunkId: string): void
+  stageItemFailed(index: number, title: string, reason: string): void
+  stageEnd(stage: 'outline' | 'refine' | 'tag'): void
+  textDelta(delta: string): void
+  thinkingDelta(delta: string): void
+  toolStart(e: { toolCallId: string; toolName: string; args: unknown }): void
+  toolEnd(e: { toolCallId: string; toolName: string; isError: boolean; durationMs: number; result: string }): void
+}
+
+export interface RunLearnPipelineOptions {
+  prompt: string
+  port: number
+  events: LearnPipelineEvents
+  /** 注入式 docsDir（测试用）；默认 ~/.cc-monitoring/docs */
+  docsDir?: string
+}
+
+// pi AgentSession 的最小鸭子类型接口（避免直接依赖 pi-coding-agent 类型）
+interface SessionLike {
+  sessionId: string
+  subscribe(listener: (ev: any) => void): () => void
+  prompt(text: string): Promise<void>
+  waitForIdle(): Promise<void>
+  abort(): Promise<void>
+}
+
+const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/
+
+// 每阶段（含 S2 每个 item prompt）独立超时：5 分钟。
+// 防止 pi session 在 stuck LLM 响应上无限挂起，导致 SSE 通道常开、前端永久转圈。
+const STAGE_TIMEOUT_MS = 5 * 60 * 1000
+
+/**
+ * Promise.race 包一层超时。超时触发时调用 abortFn（session.abort()），
+ * 然后 reject；正常 settle 时清掉 timer，避免泄漏。
+ */
+function withTimeout<T>(p: Promise<T>, ms: number, abortFn: () => Promise<void>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeoutP = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => {
+      // 触发 abort，尽量让底层 fetch/pi session 提前收尾；reject 用明确错误
+      abortFn().catch(() => {})
+      reject(new Error(`stage 超时 ${ms}ms`))
+    }, ms)
+  })
+  return Promise.race([
+    p.finally(() => {
+      if (timer) clearTimeout(timer)
+    }),
+    timeoutP,
+  ])
+}
+
+/** 列出 docsDir 下当前已有 outline.json 的 slug 集合 */
+function snapshotOutlinedSlugs(docsDir: string): Set<string> {
+  const out = new Set<string>()
+  let entries: string[]
+  try {
+    entries = fs.readdirSync(docsDir)
+  } catch {
+    return out
+  }
+  for (const e of entries) {
+    if (!SLUG_RE.test(e)) continue
+    if (fs.existsSync(path.join(docsDir, e, 'outline.json'))) out.add(e)
+  }
+  return out
+}
+
+interface RunPromptResult {
+  /** 本 session 内是否成功调了 add_topic 且 tags 非空 */
+  addTopicCalled: boolean
+}
+
+/**
+ * 跑一次 prompt，透传 text/tool 事件到 events；resolve 当 prompt 自然结束。
+ * 同时返回本 session 内关键工具调用的标志位（用于 S3 成功判定）。
+ */
+async function runPrompt(
+  session: SessionLike,
+  promptText: string,
+  events: LearnPipelineEvents,
+): Promise<RunPromptResult> {
+  const result: RunPromptResult = { addTopicCalled: false }
+  // Finding 1：tool_execution_start 时只记录「即将调 add_topic 且 tags 非空」，
+  // 真正置位必须等 tool_execution_end 且 isError=false。否则工具执行失败（upsert
+  // 抛错/非法 slug/JSON 写失败）时重试循环会误判成功。
+  let pendingAddTopicWithTags = false
+  const unsub = session.subscribe((ev: any) => {
+    try {
+      if (ev.type === 'message_update') {
+        const ae = ev.assistantMessageEvent
+        if (ae?.type === 'text_delta' && typeof ae.delta === 'string') {
+          events.textDelta(ae.delta)
+        } else if (ae?.type === 'thinking_delta' && typeof ae.delta === 'string') {
+          events.thinkingDelta(ae.delta)
+        }
+      } else if (ev.type === 'tool_execution_start') {
+        events.toolStart({
+          toolCallId: ev.toolCallId,
+          toolName: ev.toolName,
+          args: ev.args,
+        })
+        if (ev.toolName === 'add_topic') {
+          const tags = (ev.args as any)?.tags
+          pendingAddTopicWithTags = Array.isArray(tags) && tags.length > 0
+        }
+      } else if (ev.type === 'tool_execution_end') {
+        const resultText = Array.isArray(ev.result?.content)
+          ? ev.result.content.map((c: any) => (c?.type === 'text' ? c.text : '')).join('\n')
+          : ''
+        if (ev.toolName === 'add_topic' && pendingAddTopicWithTags && !ev.isError) {
+          result.addTopicCalled = true
+        }
+        events.toolEnd({
+          toolCallId: ev.toolCallId,
+          toolName: ev.toolName,
+          isError: !!ev.isError,
+          durationMs: ev.durationMs ?? 0,
+          result: resultText,
+        })
+      }
+    } catch {
+      // 事件转发失败不中断流水线
+    }
+  })
+  try {
+    // Finding 3：整个 prompt + waitForIdle 包 5 分钟超时；超时 abort 并抛错。
+    await withTimeout(
+      (async () => {
+        await session.prompt(promptText)
+        await session.waitForIdle()
+      })(),
+      STAGE_TIMEOUT_MS,
+      () => session.abort(),
+    )
+  } finally {
+    unsub()
+  }
+  return result
+}
+
+// ============================================================
+// S1: outline 阶段
+// ============================================================
+async function runOutlineStage(
+  opts: { prompt: string; port: number; docsDir: string },
+  events: LearnPipelineEvents,
+): Promise<{ slug: string; items: OutlineItem[] }> {
+  events.stageStart('outline')
+  try {
+    const before = snapshotOutlinedSlugs(opts.docsDir)
+
+    const session = (await createPiSession({ port: opts.port, mode: 'outline' })) as unknown as SessionLike
+    await runPrompt(session, opts.prompt, events)
+
+    const after = snapshotOutlinedSlugs(opts.docsDir)
+    const newSlugs = [...after].filter((s) => !before.has(s))
+    if (newSlugs.length === 0) {
+      throw new Error('outline 未生成')
+    }
+    // 理论上 S1 只该调一次 add_outline；多个时取最后一个
+    const slug = newSlugs[newSlugs.length - 1]
+    const outlinePath = path.join(opts.docsDir, slug, 'outline.json')
+    const outline = JSON.parse(fs.readFileSync(outlinePath, 'utf8')) as { slug: string; items: OutlineItem[] }
+    return { slug, items: outline.items }
+  } finally {
+    events.stageEnd('outline')
+  }
+}
+
+// ============================================================
+// S2: refine 阶段
+// ============================================================
+async function runRefineStage(
+  opts: { port: number; docsDir: string },
+  slug: string,
+  items: OutlineItem[],
+  events: LearnPipelineEvents,
+): Promise<{ chunksWritten: number; itemsFailed: number }> {
+  events.stageStart('refine', items.length)
+  let chunksWritten = 0
+  let itemsFailed = 0
+
+  try {
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i]
+      const chunkId = `chunk-${String(i + 1).padStart(3, '0')}`
+      events.stageItemStart(i, items.length, item.title)
+
+      try {
+        const prompt =
+          `主题 slug: ${slug}\n` +
+          `概念: ${item.title}\n` +
+          `说明: ${item.oneLine}\n` +
+          `请读 source.md 相关段落，写 chunks/${chunkId}.md，然后调 add_chunk 带 tags`
+
+        let ok = false
+        let failReason = 'chunk 文件未生成'
+        for (let attempt = 0; attempt < 2 && !ok; attempt++) {
+          const session = (await createPiSession({ port: opts.port, mode: 'refine' })) as unknown as SessionLike
+          await runPrompt(session, prompt, events)
+          const chunkPath = path.join(opts.docsDir, slug, 'chunks', `${chunkId}.md`)
+          try {
+            const stat = fs.statSync(chunkPath)
+            if (stat.size > 0) ok = true
+          } catch {
+            // 不存在 → 重试
+          }
+        }
+
+        // Finding 2：chunk 文件非空不等于 add_chunk 被调。校验 index.json.chunks
+        // 里真的有这个 chunkId，否则文件是孤儿（S3 从 index.json 读 chunk 列表会静默跳过）。
+        if (ok) {
+          let chunkRegistered = false
+          try {
+            const idxPath = path.join(opts.docsDir, slug, 'index.json')
+            const idx = JSON.parse(fs.readFileSync(idxPath, 'utf8')) as {
+              chunks?: Array<{ id: string }>
+            }
+            chunkRegistered = (idx.chunks ?? []).some((c) => c.id === chunkId)
+          } catch {
+            // index.json 读失败/JSON 坏 → 当作未注册
+            chunkRegistered = false
+          }
+          if (!chunkRegistered) {
+            ok = false
+            failReason = 'add_chunk 未调用'
+          }
+        }
+
+        if (ok) {
+          chunksWritten++
+          events.stageItemEnd(i, chunkId)
+        } else {
+          itemsFailed++
+          events.stageItemFailed(i, item.title, failReason)
+        }
+      } catch (e: any) {
+        // per-item 任意错误（createPiSession 失败、prompt 抛错等）→ 不中断整个 refine 阶段
+        itemsFailed++
+        events.stageItemFailed(i, item.title, e?.message || String(e))
+      }
+    }
+  } finally {
+    events.stageEnd('refine')
+  }
+  return { chunksWritten, itemsFailed }
+}
+
+// ============================================================
+// S3: tag 阶段
+// ============================================================
+async function runTagStage(
+  opts: { port: number; docsDir: string },
+  slug: string,
+  events: LearnPipelineEvents,
+): Promise<void> {
+  events.stageStart('tag')
+  try {
+    const topicIdxPath = path.join(opts.docsDir, slug, 'index.json')
+    const topicIdx = JSON.parse(fs.readFileSync(topicIdxPath, 'utf8')) as {
+      title: string
+      summary: string
+      chunks: Array<{ id: string; title: string; summary: string }>
+    }
+    const chunkListing = (topicIdx.chunks ?? [])
+      .map((c) => `- ${c.id}: ${c.title} — ${c.summary}`)
+      .join('\n')
+
+    const prompt =
+      `主题 slug: ${slug}\n` +
+      `现有 title: ${topicIdx.title}\n` +
+      `现有 summary: ${topicIdx.summary}\n` +
+      `已有 chunks:\n${chunkListing}\n\n` +
+      `请用 read_chunk 读 chunks 实际内容，为该主题生成 5 类富 tags（同义/上位/触发场景/易混淆/典型提问，共 10-20 个小写连字符），` +
+      `然后调 add_topic({ slug, title, summary, tags }) 覆盖主题元数据。title/summary 复用现有值，不要改。`
+
+    let tagged = false
+    for (let attempt = 0; attempt < 2 && !tagged; attempt++) {
+      const session = (await createPiSession({ port: opts.port, mode: 'tag' })) as unknown as SessionLike
+      const res = await runPrompt(session, prompt, events)
+      if (res.addTopicCalled) {
+        tagged = true
+        break
+      }
+    }
+
+    if (!tagged) {
+      throw new Error('add_topic 未调用')
+    }
+  } finally {
+    events.stageEnd('tag')
+  }
+}
+
+// ============================================================
+// 主编排
+// ============================================================
+export async function runLearnPipeline(
+  opts: RunLearnPipelineOptions,
+): Promise<{ slug: string; chunksWritten: number; itemsFailed: number }> {
+  const docsDir = opts.docsDir ?? path.join(dataDir, 'docs')
+  const common = { port: opts.port, docsDir }
+
+  const { slug, items } = await runOutlineStage({ prompt: opts.prompt, ...common }, opts.events)
+  const refine = await runRefineStage(common, slug, items, opts.events)
+  await runTagStage(common, slug, opts.events)
+
+  return { slug, chunksWritten: refine.chunksWritten, itemsFailed: refine.itemsFailed }
+}
