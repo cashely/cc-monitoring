@@ -21,7 +21,6 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import { dataDir } from './paths.js'
 import { sandboxWriteOps } from './pi-sandbox-ops.js'
-import { browserTools } from './pi-browser-tools.js'
 import { knowledgeStore } from './knowledge-store.js'
 
 // 知识文档目录：所有文件工具的 cwd 和沙箱白名单根
@@ -89,11 +88,12 @@ export interface CreatePiSessionOptions {
 
 const KB_STRUCTURE = `Your knowledge directory (~/.cc-monitoring/docs) stores a **dictionary**: concise, distilled entries a future reader can look up. You do NOT copy source text — you digest it.
 
-STRUCTURE:
-- Each topic is a subfolder: docs/<topic-slug>/
-- Each topic has docs/<slug>/index.json (metadata + chunk list, NO body)
-- Bodies live in docs/<topic-slug>/chunks/chunk-NNN.md
-- Root docs/index.json lists all topics as JSON`
+STRUCTURE (all paths below are RELATIVE TO the knowledge root ~/.cc-monitoring/docs — the write tool's working directory IS this root, so NEVER prefix a path with "docs/"):
+- Each topic is a subfolder: <topic-slug>/
+- Each topic has <slug>/index.json (metadata + chunk list, NO body)
+- Bodies live in <topic-slug>/chunks/chunk-NNN.md
+- Root index.json lists all topics as JSON
+- Fetched source pages for a topic are already prepared in <slug>/sources/ — you only READ them, never write or modify them`
 
 export const CHAT_SYSTEM_PROMPT = `You are a knowledge management AI operating inside a sandbox.
 ${KB_STRUCTURE}
@@ -106,21 +106,22 @@ ANSWERING QUESTIONS:
 5. Prefer answering from knowledge base chunks when relevant content exists; cite which chunks you used
 6. If no relevant chunk exists, answer from your general knowledge; if you truly don't know, say so`
 
-export const OUTLINE_SYSTEM_PROMPT = `You are an outline-phase worker. Your job: read the source material end-to-end, save it as source.md, then propose an outline of dictionary entries. Do NOT write chunks.
+export const OUTLINE_SYSTEM_PROMPT = `You are an outline-phase worker. The relevant web pages have ALREADY been fetched and saved to sources/ for your assigned topic. Your job: read them and propose an outline of dictionary entries. Do NOT write chunks.
 
 ${KB_STRUCTURE}
 
 WORKFLOW:
-1. Use browser tools to fetch the source URL (browser_navigate / browser_fetch).
-2. Write the full fetched content to docs/<topic>/source.md using the write tool — the orchestrator will later hand this file to the refine worker.
-3. Internally outline the DISTINCT concepts extracted from the material. One concept = one future chunk. Do not bundle unrelated ideas.
-4. Call add_outline(desiredSlug, title, items) ONCE at the end:
-   - desiredSlug: lowercase hyphenated slug you propose (e.g. react-hooks)
+1. Call read_source(topic) to load ALL fetched source pages (multiple pages are separated by ---).
+2. Outline the DISTINCT concepts actually present across these pages. One concept = one future chunk. Do not bundle unrelated ideas.
+3. Call add_outline(slug, title, items) ONCE at the end:
+   - slug: the EXACT slug given in your task
    - title: human-readable topic title
-   - items: array of { id, title, oneLine } — id is short stable slug per item (e.g. "use-state"), oneLine is a single-sentence definition
+   - items: array of { id, title, oneLine } — id is a short stable slug per item (e.g. "use-state"), oneLine is a single-sentence definition
 
 HARD RULES:
-- Do NOT write chunk files. Do NOT call add_chunk or add_topic.
+- Use ONLY content present in the fetched sources. Do NOT add concepts from training-data memory. If the sources are thin, outline only what is there.
+- read_source MUST be your first call. If it returns an error, STOP and report it immediately.
+- Do NOT write chunk files, source files, or index.json.
 - Do NOT summarize prematurely — outline only; distillation happens later.
 - After add_outline succeeds, print the returned slug and item count. Stop.`
 
@@ -129,9 +130,9 @@ export const REFINE_SYSTEM_PROMPT = `You are a refine-phase worker. For ONE item
 ${KB_STRUCTURE}
 
 WORKFLOW:
-1. Call read_source(topic) to load the saved source.md full text.
+1. Call read_source(topic) to load ALL fetched source pages (multiple pages separated by ---).
 2. Focus on your assigned item. Do NOT distill other items.
-3. Write ONE chunk file docs/<topic>/chunks/chunk-NNN.md (number sequentially from 001) using the write tool, in the source document's language, with this structure:
+3. Write ONE chunk file <topic>/chunks/chunk-NNN.md (number sequentially from 001; path RELATIVE TO the knowledge root, no "docs/" prefix) using the write tool, in the source document's language, with this structure:
 
 \`\`\`
 # <term or concept name>
@@ -142,13 +143,15 @@ WORKFLOW:
 - 关键点 / Key points: <3-6 bullets, the load-bearing facts>
 - 适用场景 / When to use: <where this applies>
 - 误区 / Pitfalls: <common mistakes, edge cases>
-- 来源 / Source: <url>
+- 来源 / Source: <url(s) of the page(s) you actually used — copy them from the "Source:" headers at the top of each fetched page; list several URLs if the chunk draws on several pages>
 \`\`\`
 
 4. Call add_chunk(topic, chunk_id, title, summary, tags) to register it.
    - tags: 3-6 lowercase hyphenated tags describing the concept (synonyms, key terms).
 
 HARD RULES:
+- read_source MUST be your first call. If it returns an error, STOP and report it immediately. Do NOT write a placeholder source.md yourself, and do NOT write the chunk from memory.
+- Every fact must come from the fetched sources. If a claim is not supported by them, omit it. Never fill gaps from memory.
 - NO large quotes. A short quote (≤2 sentences) is allowed ONLY as evidence under a bullet you already wrote in your own words.
 - Every bullet must be YOU re-expressing the idea. If you find yourself copying sentences, stop and rephrase.
 - One concept per chunk.
@@ -213,14 +216,14 @@ function assertSlug(slug: string, field: string): void {
   }
 }
 
-/** add_outline：写 outline.json + seed topic 索引 */
+/** add_outline：对已存在的 slug 目录登记大纲（写 outline.json + seed topic） */
 function buildAddOutlineTool(): ToolDefinition {
   return {
     name: 'add_outline',
     label: 'add_outline',
-    description: '登记一个新主题的大纲：写 <slug>/outline.json 并在索引中 seed 占位 topic。outline 阶段只调用这一次。',
+    description: '在已由抓取阶段准备好的 <slug> 目录登记大纲（写 outline.json + seed topic），只调用一次。',
     parameters: Type.Object({
-      desiredSlug: Type.String({ description: '期望的小写连字符 slug，如 react-hooks' }),
+      slug: Type.String({ description: '任务指定的小写连字符 slug，如 react-hooks' }),
       title: Type.String(),
       items: Type.Array(Type.Object({
         id: Type.String({ description: '条目稳定 id，如 use-state' }),
@@ -228,47 +231,40 @@ function buildAddOutlineTool(): ToolDefinition {
         oneLine: Type.String({ description: '一句话定义' }),
       })),
     }),
-    async execute(_id, params: { desiredSlug: string; title: string; items: OutlineItemParam[] }) {
-      try {
-        assertSlug(params.desiredSlug, 'desiredSlug')
-        let slug = params.desiredSlug
-        let n = 2
-        while (fs.existsSync(path.join(docsDir, slug))) {
-          if (n > 100) throw new Error('slug suffix exhaustion (>100 attempts)')
-          slug = `${params.desiredSlug}-${n}`
-          n++
-        }
-        const topicDir = path.join(docsDir, slug)
-        fs.mkdirSync(path.join(topicDir, 'chunks'), { recursive: true })
-        fs.writeFileSync(
-          path.join(topicDir, 'outline.json'),
-          JSON.stringify({ slug, source: 'source.md', items: params.items }, null, 2),
-        )
-        await knowledgeStore.upsertTopic({
-          slug,
-          title: params.title,
-          summary: '(refining)',
-          tags: [],
-        })
-        return ok(JSON.stringify({ slug, itemCount: params.items.length }))
-      } catch (e) { return err(e) }
+    async execute(_id, params: { slug: string; title: string; items: OutlineItemParam[] }) {
+      assertSlug(params.slug, 'slug')
+      const topicDir = path.join(docsDir, params.slug)
+      if (!fs.existsSync(topicDir)) throw new Error(`topic dir not prepared: ${params.slug}`)
+      if (!fs.existsSync(path.join(topicDir, 'sources'))) throw new Error(`sources missing for topic: ${params.slug}`)
+      fs.writeFileSync(
+        path.join(topicDir, 'outline.json'),
+        JSON.stringify({ slug: params.slug, source: 'sources/', items: params.items }, null, 2),
+      )
+      await knowledgeStore.upsertTopic({
+        slug: params.slug,
+        title: params.title,
+        summary: '(refining)',
+        tags: [],
+      })
+      return ok(JSON.stringify({ slug: params.slug, itemCount: params.items.length }))
     },
   }
 }
 
-/** read_source：refine 阶段读 source.md 全文 */
+/** read_source：读取该主题 sources/ 目录下全部已抓取网页 */
 function buildReadSourceTool(): ToolDefinition {
   return {
     name: 'read_source',
     label: 'read_source',
-    description: '读取该主题 source.md 全文（outline 阶段写入的原料）。refine 阶段第一步调用。',
+    description: '读取该主题 sources/ 目录下全部已抓取网页（按文件名排序、--- 分隔）。',
     parameters: Type.Object({ topic: Type.String({ description: '主题 slug' }) }),
     async execute(_id, params: { topic: string }) {
-      try {
-        assertSlug(params.topic, 'topic')
-        const p = path.join(docsDir, params.topic, 'source.md')
-        return ok(fs.readFileSync(p, 'utf8'))
-      } catch (e) { return err(e) }
+      assertSlug(params.topic, 'topic')
+      const dir = path.join(docsDir, params.topic, 'sources')
+      const files = fs.readdirSync(dir).filter((f) => f.endsWith('.md')).sort()
+      if (files.length === 0) throw new Error(`no sources for topic: ${params.topic}`)
+      const merged = files.map((f) => fs.readFileSync(path.join(dir, f), 'utf8')).join('\n\n---\n\n')
+      return ok(merged)
     },
   }
 }
@@ -374,7 +370,7 @@ function buildModeTools(mode: PiSessionMode): ToolDefinition[] {
     case 'chat':
       return [KT('list_topics'), KT('get_topic'), KT('search_chunks'), KT('read_chunk')]
     case 'outline':
-      return [...browserTools, WRITE_TOOL, buildAddOutlineTool()]
+      return [buildReadSourceTool(), buildAddOutlineTool()]
     case 'refine':
       return [buildReadSourceTool(), WRITE_TOOL, KT('add_chunk')]
     case 'tag':
@@ -388,7 +384,7 @@ function buildToolAllowlist(mode: PiSessionMode): string[] {
     case 'chat':
       return ['list_topics', 'get_topic', 'search_chunks', 'read_chunk']
     case 'outline':
-      return [...browserTools.map((t) => t.name), 'write', 'add_outline']
+      return ['read_source', 'add_outline']
     case 'refine':
       return ['read_source', 'write', 'add_chunk']
     case 'tag':

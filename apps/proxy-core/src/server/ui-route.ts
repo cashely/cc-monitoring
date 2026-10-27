@@ -297,10 +297,14 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
     // 'learn' 走 orchestrator 一次性流水线（不驻留 pi session，不进 piSessions 注册表）。
     // 其余值（含 outline/refine/tag）一律按 chat 处理：这些是内部 stage mode，不对外暴露。
     if (mode === 'learn') {
+      // 本路由 body 无 Fastify JSON schema（仅 TS 类型），直接读取；非法 sourceType 一律按 url
+      const sourceType: 'url' | 'file' = (request.body as any).sourceType === 'file' ? 'file' : 'url'
+      const label: string | undefined = (request.body as any).label ?? undefined
+
       if (!stream) {
         // 非流式：跑完流水线，返回汇总（不返回 output 文本——流水线产物落盘）
         try {
-          const result = await runLearnPipeline({ prompt, port, events: noopLearnEvents })
+          const result = await runLearnPipeline({ sourceType, input: prompt, label, port, events: noopLearnEvents })
           return {
             success: true,
             output: `slug=${result.slug} chunks=${result.chunksWritten} failed=${result.itemsFailed}`,
@@ -341,17 +345,25 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       // SSE adapter: LearnPipelineEvents → SSE data events
+      let roundIndex = 0
+      let currentRoundIndex = 0
       const events: LearnPipelineEvents = {
-        stageStart: (stage, totalItems) =>
-          sendSSE('data', JSON.stringify({ type: 'stage_start', stage, totalItems })),
+        stageStart: (stage, totalItems) => {
+          currentRoundIndex = roundIndex
+          sendSSE('data', JSON.stringify({ type: 'round_start', roundIndex }))
+          sendSSE('data', JSON.stringify({ type: 'stage_start', stage, totalItems }))
+          roundIndex += 1
+        },
         stageItemStart: (index, total, title) =>
           sendSSE('data', JSON.stringify({ type: 'stage_item_start', index, total, title })),
         stageItemEnd: (index, chunkId) =>
           sendSSE('data', JSON.stringify({ type: 'stage_item_end', index, chunkId })),
         stageItemFailed: (index, title, reason) =>
           sendSSE('data', JSON.stringify({ type: 'stage_item_failed', index, title, reason })),
-        stageEnd: (stage) =>
-          sendSSE('data', JSON.stringify({ type: 'stage_end', stage })),
+        stageEnd: (stage) => {
+          sendSSE('data', JSON.stringify({ type: 'round_end', roundIndex: currentRoundIndex }))
+          sendSSE('data', JSON.stringify({ type: 'stage_end', stage }))
+        },
         textDelta: (delta) =>
           sendSSE('data', JSON.stringify({ type: 'text_delta', content: delta })),
         thinkingDelta: (delta) =>
@@ -381,7 +393,7 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
       })
 
       try {
-        await runLearnPipeline({ prompt, port, events })
+        await runLearnPipeline({ sourceType, input: prompt, label, port, events })
         finish(0)
       } catch (err: any) {
         request.log.error({ err }, 'learn pipeline failed')

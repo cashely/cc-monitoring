@@ -1,16 +1,17 @@
 // pi-learn-orchestrator: S1/S2/S3 三阶段 learn 流水线
-// - S1 outline: 单次 outline session，写 outline.json + seed topic
+// - S1 outline: node 确定性抓取（url）或落盘上传正文（file）写 sources/，再由单次 outline
+//   session read_source + add_outline 写 outline.json + seed topic
 // - S2 refine: 对 outline.items 逐项开新 refine session，写 chunks/chunk-NNN.md
 // - S3 tag: 单次 tag session，读 chunks 后调 add_topic 写富 tags
 //
-// slug 检测策略：S1 开始前 snapshot docsDir 下已有 outline.json 的 slug 集合，
-// S1 结束后 diff 出新出现的 slug。比「扫最新 mtime」稳健（不受历史目录干扰），
-// 比「解析 assistant 文本」可靠（文本返回非结构化），也不用改 pi-runtime。
+// slug 由入口 URL / 文件名确定性生成；topic 目录在 S1 前由 node 直接准备，
+// 抓取与写 sources 均不经过 LLM。
 
 import fs from 'node:fs'
 import path from 'node:path'
 import { dataDir } from './paths.js'
 import { createPiSession } from './pi-runtime.js'
+import { crawlSite, slugFromUrl, slugFromLabel, CRAWL_MAX_PAGES, CRAWL_MAX_DEPTH } from './web-crawler.js'
 
 export interface OutlineItem {
   id: string
@@ -31,7 +32,11 @@ export interface LearnPipelineEvents {
 }
 
 export interface RunLearnPipelineOptions {
-  prompt: string
+  sourceType: 'url' | 'file'
+  /** url 模式=入口 URL；file 模式=上传得到的 markdown 正文 */
+  input: string
+  /** file 模式文件名（生成 slug 用）；url 可省略 */
+  label?: string
   port: number
   events: LearnPipelineEvents
   /** 注入式 docsDir（测试用）；默认 ~/.cc-monitoring/docs */
@@ -46,8 +51,6 @@ interface SessionLike {
   waitForIdle(): Promise<void>
   abort(): Promise<void>
 }
-
-const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/
 
 // 每阶段（含 S2 每个 item prompt）独立超时：5 分钟。
 // 防止 pi session 在 stuck LLM 响应上无限挂起，导致 SSE 通道常开、前端永久转圈。
@@ -74,25 +77,11 @@ function withTimeout<T>(p: Promise<T>, ms: number, abortFn: () => Promise<void>)
   ])
 }
 
-/** 列出 docsDir 下当前已有 outline.json 的 slug 集合 */
-function snapshotOutlinedSlugs(docsDir: string): Set<string> {
-  const out = new Set<string>()
-  let entries: string[]
-  try {
-    entries = fs.readdirSync(docsDir)
-  } catch {
-    return out
-  }
-  for (const e of entries) {
-    if (!SLUG_RE.test(e)) continue
-    if (fs.existsSync(path.join(docsDir, e, 'outline.json'))) out.add(e)
-  }
-  return out
-}
-
 interface RunPromptResult {
   /** 本 session 内是否成功调了 add_topic 且 tags 非空 */
   addTopicCalled: boolean
+  /** 本 session 内 read_source 是否至少成功执行一次（用于 S2 原料读取判定） */
+  readSourceOk: boolean
 }
 
 /**
@@ -104,7 +93,7 @@ async function runPrompt(
   promptText: string,
   events: LearnPipelineEvents,
 ): Promise<RunPromptResult> {
-  const result: RunPromptResult = { addTopicCalled: false }
+  const result: RunPromptResult = { addTopicCalled: false, readSourceOk: false }
   // Finding 1：tool_execution_start 时只记录「即将调 add_topic 且 tags 非空」，
   // 真正置位必须等 tool_execution_end 且 isError=false。否则工具执行失败（upsert
   // 抛错/非法 slug/JSON 写失败）时重试循环会误判成功。
@@ -135,6 +124,9 @@ async function runPrompt(
         if (ev.toolName === 'add_topic' && pendingAddTopicWithTags && !ev.isError) {
           result.addTopicCalled = true
         }
+        if (ev.toolName === 'read_source' && !ev.isError) {
+          result.readSourceOk = true
+        }
         events.toolEnd({
           toolCallId: ev.toolCallId,
           toolName: ev.toolName,
@@ -164,29 +156,72 @@ async function runPrompt(
 }
 
 // ============================================================
-// S1: outline 阶段
+// 原料准备 + S1: outline 阶段
 // ============================================================
+
+/** 重建 topic 目录：sources/（抓取/上传原料）+ chunks/（S2 产物） */
+function prepareTopicDir(docsDir: string, slug: string): void {
+  const dir = path.join(docsDir, slug)
+  fs.rmSync(dir, { recursive: true, force: true })
+  fs.mkdirSync(path.join(dir, 'sources'), { recursive: true })
+  fs.mkdirSync(path.join(dir, 'chunks'), { recursive: true })
+}
+
+/** 写一份原料到 <slug>/sources/source-NNN.md */
+function writeSourceFile(docsDir: string, slug: string, index: number, url: string, text: string): void {
+  const name = `source-${String(index + 1).padStart(3, '0')}.md`
+  fs.writeFileSync(path.join(docsDir, slug, 'sources', name), `Source: ${url}\n\n${text}`, 'utf8')
+}
+
 async function runOutlineStage(
-  opts: { prompt: string; port: number; docsDir: string },
+  opts: {
+    sourceType: 'url' | 'file'
+    input: string
+    label?: string
+    port: number
+    docsDir: string
+    slug: string
+  },
   events: LearnPipelineEvents,
 ): Promise<{ slug: string; items: OutlineItem[] }> {
+  // 抓取必须在 stageStart 之后：crawl 的 tool 事件才能落进前端已建好的 round 0
   events.stageStart('outline')
   try {
-    const before = snapshotOutlinedSlugs(opts.docsDir)
+    if (opts.sourceType === 'url') {
+      const pages = await crawlSite(
+        opts.input,
+        { maxPages: CRAWL_MAX_PAGES, maxDepth: CRAWL_MAX_DEPTH },
+        (url, index, phase) => {
+          const callId = `crawl-${index}`
+          if (phase === 'start') {
+            events.toolStart({ toolCallId: callId, toolName: 'browser_navigate', args: { url } })
+          } else {
+            events.toolEnd({
+              toolCallId: callId,
+              toolName: 'browser_navigate',
+              isError: phase === 'failed',
+              durationMs: 0,
+              result: phase === 'done' ? 'fetched' : 'failed',
+            })
+          }
+        },
+      )
+      pages.forEach((p, i) => writeSourceFile(opts.docsDir, opts.slug, i, p.url, p.text))
+    } else {
+      writeSourceFile(opts.docsDir, opts.slug, 0, opts.label ?? 'uploaded-file', opts.input)
+    }
 
     const session = (await createPiSession({ port: opts.port, mode: 'outline' })) as unknown as SessionLike
-    await runPrompt(session, opts.prompt, events)
+    const prompt =
+      `Topic slug: ${opts.slug}\n` +
+      `Call read_source(${JSON.stringify(opts.slug)}) to read the prepared sources, then call add_outline with this EXACT slug (${JSON.stringify(opts.slug)}). ` +
+      `Provide an appropriate title and the outline items.`
+    await runPrompt(session, prompt, events)
 
-    const after = snapshotOutlinedSlugs(opts.docsDir)
-    const newSlugs = [...after].filter((s) => !before.has(s))
-    if (newSlugs.length === 0) {
-      throw new Error('outline 未生成')
-    }
-    // 理论上 S1 只该调一次 add_outline；多个时取最后一个
-    const slug = newSlugs[newSlugs.length - 1]
-    const outlinePath = path.join(opts.docsDir, slug, 'outline.json')
-    const outline = JSON.parse(fs.readFileSync(outlinePath, 'utf8')) as { slug: string; items: OutlineItem[] }
-    return { slug, items: outline.items }
+    const outlinePath = path.join(opts.docsDir, opts.slug, 'outline.json')
+    if (!fs.existsSync(outlinePath)) throw new Error('outline 未生成')
+    const outline = JSON.parse(fs.readFileSync(outlinePath, 'utf8')) as { items: OutlineItem[] }
+    return { slug: opts.slug, items: outline.items }
   } finally {
     events.stageEnd('outline')
   }
@@ -222,7 +257,11 @@ async function runRefineStage(
         let failReason = 'chunk 文件未生成'
         for (let attempt = 0; attempt < 2 && !ok; attempt++) {
           const session = (await createPiSession({ port: opts.port, mode: 'refine' })) as unknown as SessionLike
-          await runPrompt(session, prompt, events)
+          const res = await runPrompt(session, prompt, events)
+          if (!res.readSourceOk) {
+            failReason = 'read_source 未成功读取'
+            continue
+          }
           const chunkPath = path.join(opts.docsDir, slug, 'chunks', `${chunkId}.md`)
           try {
             const stat = fs.statSync(chunkPath)
@@ -324,11 +363,12 @@ export async function runLearnPipeline(
   opts: RunLearnPipelineOptions,
 ): Promise<{ slug: string; chunksWritten: number; itemsFailed: number }> {
   const docsDir = opts.docsDir ?? path.join(dataDir, 'docs')
-  const common = { port: opts.port, docsDir }
+  const slug = opts.sourceType === 'url' ? slugFromUrl(opts.input) : slugFromLabel(opts.label ?? 'topic')
+  prepareTopicDir(docsDir, slug)
 
-  const { slug, items } = await runOutlineStage({ prompt: opts.prompt, ...common }, opts.events)
-  const refine = await runRefineStage(common, slug, items, opts.events)
-  await runTagStage(common, slug, opts.events)
+  const { items } = await runOutlineStage({ ...opts, docsDir, slug }, opts.events)
+  const refine = await runRefineStage({ port: opts.port, docsDir }, slug, items, opts.events)
+  await runTagStage({ port: opts.port, docsDir }, slug, opts.events)
 
   return { slug, chunksWritten: refine.chunksWritten, itemsFailed: refine.itemsFailed }
 }

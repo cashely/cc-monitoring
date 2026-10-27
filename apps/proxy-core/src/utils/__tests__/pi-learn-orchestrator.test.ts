@@ -7,6 +7,12 @@ jest.mock('../pi-runtime.js', () => ({
   createPiSession: jest.fn(),
 }))
 
+// Mock pi-browser-tools: orchestrator 经 web-crawler 间接加载它，而其依赖 typebox（ESM）jest 无法 transform。
+// 这些用例全部走 file 模式，crawlSite 不会被调用；web-crawler 的 slug 纯函数仍用真实实现。
+jest.mock('../pi-browser-tools.js', () => ({
+  runEgoBrowser: jest.fn(),
+}))
+
 import { createPiSession } from '../pi-runtime.js'
 import { runLearnPipeline, type LearnPipelineEvents } from '../pi-learn-orchestrator.js'
 
@@ -50,6 +56,27 @@ class FakeSession {
         durationMs: 12,
         result: { content: [{ type: 'text', text: 'ok' }] },
       })
+    }
+  }
+
+  /** 包装一个 S2 handler：先 emit read_source 成功（S2 readSourceOk 判定），再跑 inner */
+  static readSourceThen(inner: SessionHandler): SessionHandler {
+    return async function (this: FakeSession, prompt: string) {
+      this.emit({
+        type: 'tool_execution_start',
+        toolCallId: 'read-1',
+        toolName: 'read_source',
+        args: { topic: 'x' },
+      })
+      this.emit({
+        type: 'tool_execution_end',
+        toolCallId: 'read-1',
+        toolName: 'read_source',
+        isError: false,
+        durationMs: 3,
+        result: { content: [{ type: 'text', text: 'sources' }] },
+      })
+      await inner.call(this, prompt)
     }
   }
 
@@ -114,7 +141,9 @@ describe('pi-learn-orchestrator', () => {
 
     await expect(
       runLearnPipeline({
-        prompt: 'https://example.com/x',
+        sourceType: 'file',
+        input: '# body',
+        label: 'my-topic.md',
         port: 9999,
         events: makeEvents(),
         docsDir: tmpDir,
@@ -133,13 +162,21 @@ describe('pi-learn-orchestrator', () => {
     ]
     const slug = 'my-topic'
 
-    // S1 outline session: 写 outline.json
+    // S1 outline session: 写 outline.json + seed index.json（真实流程由 add_outline 工具做）。
+    // 必须在 session handler 内做：pipeline 开头的 prepareTopicDir 会清空重建 topic 目录。
     mockCreatePiSession.mockImplementationOnce(async () => {
       return new FakeSession(async () => {
         await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
         await fsp.writeFile(
           path.join(tmpDir, slug, 'outline.json'),
-          JSON.stringify({ slug, source: 'source.md', items }, null, 2),
+          JSON.stringify({ slug, source: 'sources/', items }, null, 2),
+        )
+        await fsp.writeFile(
+          path.join(tmpDir, slug, 'index.json'),
+          JSON.stringify({ slug, title: 'My Topic', summary: '(refining)', tags: [], chunks: [
+            { id: 'chunk-001', title: '概念A', summary: 'aaa', tags: [] },
+            { id: 'chunk-003', title: '概念C', summary: 'ccc', tags: [] },
+          ] }, null, 2),
         )
       }) as any
     })
@@ -151,20 +188,10 @@ describe('pi-learn-orchestrator', () => {
         `# 概念${'ABC'[i]}`,
       )
     }
-    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(async () => { await writeChunk(0) }) as any)
-    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(async () => {}) as any)
-    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(async () => {}) as any)
-    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(async () => { await writeChunk(2) }) as any)
-
-    // 手动 seed index.json（真实流程由 add_outline 工具做，测试里没跑）
-    await fsp.mkdir(path.join(tmpDir, slug), { recursive: true })
-    await fsp.writeFile(
-      path.join(tmpDir, slug, 'index.json'),
-      JSON.stringify({ slug, title: 'My Topic', summary: '(refining)', tags: [], chunks: [
-        { id: 'chunk-001', title: '概念A', summary: 'aaa', tags: [] },
-        { id: 'chunk-003', title: '概念C', summary: 'ccc', tags: [] },
-      ] }, null, 2),
-    )
+    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(FakeSession.readSourceThen(async () => { await writeChunk(0) })) as any)
+    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(FakeSession.readSourceThen(async () => {})) as any)
+    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(FakeSession.readSourceThen(async () => {})) as any)
+    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(FakeSession.readSourceThen(async () => { await writeChunk(2) })) as any)
 
     // S3: 兜底 mock（mockImplementationOnce 已用完），handler 内 emit add_topic
     mockCreatePiSession.mockImplementation(async () => {
@@ -173,7 +200,9 @@ describe('pi-learn-orchestrator', () => {
 
     const events = makeEvents()
     const result = await runLearnPipeline({
-      prompt: 'https://example.com/x',
+      sourceType: 'file',
+      input: '# body',
+      label: `${slug}.md`,
       port: 9999,
       events,
       docsDir: tmpDir,
@@ -193,28 +222,25 @@ describe('pi-learn-orchestrator', () => {
     const items = [{ id: 'a', title: '概念A', oneLine: 'aaa' }]
     const slug = 'happy-topic'
 
-    // 预先 seed index.json + chunk（真实流程由 add_outline / add_chunk 工具写）
-    await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
-    await fsp.writeFile(
-      path.join(tmpDir, slug, 'index.json'),
-      JSON.stringify({ slug, title: 'Happy', summary: '(refining)', tags: [], chunks: [
-        { id: 'chunk-001', title: '概念A', summary: 'aaa', tags: [] },
-      ] }, null, 2),
-    )
-    await fsp.writeFile(path.join(tmpDir, slug, 'chunks', 'chunk-001.md'), '# 概念A')
-
-    // S1: session 写 outline.json
+    // S1: session 写 outline.json，并 seed index.json + chunk（真实流程由 add_outline / add_chunk 工具写）
     mockCreatePiSession.mockImplementationOnce(async () => {
       return new FakeSession(async () => {
         await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
         await fsp.writeFile(
           path.join(tmpDir, slug, 'outline.json'),
-          JSON.stringify({ slug, source: 'source.md', items }, null, 2),
+          JSON.stringify({ slug, source: 'sources/', items }, null, 2),
         )
+        await fsp.writeFile(
+          path.join(tmpDir, slug, 'index.json'),
+          JSON.stringify({ slug, title: 'Happy', summary: '(refining)', tags: [], chunks: [
+            { id: 'chunk-001', title: '概念A', summary: 'aaa', tags: [] },
+          ] }, null, 2),
+        )
+        await fsp.writeFile(path.join(tmpDir, slug, 'chunks', 'chunk-001.md'), '# 概念A')
       }) as any
     })
-    // S2 item0: chunk-001.md 已存在，session 啥也不做
-    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(async () => {}) as any)
+    // S2 item0: chunk-001.md 已存在，session 仅 emit read_source 成功
+    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(FakeSession.readSourceThen(async () => {})) as any)
     // S3: handler 内 emit add_topic 带非空 tags
     mockCreatePiSession.mockImplementationOnce(async () => {
       return new FakeSession(FakeSession.addTopicHandler(['synonym-a', 'hypernym-b'])) as any
@@ -222,7 +248,9 @@ describe('pi-learn-orchestrator', () => {
 
     const events = makeEvents()
     const result = await runLearnPipeline({
-      prompt: 'x',
+      sourceType: 'file',
+      input: '# body',
+      label: `${slug}.md`,
       port: 9999,
       events,
       docsDir: tmpDir,
@@ -236,15 +264,23 @@ describe('pi-learn-orchestrator', () => {
 
   test('S1 outline.json parse 失败 → stageEnd(outline) 仍发出，再 throw', async () => {
     const slug = 'broken-topic'
-    await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
-    // 写一个非法 JSON 的 outline.json
-    await fsp.writeFile(path.join(tmpDir, slug, 'outline.json'), '{not valid json', 'utf8')
 
-    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(async () => {}) as any)
+    // S1 session 写一个非法 JSON 的 outline.json（prepareTopicDir 已先清空目录，故须在 handler 内写）
+    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(async () => {
+      await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
+      await fsp.writeFile(path.join(tmpDir, slug, 'outline.json'), '{not valid json', 'utf8')
+    }) as any)
 
     const events = makeEvents()
     await expect(
-      runLearnPipeline({ prompt: 'x', port: 9999, events, docsDir: tmpDir }),
+      runLearnPipeline({
+        sourceType: 'file',
+        input: '# body',
+        label: `${slug}.md`,
+        port: 9999,
+        events,
+        docsDir: tmpDir,
+      }),
     ).rejects.toThrow()
 
     // stageEnd 必须在 throw 之前发出
@@ -258,13 +294,19 @@ describe('pi-learn-orchestrator', () => {
     ]
     const slug = 'err-topic'
 
-    // S1: 写 outline.json
+    // S1: 写 outline.json + seed index.json
     mockCreatePiSession.mockImplementationOnce(async () => {
       return new FakeSession(async () => {
         await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
         await fsp.writeFile(
           path.join(tmpDir, slug, 'outline.json'),
-          JSON.stringify({ slug, source: 'source.md', items }, null, 2),
+          JSON.stringify({ slug, source: 'sources/', items }, null, 2),
+        )
+        await fsp.writeFile(
+          path.join(tmpDir, slug, 'index.json'),
+          JSON.stringify({ slug, title: 'Err', summary: '(refining)', tags: [], chunks: [
+            { id: 'chunk-002', title: '概念B', summary: 'bbb', tags: [] },
+          ] }, null, 2),
         )
       }) as any
     })
@@ -274,29 +316,26 @@ describe('pi-learn-orchestrator', () => {
     })
     // S2 item1: 成功写 chunk-002.md
     mockCreatePiSession.mockImplementationOnce(async () => {
-      return new FakeSession(async () => {
+      return new FakeSession(FakeSession.readSourceThen(async () => {
         await fsp.writeFile(
           path.join(tmpDir, slug, 'chunks', 'chunk-002.md'),
           '# 概念B',
         )
-      }) as any
+      })) as any
     })
     // S3: handler 内 emit add_topic
     mockCreatePiSession.mockImplementation(async () => {
       return new FakeSession(FakeSession.addTopicHandler(['tag1'])) as any
     })
 
-    await fsp.mkdir(path.join(tmpDir, slug), { recursive: true })
-    await fsp.writeFile(
-      path.join(tmpDir, slug, 'index.json'),
-      JSON.stringify({ slug, title: 'Err', summary: '(refining)', tags: [], chunks: [
-        { id: 'chunk-002', title: '概念B', summary: 'bbb', tags: [] },
-      ] }, null, 2),
-    )
-
     const events = makeEvents()
     const result = await runLearnPipeline({
-      prompt: 'x', port: 9999, events, docsDir: tmpDir,
+      sourceType: 'file',
+      input: '# body',
+      label: `${slug}.md`,
+      port: 9999,
+      events,
+      docsDir: tmpDir,
     })
 
     // item0 失败（port down），item1 成功
@@ -314,28 +353,25 @@ describe('pi-learn-orchestrator', () => {
     const items = [{ id: 'a', title: '概念A', oneLine: 'aaa' }]
     const slug = 'retry-topic'
 
-    // 预 seed
-    await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
-    await fsp.writeFile(
-      path.join(tmpDir, slug, 'index.json'),
-      JSON.stringify({ slug, title: 'Retry', summary: '(refining)', tags: [], chunks: [
-        { id: 'chunk-001', title: '概念A', summary: 'aaa', tags: [] },
-      ] }, null, 2),
-    )
-    await fsp.writeFile(path.join(tmpDir, slug, 'chunks', 'chunk-001.md'), '# A')
-
-    // S1: 写 outline.json
+    // S1: 写 outline.json + seed index.json + chunk
     mockCreatePiSession.mockImplementationOnce(async () => {
       return new FakeSession(async () => {
         await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
         await fsp.writeFile(
           path.join(tmpDir, slug, 'outline.json'),
-          JSON.stringify({ slug, source: 'source.md', items }, null, 2),
+          JSON.stringify({ slug, source: 'sources/', items }, null, 2),
         )
+        await fsp.writeFile(
+          path.join(tmpDir, slug, 'index.json'),
+          JSON.stringify({ slug, title: 'Retry', summary: '(refining)', tags: [], chunks: [
+            { id: 'chunk-001', title: '概念A', summary: 'aaa', tags: [] },
+          ] }, null, 2),
+        )
+        await fsp.writeFile(path.join(tmpDir, slug, 'chunks', 'chunk-001.md'), '# A')
       }) as any
     })
-    // S2 item0: chunk 已存在
-    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(async () => {}) as any)
+    // S2 item0: chunk 已存在，仅 read_source 成功
+    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(FakeSession.readSourceThen(async () => {})) as any)
     // S3 try0: add_topic 带空 tags → 不算成功
     mockCreatePiSession.mockImplementationOnce(async () => {
       return new FakeSession(FakeSession.addTopicHandler([])) as any
@@ -347,7 +383,12 @@ describe('pi-learn-orchestrator', () => {
 
     const events = makeEvents()
     const result = await runLearnPipeline({
-      prompt: 'x', port: 9999, events, docsDir: tmpDir,
+      sourceType: 'file',
+      input: '# body',
+      label: `${slug}.md`,
+      port: 9999,
+      events,
+      docsDir: tmpDir,
     })
 
     expect(result.slug).toBe(slug)
@@ -358,27 +399,25 @@ describe('pi-learn-orchestrator', () => {
     const items = [{ id: 'a', title: '概念A', oneLine: 'aaa' }]
     const slug = 'err-tag-topic'
 
-    await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
-    await fsp.writeFile(
-      path.join(tmpDir, slug, 'index.json'),
-      JSON.stringify({ slug, title: 'T', summary: '(refining)', tags: [], chunks: [
-        { id: 'chunk-001', title: '概念A', summary: 'aaa', tags: [] },
-      ] }, null, 2),
-    )
-    await fsp.writeFile(path.join(tmpDir, slug, 'chunks', 'chunk-001.md'), '# A')
-
-    // S1: 写 outline.json
+    // S1: 写 outline.json + seed index.json + chunk
     mockCreatePiSession.mockImplementationOnce(async () => {
       return new FakeSession(async () => {
         await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
         await fsp.writeFile(
           path.join(tmpDir, slug, 'outline.json'),
-          JSON.stringify({ slug, source: 'source.md', items }, null, 2),
+          JSON.stringify({ slug, source: 'sources/', items }, null, 2),
         )
+        await fsp.writeFile(
+          path.join(tmpDir, slug, 'index.json'),
+          JSON.stringify({ slug, title: 'T', summary: '(refining)', tags: [], chunks: [
+            { id: 'chunk-001', title: '概念A', summary: 'aaa', tags: [] },
+          ] }, null, 2),
+        )
+        await fsp.writeFile(path.join(tmpDir, slug, 'chunks', 'chunk-001.md'), '# A')
       }) as any
     })
-    // S2 item0: chunk 已存在
-    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(async () => {}) as any)
+    // S2 item0: chunk 已存在，仅 read_source 成功
+    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(FakeSession.readSourceThen(async () => {})) as any)
     // S3 try0: add_topic 带非空 tags 但工具执行失败 → 必须重试
     mockCreatePiSession.mockImplementationOnce(async () => {
       return new FakeSession(FakeSession.addTopicErrorHandler(['bad-tag'])) as any
@@ -389,7 +428,14 @@ describe('pi-learn-orchestrator', () => {
     })
 
     const events = makeEvents()
-    const result = await runLearnPipeline({ prompt: 'x', port: 9999, events, docsDir: tmpDir })
+    const result = await runLearnPipeline({
+      sourceType: 'file',
+      input: '# body',
+      label: `${slug}.md`,
+      port: 9999,
+      events,
+      docsDir: tmpDir,
+    })
 
     expect(result.slug).toBe(slug)
     expect(events.calls).toContain('stageEnd:tag')
@@ -401,20 +447,17 @@ describe('pi-learn-orchestrator', () => {
     const items = [{ id: 'a', title: '概念A', oneLine: 'aaa' }]
     const slug = 'orphan-topic'
 
-    // index.json 存在但 chunks 为空（add_chunk 没被调）
-    await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
-    await fsp.writeFile(
-      path.join(tmpDir, slug, 'index.json'),
-      JSON.stringify({ slug, title: 'O', summary: '(refining)', tags: [], chunks: [] }, null, 2),
-    )
-
-    // S1: 写 outline.json
+    // S1: 写 outline.json + seed index.json（chunks 为空，模拟 add_chunk 没被调）
     mockCreatePiSession.mockImplementationOnce(async () => {
       return new FakeSession(async () => {
         await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
         await fsp.writeFile(
           path.join(tmpDir, slug, 'outline.json'),
-          JSON.stringify({ slug, source: 'source.md', items }, null, 2),
+          JSON.stringify({ slug, source: 'sources/', items }, null, 2),
+        )
+        await fsp.writeFile(
+          path.join(tmpDir, slug, 'index.json'),
+          JSON.stringify({ slug, title: 'O', summary: '(refining)', tags: [], chunks: [] }, null, 2),
         )
       }) as any
     })
@@ -422,15 +465,22 @@ describe('pi-learn-orchestrator', () => {
     const writeOrphan = async () => {
       await fsp.writeFile(path.join(tmpDir, slug, 'chunks', 'chunk-001.md'), '# A')
     }
-    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(async () => { await writeOrphan() }) as any)
-    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(async () => { await writeOrphan() }) as any)
+    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(FakeSession.readSourceThen(async () => { await writeOrphan() })) as any)
+    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(FakeSession.readSourceThen(async () => { await writeOrphan() })) as any)
     // S3: 兜底成功（index.json chunks 为空也能跑，add_topic 只覆盖元数据）
     mockCreatePiSession.mockImplementation(async () => {
       return new FakeSession(FakeSession.addTopicHandler(['tag1'])) as any
     })
 
     const events = makeEvents()
-    const result = await runLearnPipeline({ prompt: 'x', port: 9999, events, docsDir: tmpDir })
+    const result = await runLearnPipeline({
+      sourceType: 'file',
+      input: '# body',
+      label: `${slug}.md`,
+      port: 9999,
+      events,
+      docsDir: tmpDir,
+    })
 
     expect(result.chunksWritten).toBe(0)
     expect(result.itemsFailed).toBe(1)

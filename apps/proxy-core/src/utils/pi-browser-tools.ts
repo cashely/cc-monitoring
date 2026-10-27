@@ -71,7 +71,7 @@ export function runEgoBrowser(
       if (settled) return
       if (code === 0) {
         // 新版 ego cliLog 走 stderr；stdout 非空用 stdout，否则回退 stderr（新旧兼容）
-        const out = stdout.trim() ? stdout : stderr
+        const out = stripCliBanners(stdout.trim() ? stdout : stderr)
         finish(null, out)
       } else {
         // 非 0 退出：stderr 可能含错误；stdout 仍作为错误消息的一部分返回
@@ -82,6 +82,14 @@ export function runEgoBrowser(
 
     child.stdin.end(script, 'utf-8')
   })
+}
+
+/** 过滤 ego-browser 自身打到输出流的横幅行（如升级 notice），保留脚本 cliLog 的真实输出 */
+export function stripCliBanners(text: string): string {
+  return text
+    .split('\n')
+    .filter((line) => !line.startsWith('[ego-browser:notice]'))
+    .join('\n')
 }
 
 // ---------- 工具实现辅助 ----------

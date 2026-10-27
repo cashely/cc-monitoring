@@ -33,7 +33,9 @@ export function createChatConnection(
   prompt: string,
   sessionId?: string,
   mode: 'chat' | 'learn' = 'chat',
-  thinkingLevel?: ThinkingLevel
+  thinkingLevel?: ThinkingLevel,
+  sourceType?: 'url' | 'file',
+  label?: string
 ): SSEConnection {
   const abortController = new AbortController()
 
@@ -57,7 +59,9 @@ export function createChatConnection(
       stream: true,
       sessionId,
       mode,
-      thinkingLevel: thinkingLevel ?? 'off'
+      thinkingLevel: thinkingLevel ?? 'off',
+      sourceType: sourceType ?? null,
+      label: label ?? null
     }),
     signal: abortController.signal
   }).then(async (response) => {

@@ -186,7 +186,7 @@ export function useLearnStream() {
     setStatus('streaming')
 
     // 每次学习任务都是新建 session：不传 sessionId
-    const connection = createChatConnection(t.payload, undefined, 'learn')
+    const connection = createChatConnection(t.payload, undefined, 'learn', undefined, t.source, t.label)
     connectionRef.current = connection
     attachHandlers(connection)
   }, [attachHandlers])
