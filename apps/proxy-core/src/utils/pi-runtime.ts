@@ -79,7 +79,7 @@ async function getRuntime(port: number): Promise<ModelRuntime> {
 
 // ============================================================
 
-export type PiSessionMode = 'chat' | 'outline' | 'refine' | 'tag' | 'crawl'
+export type PiSessionMode = 'chat' | 'outline' | 'refine' | 'tag' | 'crawl' | 'reconcile'
 
 export interface CreatePiSessionOptions {
   cwd?: string
@@ -217,6 +217,8 @@ function systemPromptForMode(mode: PiSessionMode): string {
       return REFINE_SYSTEM_PROMPT
     case 'tag':
       return TAG_SYSTEM_PROMPT
+    case 'reconcile':
+      return 'Return ONLY a single minified JSON object, no prose, no code fence.'
   }
 }
 
@@ -398,6 +400,9 @@ function buildModeTools(mode: PiSessionMode, crawlGuard?: CrawlGuard): ToolDefin
       return [buildReadSourceTool(), WRITE_TOOL, KT('add_chunk')]
     case 'tag':
       return [KT('list_topics'), KT('get_topic'), KT('read_chunk'), KT('add_topic')]
+    // reconcile：无工具纯 JSON 调用
+    case 'reconcile':
+      return []
   }
 }
 
@@ -414,6 +419,8 @@ function buildToolAllowlist(mode: PiSessionMode): string[] {
       return ['read_source', 'write', 'add_chunk']
     case 'tag':
       return ['list_topics', 'get_topic', 'read_chunk', 'add_topic']
+    case 'reconcile':
+      return []
   }
 }
 
@@ -475,4 +482,56 @@ export async function createPiSession(options: CreatePiSessionOptions): Promise<
   currentSessionId = session.sessionId
 
   return session
+}
+
+// ============================================================
+// 无工具 JSON 调用（reconcile 模式）
+
+/**
+ * 从任意文本截取第一个 `{` 到最后一个 `}` 之间的子串并解析为 JSON 对象。
+ * 容忍 prose / 代码围栏包裹。无 `{` 或解析失败时抛错。
+ */
+export function extractJsonObject<T>(raw: string): T {
+  const start = raw.indexOf('{')
+  const end = raw.lastIndexOf('}')
+  if (start === -1 || end === -1 || end < start) {
+    throw new Error('no json object in response')
+  }
+  try {
+    return JSON.parse(raw.slice(start, end + 1)) as T
+  } catch {
+    throw new Error('no json object in response')
+  }
+}
+
+/**
+ * 建 reconcile（无工具）session，跑一次纯 JSON 调用并返回解析结果。
+ * instructions 与 prompt 合并为单条用户消息：规则在前，JSON 数据在后。
+ */
+export async function runJsonPrompt(opts: {
+  port: number
+  instructions: string
+  prompt: string
+}): Promise<unknown> {
+  const session = await createPiSession({ port: opts.port, mode: 'reconcile' })
+
+  // 订阅累积 assistant 文本 chunk
+  let accumulated = ''
+  const unsub = session.subscribe((ev: any) => {
+    if (ev.type === 'message_update') {
+      const ae = ev.assistantMessageEvent
+      if (ae?.type === 'text_delta' && typeof ae.delta === 'string') {
+        accumulated += ae.delta
+      }
+    }
+  })
+
+  try {
+    await session.prompt(`${opts.instructions}\n\n${opts.prompt}`)
+    await session.waitForIdle()
+  } finally {
+    unsub()
+  }
+
+  return extractJsonObject(accumulated)
 }
