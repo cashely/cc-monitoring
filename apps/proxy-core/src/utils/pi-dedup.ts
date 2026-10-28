@@ -1,5 +1,6 @@
 // learn 主题去重：纯字符串确定性预筛（不调 LLM、无 IO）
 import { readFile } from 'fs/promises'
+import fs from 'node:fs'
 import path from 'path'
 import { runJsonPrompt } from './pi-runtime.js'
 
@@ -125,5 +126,81 @@ export async function reconcileTopics(opts: {
     return { match: false }
   } catch {
     return { match: false }
+  }
+}
+
+// ---- 物理迁移：把 src 主题的 sources/chunks 统一并入 dst ----
+
+// 3 位补零编号，与 orchestrator 落盘约定一致
+function pad3(n: number): string {
+  return String(n).padStart(3, '0')
+}
+
+// 列出 dir 下的 .md 文件名（排序）；目录缺失视为空
+function listMd(dir: string): string[] {
+  try {
+    return fs.readdirSync(dir).filter(f => f.endsWith('.md')).sort()
+  } catch {
+    return []
+  }
+}
+
+// 将 src 主题物理并入 dst：sources 续号拷贝、chunks 按 dst 现有数偏移重编号，
+// 同步更新 dst index 与根 index，最后删除整个 src 目录。返回迁移后 dst 的 chunk 总数。
+// srcSlug 可能是 x.old 旁挂目录（含点，路径直接拼接）。
+export function mergeTopics(docsDir: string, srcSlug: string, dstSlug: string): number {
+  const srcDir = path.join(docsDir, srcSlug)
+  const dstDir = path.join(docsDir, dstSlug)
+
+  // dst index 必须存在，缺失直接抛错；src index 同样读取（路径直接拼，支持 x.old）
+  const dstIndex = JSON.parse(fs.readFileSync(path.join(dstDir, 'index.json'), 'utf8')) as TopicIndexLike
+  const srcIndex = JSON.parse(fs.readFileSync(path.join(srcDir, 'index.json'), 'utf8')) as TopicIndexLike
+
+  // sources：按 dst 现有数量续号，逐个读→写 dst→删 src 原件（copy→unlink，避免跨设备 rename 失败）
+  const srcSources = listMd(path.join(srcDir, 'sources'))
+  const s0 = listMd(path.join(dstDir, 'sources')).length
+  fs.mkdirSync(path.join(dstDir, 'sources'), { recursive: true })
+  srcSources.forEach((file, i) => {
+    const body = fs.readFileSync(path.join(srcDir, 'sources', file))
+    fs.writeFileSync(path.join(dstDir, 'sources', `source-${pad3(s0 + i + 1)}.md`), body)
+    fs.unlinkSync(path.join(srcDir, 'sources', file))
+  })
+
+  // chunks：src refs 按 id 排序，按 dst 现有 chunk 数偏移重编号；正文逐字拷贝不改
+  const srcRefs = [...srcIndex.chunks].sort((a, b) => a.id.localeCompare(b.id))
+  const k = dstIndex.chunks.length
+  fs.mkdirSync(path.join(dstDir, 'chunks'), { recursive: true })
+  srcRefs.forEach((ref, i) => {
+    const newId = `chunk-${pad3(k + i + 1)}`
+    const body = fs.readFileSync(path.join(srcDir, 'chunks', `${ref.id}.md`))
+    fs.writeFileSync(path.join(dstDir, 'chunks', `${newId}.md`), body)
+    fs.unlinkSync(path.join(srcDir, 'chunks', `${ref.id}.md`))
+    dstIndex.chunks.push({ ...ref, id: newId })
+  })
+
+  // 根 index：移除 slug===srcSlug 的条目（srcSlug 为 x.old 时不命中即 no-op）
+  try {
+    const rootPath = path.join(docsDir, 'index.json')
+    const root = JSON.parse(fs.readFileSync(rootPath, 'utf8')) as { topics: TopicSummary[] }
+    if (Array.isArray(root.topics)) {
+      root.topics = root.topics.filter(t => t.slug !== srcSlug)
+      fs.writeFileSync(rootPath, JSON.stringify(root, null, 2))
+    }
+  } catch {
+    // 根 index 缺失/损坏：无条目可移除，跳过
+  }
+
+  // 删除整个 src 目录，写回 dst index
+  fs.rmSync(srcDir, { recursive: true, force: true })
+  fs.writeFileSync(path.join(dstDir, 'index.json'), JSON.stringify(dstIndex, null, 2))
+  return dstIndex.chunks.length
+}
+
+// 阻断：docsDir 下存在任何 .old 旁挂目录时抛错，要求人工先处理。
+// docsDir 本身缺失时直接让 readdirSync 抛错（调用方本就应在已初始化的库上学习）。
+export function assertNoOldDirs(docsDir: string): void {
+  const oldDir = fs.readdirSync(docsDir).find(name => name.endsWith('.old'))
+  if (oldDir) {
+    throw new Error(`检测到未清理的旁挂目录 ${oldDir}，请手工处理后再学习`)
   }
 }
