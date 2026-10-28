@@ -115,6 +115,13 @@ test('mergeTopics: chunk 正文逐字不变（含花括号与换行）', () => {
   expect(fs.readFileSync(path.join(tmp, 'dsta', 'chunks', 'chunk-002.md'), 'utf8')).toBe(body)
 })
 
+test('mergeTopics: src 与 dst 相同 → 抛错防自合并', () => {
+  const tmp = freshTmp()
+  layoutTopic(tmp, 't', {})
+  writeRoot(tmp, ['t'])
+  expect(() => mergeTopics(tmp, 't', 't')).toThrow('mergeTopics: src 与 dst 相同')
+})
+
 test('assertNoOldDirs: 存在 x.old → 抛精确错误；无 → 不抛', () => {
   const withOld = freshTmp()
   fs.mkdirSync(path.join(withOld, 'x.old'))

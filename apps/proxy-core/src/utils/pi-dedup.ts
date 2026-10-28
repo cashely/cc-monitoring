@@ -102,7 +102,7 @@ export async function reconcileTopics(opts: {
   let chosen: typeof targets
   if (hits.length > 0) {
     chosen = hits
-  } else if (targets.length <= LLM_FULL_SCAN_MAX) {
+  } else if (targets.length > 0 && targets.length <= LLM_FULL_SCAN_MAX) {
     chosen = targets
   } else {
     return { match: false }
@@ -125,8 +125,19 @@ export async function reconcileTopics(opts: {
   const prompt = `新主题：\n${JSON.stringify(opts.candidate)}\n\n候选已有主题：\n${JSON.stringify(chosen)}`
 
   try {
-    const result = await runJsonPrompt({ port: opts.port, instructions, prompt }) as ReconcileResult
-    if (result && result.match === true) return result
+    const result = await runJsonPrompt({ port: opts.port, instructions, prompt }) as Partial<ReconcileResult>
+    // 正载荷必须完整，且 targetSlug 必须在实际提供的 chosen 之中，否则安全降级
+    // （同时挡住候选自身 slug 回显、../ 路径穿越及任何未提供的目标）
+    const chosenSlugs = chosen.map(t => t.slug)
+    if (
+      result && result.match === true &&
+      typeof result.targetSlug === 'string' && chosenSlugs.includes(result.targetSlug) &&
+      typeof result.mergedTitle === 'string' &&
+      typeof result.mergedSummary === 'string' &&
+      (!opts.wantItems || Array.isArray(result.itemsToAdd))
+    ) {
+      return result as ReconcileResult
+    }
     return { match: false }
   } catch {
     return { match: false }
@@ -153,6 +164,8 @@ function listMd(dir: string): string[] {
 // 同步更新 dst index 与根 index，最后删除整个 src 目录。返回迁移后 dst 的 chunk 总数。
 // srcSlug 可能是 x.old 旁挂目录（含点，路径直接拼接）。
 export function mergeTopics(docsDir: string, srcSlug: string, dstSlug: string): number {
+  // 防护自合并：LLM 可能回显候选自身 slug；自合并会重复 refs、移除自身根注册并删目录（数据丢失）
+  if (srcSlug === dstSlug) throw new Error('mergeTopics: src 与 dst 相同')
   const srcDir = path.join(docsDir, srcSlug)
   const dstDir = path.join(docsDir, dstSlug)
 

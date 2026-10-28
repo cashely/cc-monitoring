@@ -14,8 +14,8 @@ beforeEach(async () => {
 })
 
 test('预筛命中 → 调 LLM，match=true 透传 targetSlug/mergedTitle/itemsToAdd', async () => {
-  mockJson.mockResolvedValue({ match: true, targetSlug: 'a', mergedTitle: 'M', confidence: 0.62,
-    itemsToAdd: [{ id: 'x', title: 'X', oneLine: 'x' }] })
+  mockJson.mockResolvedValue({ match: true, targetSlug: 'a', mergedTitle: 'M', mergedSummary: 's',
+    confidence: 0.62, itemsToAdd: [{ id: 'x', title: 'X', oneLine: 'x' }] })
   const r = await reconcileTopics({ port: 1, docsDir: tmp, wantItems: true,
     candidate: { slug: 'new', title: 'React Hooks', tags: [] },
     targets: [{ slug: 'a', title: 'React Hooks', summary: '', tags: [], chunks: [] }] })
@@ -27,6 +27,27 @@ test('LLM 抛错（坏 JSON）→ 安全返回 match=false', async () => {
     candidate: { slug: 'new', title: 'T', tags: [] },
     targets: [{ slug: 'a', title: 'T', summary: '', tags: [], chunks: [] }] }))
     .resolves.toMatchObject({ match: false })
+})
+test('正载荷回显候选自身 slug（未提供的目标）→ match=false', async () => {
+  mockJson.mockResolvedValue({ match: true, targetSlug: 'new', mergedTitle: 'M',
+    mergedSummary: 's', itemsToAdd: [] })
+  const r = await reconcileTopics({ port: 1, docsDir: tmp, wantItems: true,
+    candidate: { slug: 'new', title: 'React Hooks', tags: [] },
+    targets: [{ slug: 'a', title: 'React Hooks', summary: '', tags: [], chunks: [] }] })
+  expect(r).toEqual({ match: false })
+})
+test('正载荷缺 mergedTitle → match=false', async () => {
+  mockJson.mockResolvedValue({ match: true, targetSlug: 'a', mergedSummary: 's', itemsToAdd: [] })
+  const r = await reconcileTopics({ port: 1, docsDir: tmp, wantItems: true,
+    candidate: { slug: 'new', title: 'React Hooks', tags: [] },
+    targets: [{ slug: 'a', title: 'React Hooks', summary: '', tags: [], chunks: [] }] })
+  expect(r).toEqual({ match: false })
+})
+test('空目标 → 不调 LLM，match=false', async () => {
+  const r = await reconcileTopics({ port: 1, docsDir: tmp, wantItems: false,
+    candidate: { slug: 'new', title: 'zzz', tags: [] }, targets: [] })
+  expect(r).toEqual({ match: false })
+  expect(mockJson).not.toHaveBeenCalled()
 })
 test('预筛空且目标>20 → 不调 LLM，match=false', async () => {
   const targets = Array.from({ length: 21 }, (_, i) =>
