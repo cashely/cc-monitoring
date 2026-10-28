@@ -268,6 +268,8 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
     stageItemEnd: () => {},
     stageItemFailed: () => {},
     stageEnd: () => {},
+    roundStart: () => {},
+    roundEnd: () => {},
     textDelta: () => {},
     thinkingDelta: () => {},
     toolStart: () => {},
@@ -344,26 +346,23 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
-      // SSE adapter: LearnPipelineEvents → SSE data events
-      let roundIndex = 0
-      let currentRoundIndex = 0
+      // SSE adapter: LearnPipelineEvents → SSE data events。
+      // 轮次由 orchestrator 按 assistant 交互驱动，这里直接透传 roundStart/roundEnd。
       const events: LearnPipelineEvents = {
-        stageStart: (stage, totalItems) => {
-          currentRoundIndex = roundIndex
-          sendSSE('data', JSON.stringify({ type: 'round_start', roundIndex }))
-          sendSSE('data', JSON.stringify({ type: 'stage_start', stage, totalItems }))
-          roundIndex += 1
-        },
+        stageStart: (stage, totalItems) =>
+          sendSSE('data', JSON.stringify({ type: 'stage_start', stage, totalItems })),
         stageItemStart: (index, total, title) =>
           sendSSE('data', JSON.stringify({ type: 'stage_item_start', index, total, title })),
         stageItemEnd: (index, chunkId) =>
           sendSSE('data', JSON.stringify({ type: 'stage_item_end', index, chunkId })),
         stageItemFailed: (index, title, reason) =>
           sendSSE('data', JSON.stringify({ type: 'stage_item_failed', index, title, reason })),
-        stageEnd: (stage) => {
-          sendSSE('data', JSON.stringify({ type: 'round_end', roundIndex: currentRoundIndex }))
-          sendSSE('data', JSON.stringify({ type: 'stage_end', stage }))
-        },
+        stageEnd: (stage) =>
+          sendSSE('data', JSON.stringify({ type: 'stage_end', stage })),
+        roundStart: (roundIndex) =>
+          sendSSE('data', JSON.stringify({ type: 'round_start', roundIndex })),
+        roundEnd: (roundIndex) =>
+          sendSSE('data', JSON.stringify({ type: 'round_end', roundIndex })),
         textDelta: (delta) =>
           sendSSE('data', JSON.stringify({ type: 'text_delta', content: delta })),
         thinkingDelta: (delta) =>

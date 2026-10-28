@@ -7,14 +7,57 @@ jest.mock('../pi-runtime.js', () => ({
   createPiSession: jest.fn(),
 }))
 
-// Mock pi-browser-tools: orchestrator 经 web-crawler 间接加载它，而其依赖 typebox（ESM）jest 无法 transform。
-// 这些用例全部走 file 模式，crawlSite 不会被调用；web-crawler 的 slug 纯函数仍用真实实现。
-jest.mock('../pi-browser-tools.js', () => ({
-  runEgoBrowser: jest.fn(),
-}))
+// Mock pi-crawl-tools：url 模式的 CrawlGuard 替身（fixture graph，saveSource 落真实 tmpDir）。
+// 图为闭包共享变量，用例通过 __setGraph 配置。
+jest.mock('../pi-crawl-tools.js', () => {
+  const fs = require('node:fs')
+  const p = require('node:path')
+
+  let graph: Record<string, { title: string; text: string; links: string[] }> = {}
+
+  // 在构造函数 this 上初始化（jest mock.instances 才能拿到带状态的实例）
+  const FakeCrawlGuard = jest.fn(function (this: any, gopts: { entryUrl: string; docsDir: string; slug: string }) {
+    let saved = 0
+    this.gopts = gopts
+    this.closed = false
+    this.open = async () => {
+      const page = graph[gopts.entryUrl]
+      if (!page) throw new Error(`fake guard fixture missing: ${gopts.entryUrl}`)
+      return { url: gopts.entryUrl, ...page }
+    }
+    this.visit = async (url: string) => {
+      const page = graph[url]
+      if (!page) throw new Error(`fake guard fixture missing: ${url}`)
+      return { url, ...page }
+    }
+    this.saveSource = (url: string): number => {
+      const page = graph[url]
+      if (!page) throw new Error(`fake guard save missing: ${url}`)
+      const dir = p.join(gopts.docsDir, gopts.slug, 'sources')
+      fs.mkdirSync(dir, { recursive: true })
+      const name = `source-${String(saved + 1).padStart(3, '0')}.md`
+      fs.writeFileSync(p.join(dir, name), `Source: ${url}\n\n${page.text}`, 'utf8')
+      saved += 1
+      return saved
+    }
+    this.close = async () => { this.closed = true }
+  })
+
+  return {
+    CrawlGuard: FakeCrawlGuard,
+    createCrawlTools: jest.fn(() => []),
+    /** 测试用：替换 fixture graph（所有后续新建 guard 生效） */
+    __setGraph: (g: typeof graph) => { graph = g },
+  }
+})
 
 import { createPiSession } from '../pi-runtime.js'
 import { runLearnPipeline, type LearnPipelineEvents } from '../pi-learn-orchestrator.js'
+// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+const crawlToolsMock: {
+  CrawlGuard: jest.Mock
+  __setGraph: (g: Record<string, { title: string; text: string; links: string[] }>) => void
+} = require('../pi-crawl-tools.js')
 
 const mockCreatePiSession = createPiSession as jest.MockedFunction<typeof createPiSession>
 
@@ -30,7 +73,10 @@ class FakeSession {
     return () => { this.listeners.delete(fn) }
   }
   async prompt(text: string): Promise<void> {
+    // "轮次" = 一次 assistant 交互（message_start → message_end）
+    this.emit({ type: 'message_start', message: { role: 'assistant' } })
     await this.handler(text)
+    this.emit({ type: 'message_end', message: { role: 'assistant' } })
     this.emit({ type: 'agent_end', messages: [], willRetry: false })
   }
   async waitForIdle(): Promise<void> {}
@@ -112,6 +158,8 @@ function makeEvents(): LearnPipelineEvents & { calls: string[] } {
     stageItemFailed: (i: number, _title: string, reason: string) =>
       calls.push(`stageItemFailed:${i}:${reason}`),
     stageEnd: (stage: string) => calls.push(`stageEnd:${stage}`),
+    roundStart: (i: number) => calls.push(`roundStart:${i}`),
+    roundEnd: (i: number) => calls.push(`roundEnd:${i}`),
     textDelta: () => {},
     thinkingDelta: () => {},
     toolStart: () => {},
@@ -120,12 +168,63 @@ function makeEvents(): LearnPipelineEvents & { calls: string[] } {
   return ev as unknown as LearnPipelineEvents & { calls: string[] }
 }
 
+// ---------- 默认 session 路由（url 用例用；Once / 显式 implementation 优先） ----------
+
+/** crawl handler：open → save_source → 沿 links 逐页 visit + save_source */
+function makeCrawlHandler(guard: any): SessionHandler {
+  return async function (this: FakeSession) {
+    const entry = await guard.open()
+    guard.saveSource(entry.url)
+    for (const link of entry.links ?? []) {
+      const child = await guard.visit(link)
+      guard.saveSource(child.url)
+    }
+  }
+}
+
+/** outline handler：从 prompt 解析 slug，写 outline.json + seed index.json（1 item） */
+function defaultOutlineHandler(): SessionHandler {
+  return async function (this: FakeSession, prompt: string) {
+    const slug = prompt.match(/slug: ([^\s\n]+)/)![1]
+    await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
+    const items = [{ id: 'a', title: '概念A', oneLine: 'aaa' }]
+    await fsp.writeFile(
+      path.join(tmpDir, slug, 'outline.json'),
+      JSON.stringify({ slug, source: 'sources/', items }, null, 2),
+    )
+    await fsp.writeFile(
+      path.join(tmpDir, slug, 'index.json'),
+      JSON.stringify({ slug, title: 'Default', summary: '(refining)', tags: [], chunks: [
+        { id: 'chunk-001', title: '概念A', summary: 'aaa', tags: [] },
+      ] }, null, 2),
+    )
+  }
+}
+
 // ---------- Test scaffolding ----------
 let tmpDir: string
 
 beforeEach(async () => {
   tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'learn-pipe-'))
   mockCreatePiSession.mockReset()
+  // CrawlGuard 的 mock 由 jest.mock 工厂创建，生命周期跨用例，需手动清调用记录
+  crawlToolsMock.CrawlGuard.mockClear()
+  // 默认按 mode 路由；具体用例的 mockImplementationOnce 优先
+  mockCreatePiSession.mockImplementation(async (options) => {
+    if (options.mode === 'crawl') {
+      return new FakeSession(makeCrawlHandler((options as any).crawlGuard)) as any
+    }
+    if (options.mode === 'outline') {
+      return new FakeSession(defaultOutlineHandler()) as any
+    }
+    if (options.mode === 'refine') {
+      return new FakeSession(FakeSession.readSourceThen(async () => {
+        const slug = 'pi'
+        await fsp.writeFile(path.join(tmpDir, slug, 'chunks', 'chunk-001.md'), '# 概念A')
+      })) as any
+    }
+    return new FakeSession(FakeSession.addTopicHandler(['tag-a', 'tag-b'])) as any
+  })
 })
 
 afterEach(async () => {
@@ -487,5 +586,130 @@ describe('pi-learn-orchestrator', () => {
     const failed = events.calls.filter((c) => c.startsWith('stageItemFailed:'))
     expect(failed).toHaveLength(1)
     expect(failed[0]).toContain('add_chunk 未调用')
+  })
+
+  test('runPrompt 异常退出时在途轮次补 roundEnd：session 只 emit message_start 就 reject', async () => {
+    // 自造一个 session：prompt 期间只发 assistant message_start 随后抛错（模拟 abort）
+    const listeners = new Set<(ev: any) => void>()
+    const broken = {
+      sessionId: 'broken',
+      subscribe: (fn: (ev: any) => void) => {
+        listeners.add(fn)
+        return () => { listeners.delete(fn) }
+      },
+      prompt: async () => {
+        for (const l of listeners) l({ type: 'message_start', message: { role: 'assistant' } })
+        throw new Error('aborted mid-round')
+      },
+      waitForIdle: async () => {},
+      abort: async () => {},
+    }
+    mockCreatePiSession.mockImplementation(async () => broken as any)
+
+    const events = makeEvents()
+    await expect(
+      runLearnPipeline({
+        sourceType: 'file',
+        input: '# body',
+        label: 'x.md',
+        port: 9999,
+        events,
+        docsDir: tmpDir,
+      }),
+    ).rejects.toThrow()
+
+    // 轮次必须闭合：roundStart:0 有且仅有一次配对的 roundEnd:0
+    expect(events.calls).toContain('roundStart:0')
+    expect(events.calls.filter((c) => c === 'roundEnd:0')).toHaveLength(1)
+  })
+
+  // ============================================================
+  // url 模式：crawl 阶段由 LLM agent 驱动
+  // ============================================================
+
+  test('url happy path：crawl 收集入口+同站子页，round 数 = assistant 消息数', async () => {
+    crawlToolsMock.__setGraph({
+      'https://pi.dev/': { title: 'Entry', text: 'Entry text', links: ['https://pi.dev/child'] },
+      'https://pi.dev/child': { title: 'Child', text: 'Child text', links: [] },
+    })
+
+    const events = makeEvents()
+    const result = await runLearnPipeline({
+      sourceType: 'url',
+      input: 'https://pi.dev/',
+      port: 9999,
+      events,
+      docsDir: tmpDir,
+    })
+
+    // sources：入口 + 同站子页共 2 份
+    const files = await fsp.readdir(path.join(tmpDir, 'pi', 'sources'))
+    expect(files.filter((f) => f.endsWith('.md'))).toHaveLength(2)
+    expect(result.slug).toBe('pi')
+    expect(result.chunksWritten).toBe(1)
+
+    // round：crawl + outline + refine + tag = 4 轮，起止索引严格配对
+    expect(events.calls.filter((c) => c.startsWith('roundStart:'))).toEqual([
+      'roundStart:0', 'roundStart:1', 'roundStart:2', 'roundStart:3',
+    ])
+    expect(events.calls.filter((c) => c.startsWith('roundEnd:'))).toEqual([
+      'roundEnd:0', 'roundEnd:1', 'roundEnd:2', 'roundEnd:3',
+    ])
+  })
+
+  test('url 首轮 0 页 → 全新 guard+session 重试 1 次后成功', async () => {
+    crawlToolsMock.__setGraph({
+      'https://pi.dev/': { title: 'Entry', text: 'Entry text', links: ['https://pi.dev/child'] },
+      'https://pi.dev/child': { title: 'Child', text: 'Child text', links: [] },
+    })
+
+    // 第一个 crawl session：不保存任何页
+    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(async () => {}) as any)
+
+    const events = makeEvents()
+    const result = await runLearnPipeline({
+      sourceType: 'url',
+      input: 'https://pi.dev/',
+      port: 9999,
+      events,
+      docsDir: tmpDir,
+    })
+
+    // 两个 crawl session（guard 也重建）+ outline/refine/tag
+    const crawlSessions = mockCreatePiSession.mock.calls.filter(([o]) => o.mode === 'crawl')
+    expect(crawlSessions).toHaveLength(2)
+    expect(crawlToolsMock.CrawlGuard).toHaveBeenCalledTimes(2)
+    await expect(fsp.readdir(path.join(tmpDir, 'pi', 'sources'))).resolves.toHaveLength(2)
+    expect(result.chunksWritten).toBe(1)
+
+    // 总轮次：2 crawl + outline + refine + tag = 5
+    expect(events.calls.filter((c) => c.startsWith('roundStart:'))).toHaveLength(5)
+  })
+
+  test('url 重试仍 0 页 → throw「crawl 未收集到页面」，guard 被关闭，stageEnd(outline) 发出', async () => {
+    crawlToolsMock.__setGraph({
+      'https://pi.dev/': { title: 'Entry', text: 'Entry text', links: [] },
+    })
+
+    // 两个 crawl session 均不保存页
+    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(async () => {}) as any)
+    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(async () => {}) as any)
+
+    const events = makeEvents()
+    await expect(
+      runLearnPipeline({
+        sourceType: 'url',
+        input: 'https://pi.dev/',
+        port: 9999,
+        events,
+        docsDir: tmpDir,
+      }),
+    ).rejects.toThrow(/crawl 未收集到页面/)
+
+    // 建了 2 个 guard 且都被 close（finally 关闭当前 guard；首个 guard 在替换时关闭）
+    expect(crawlToolsMock.CrawlGuard).toHaveBeenCalledTimes(2)
+    const guards = crawlToolsMock.CrawlGuard.mock.instances as Array<{ closed: boolean }>
+    expect(guards.every((g) => g.closed)).toBe(true)
+    expect(events.calls).toContain('stageEnd:outline')
   })
 })

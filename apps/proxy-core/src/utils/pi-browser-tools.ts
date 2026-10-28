@@ -13,7 +13,7 @@ export function runEgoBrowser(
   const timeoutMs = opts.timeoutMs ?? 30_000
   return new Promise((resolve, reject) => {
     // 头部自动注入 task space 复用调用
-    const script = `const task = await useOrCreateTaskSpace('knowledge-learn')\n${scriptBody}`
+    const script = `const task = await taskSpace('knowledge-learn')\n${scriptBody}`
 
     const child = spawn('ego-browser', ['nodejs'], {
       stdio: ['pipe', 'pipe', 'pipe'],

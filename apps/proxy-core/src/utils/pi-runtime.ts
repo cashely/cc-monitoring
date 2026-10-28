@@ -22,6 +22,7 @@ import {
 import { dataDir } from './paths.js'
 import { sandboxWriteOps } from './pi-sandbox-ops.js'
 import { knowledgeStore } from './knowledge-store.js'
+import { createCrawlTools, type CrawlGuard } from './pi-crawl-tools.js'
 
 // 知识文档目录：所有文件工具的 cwd 和沙箱白名单根
 const docsDir = path.join(dataDir, 'docs')
@@ -78,12 +79,14 @@ async function getRuntime(port: number): Promise<ModelRuntime> {
 
 // ============================================================
 
-export type PiSessionMode = 'chat' | 'outline' | 'refine' | 'tag'
+export type PiSessionMode = 'chat' | 'outline' | 'refine' | 'tag' | 'crawl'
 
 export interface CreatePiSessionOptions {
   cwd?: string
   port: number
   mode: PiSessionMode
+  /** mode='crawl' 时必填：渐进抓取状态守卫 */
+  crawlGuard?: CrawlGuard
 }
 
 const KB_STRUCTURE = `Your knowledge directory (~/.cc-monitoring/docs) stores a **dictionary**: concise, distilled entries a future reader can look up. You do NOT copy source text — you digest it.
@@ -124,6 +127,21 @@ HARD RULES:
 - Do NOT write chunk files, source files, or index.json.
 - Do NOT summarize prematurely — outline only; distillation happens later.
 - After add_outline succeeds, print the returned slug and item count. Stop.`
+
+export const CRAWL_SYSTEM_PROMPT = `You are a crawl-phase worker. You drive the browser YOURSELF to incrementally fetch web pages for your assigned topic and save every useful page into sources/. Do NOT outline or write chunks.
+
+WORKFLOW:
+1. Call crawl_open to open the entry URL given in your task.
+2. Call save_source(url) to save the CURRENT page.
+3. From the page's links, pick same-site, valuable CONTENT pages — skip login/signup, navigation chrome, language switchers, pagination, and pure anchors. Call crawl_visit(url), then save_source(url) for each page.
+4. When there are no more useful links, or the page/depth limit is reached, call crawl_finish, print the returned stats, and stop.
+
+HARD RULES:
+- Write ONLY into sources/ via save_source. Never write other files.
+- Never visit cross-site URLs.
+- If a tool returns an error, do NOT retry the same URL; pick another link or finish.
+- At most ~20 pages. Prefer a few dense pages over many thin ones.
+- After crawl_finish succeeds, stop.`
 
 export const REFINE_SYSTEM_PROMPT = `You are a refine-phase worker. For ONE item from the topic's outline, produce a single dictionary chunk.
 
@@ -193,6 +211,8 @@ function systemPromptForMode(mode: PiSessionMode): string {
       return loadChatSystemPrompt()
     case 'outline':
       return OUTLINE_SYSTEM_PROMPT
+    case 'crawl':
+      return CRAWL_SYSTEM_PROMPT
     case 'refine':
       return REFINE_SYSTEM_PROMPT
     case 'tag':
@@ -365,12 +385,15 @@ const KT = (name: string): ToolDefinition => KNOWLEDGE_TOOLS.find((t) => t.name 
 const WRITE_TOOL = createWriteToolDefinition(docsDir, { operations: sandboxWriteOps }) as ToolDefinition
 
 /** 按模式构建工具集（ToolDefinition 数组，用于 customTools） */
-function buildModeTools(mode: PiSessionMode): ToolDefinition[] {
+function buildModeTools(mode: PiSessionMode, crawlGuard?: CrawlGuard): ToolDefinition[] {
   switch (mode) {
     case 'chat':
       return [KT('list_topics'), KT('get_topic'), KT('search_chunks'), KT('read_chunk')]
     case 'outline':
       return [buildReadSourceTool(), buildAddOutlineTool()]
+    case 'crawl':
+      if (!crawlGuard) throw new Error('crawl 模式必须传入 crawlGuard')
+      return createCrawlTools(crawlGuard)
     case 'refine':
       return [buildReadSourceTool(), WRITE_TOOL, KT('add_chunk')]
     case 'tag':
@@ -385,6 +408,8 @@ function buildToolAllowlist(mode: PiSessionMode): string[] {
       return ['list_topics', 'get_topic', 'search_chunks', 'read_chunk']
     case 'outline':
       return ['read_source', 'add_outline']
+    case 'crawl':
+      return ['crawl_open', 'save_source', 'crawl_visit', 'crawl_finish']
     case 'refine':
       return ['read_source', 'write', 'add_chunk']
     case 'tag':
@@ -409,7 +434,7 @@ export async function createPiSession(options: CreatePiSessionOptions): Promise<
   let currentSessionId = ''
 
   const systemPrompt = systemPromptForMode(options.mode)
-  const modeTools = buildModeTools(options.mode)
+  const modeTools = buildModeTools(options.mode, options.crawlGuard)
   const toolAllowlist = buildToolAllowlist(options.mode)
 
   const resourceLoader = new DefaultResourceLoader({

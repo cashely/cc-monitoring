@@ -7,6 +7,15 @@ jest.mock('@utils/pm2', () => ({
   getProcessStatus: jest.fn()
 }))
 
+// Mock pi-coding-agent：真实包是纯 ESM 且 exports 无 require 条件，jest CJS 无法加载。
+// 这些用例不触发 createPiSession，仅需让 pi-runtime 模块顶层导入可解析。
+jest.mock('@earendil-works/pi-coding-agent', () => ({
+  createAgentSession: jest.fn(),
+  DefaultResourceLoader: jest.fn(),
+  ModelRuntime: { create: jest.fn() },
+  createWriteToolDefinition: jest.fn(),
+}), { virtual: true })
+
 // esm-dirname is mocked via moduleNameMapper in jest.config.cjs (uses import.meta.url)
 
 // Mock config module

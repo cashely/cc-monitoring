@@ -1,4 +1,6 @@
 /** @type {import('jest').Config} */
+const esmMetaTransformer = require('path').join(__dirname, 'jest-esm-meta.cjs')
+
 module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
@@ -7,13 +9,19 @@ module.exports = {
       tsconfig: 'tsconfig.test.json',
       diagnostics: {
         ignoreCodes: [6137, 1343]
-      }
+      },
+      astTransformers: {
+        before: [esmMetaTransformer],
+      },
     }],
     '^.+\\.jsx?$': ['ts-jest', {
       tsconfig: 'tsconfig.test.json',
       diagnostics: {
         ignoreCodes: [6137, 1343]
-      }
+      },
+      astTransformers: {
+        before: [esmMetaTransformer],
+      },
     }]
   },
   transformIgnorePatterns: [
@@ -22,6 +30,7 @@ module.exports = {
   roots: ['<rootDir>/src'],
   testMatch: ['**/__tests__/**/*.test.ts'],
   moduleNameMapper: {
+    '^typebox$': '<rootDir>/src/utils/__mocks__/typebox.cjs',
     '^(.*/)?esm-dirname(\\.js)?$': '<rootDir>/src/utils/__mocks__/esm-dirname.ts',
     '^(\\.{1,2}/.*)\\.js$': '$1',
     '^@config/(.*)$': '<rootDir>/src/config/$1',

@@ -47,6 +47,14 @@ jest.mock('../ui-route', () => ({
   setupUiRoutes: jest.fn().mockResolvedValue(undefined)
 }))
 
+// Mock machine-id：node-machine-id 的 CJS bundle 带 __esModule 但无 default，
+// ts-jest 的 default interop 拿不到；createServer 注册 chat 路由时会预加载
+jest.mock('../../utils/machine-id', () => ({
+  getMachineId: jest.fn().mockResolvedValue('test-machine-id'),
+  getMachineIdSync: jest.fn().mockReturnValue('test-machine-id'),
+  preloadMachineId: jest.fn().mockResolvedValue(undefined),
+}))
+
 describe('createServer', () => {
   let server: FastifyInstance
 
@@ -74,7 +82,8 @@ describe('createServer', () => {
   it('calls loadConfig once', async () => {
     const { loadConfig } = jest.requireMock('@config/index')
     server = await createServer()
-    expect(loadConfig).toHaveBeenCalledTimes(1)
+    // createServer 自身 + setupChatRoute 各读一次配置
+    expect(loadConfig).toHaveBeenCalledTimes(2)
   })
 
   it('calls createLogger with config.logging', async () => {
