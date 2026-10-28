@@ -1,3 +1,4 @@
+jest.mock('../pi-runtime.js', () => ({ runJsonPrompt: jest.fn() }))
 import { findCandidates } from '../pi-dedup.js'
 
 test('findCandidates: title 归一相等命中并排前', () => {
