@@ -14,6 +14,7 @@ import { dataDir } from './paths.js'
 import { createPiSession } from './pi-runtime.js'
 import { CrawlGuard } from './pi-crawl-tools.js'
 import { slugFromUrl, slugFromLabel } from './web-crawler.js'
+import { assertNoOldDirs, readTopicDetail, reconcileTopics, mergeTopics } from './pi-dedup.js'
 
 export interface OutlineItem {
   id: string
@@ -218,7 +219,7 @@ async function runOutlineStage(
   },
   events: LearnPipelineEvents,
   roundCounter: RoundCounter,
-): Promise<{ slug: string; items: OutlineItem[] }> {
+): Promise<{ slug: string; items: OutlineItem[]; title: string }> {
   // 抓取必须在 stageStart 之后：crawl 的 round/tool 事件才能落进前端已建好的 outline 阶段
   events.stageStart('outline')
   let guard: CrawlGuard | null = null
@@ -266,7 +267,11 @@ async function runOutlineStage(
     const outlinePath = path.join(opts.docsDir, opts.slug, 'outline.json')
     if (!fs.existsSync(outlinePath)) throw new Error('outline 未生成')
     const outline = JSON.parse(fs.readFileSync(outlinePath, 'utf8')) as { items: OutlineItem[] }
-    return { slug: opts.slug, items: outline.items }
+    // title 取 S1 seed 的 index.json（查重门需要候选标题）
+    const seedIdx = JSON.parse(
+      fs.readFileSync(path.join(opts.docsDir, opts.slug, 'index.json'), 'utf8'),
+    ) as { title: string }
+    return { slug: opts.slug, items: outline.items, title: seedIdx.title }
   } finally {
     // 兜底关闭当前 guard（crawl_finish 已关时 close 也安全）
     await guard?.close()
@@ -283,6 +288,8 @@ async function runRefineStage(
   items: OutlineItem[],
   events: LearnPipelineEvents,
   roundCounter: RoundCounter,
+  /** chunk id 起始偏移：合并进已有主题时从目标现有 chunk 数后续号 */
+  startOffset = 0,
 ): Promise<{ chunksWritten: number; itemsFailed: number }> {
   events.stageStart('refine', items.length)
   let chunksWritten = 0
@@ -291,7 +298,7 @@ async function runRefineStage(
   try {
     for (let i = 0; i < items.length; i++) {
       const item = items[i]
-      const chunkId = `chunk-${String(i + 1).padStart(3, '0')}`
+      const chunkId = `chunk-${String(startOffset + i + 1).padStart(3, '0')}`
       events.stageItemStart(i, items.length, item.title)
 
       try {
@@ -366,6 +373,8 @@ async function runTagStage(
   slug: string,
   events: LearnPipelineEvents,
   roundCounter: RoundCounter,
+  /** 合并场景：查重门裁定的合并后 title/summary，要求 add_topic 设置为该精确值 */
+  override?: { title: string; summary: string },
 ): Promise<void> {
   events.stageStart('tag')
   try {
@@ -375,17 +384,22 @@ async function runTagStage(
       summary: string
       chunks: Array<{ id: string; title: string; summary: string }>
     }
+    // 合并后重跑 tag：title/summary 取 override 精确值；否则沿用现有值
+    const title = override?.title ?? topicIdx.title
+    const summary = override?.summary ?? topicIdx.summary
     const chunkListing = (topicIdx.chunks ?? [])
       .map((c) => `- ${c.id}: ${c.title} — ${c.summary}`)
       .join('\n')
 
     const prompt =
       `主题 slug: ${slug}\n` +
-      `现有 title: ${topicIdx.title}\n` +
-      `现有 summary: ${topicIdx.summary}\n` +
+      `现有 title: ${title}\n` +
+      `现有 summary: ${summary}\n` +
       `已有 chunks:\n${chunkListing}\n\n` +
       `请用 read_chunk 读 chunks 实际内容，为该主题生成 5 类富 tags（同义/上位/触发场景/易混淆/典型提问，共 10-20 个小写连字符），` +
-      `然后调 add_topic({ slug, title, summary, tags }) 覆盖主题元数据。title/summary 复用现有值，不要改。`
+      (override
+        ? `然后调 add_topic({ slug, title, summary, tags }) 覆盖主题元数据。title/summary 必须使用上面给出的精确值，不要改动。`
+        : `然后调 add_topic({ slug, title, summary, tags }) 覆盖主题元数据。title/summary 复用现有值，不要改。`)
 
     let tagged = false
     for (let attempt = 0; attempt < 2 && !tagged; attempt++) {
@@ -413,14 +427,60 @@ export async function runLearnPipeline(
 ): Promise<{ slug: string; chunksWritten: number; itemsFailed: number }> {
   const docsDir = opts.docsDir ?? path.join(dataDir, 'docs')
   const slug = opts.sourceType === 'url' ? slugFromUrl(opts.input) : slugFromLabel(opts.label ?? 'topic')
+
+  // 阻断：存在未清理的 .old 旁挂目录时直接拒绝，必须在一切写入之前
+  assertNoOldDirs(docsDir)
   prepareTopicDir(docsDir, slug)
 
   // 全局轮次计数器：所有 session 共享，轮次索引全流水线单调递增
   const roundCounter: RoundCounter = { index: 0 }
 
-  const { items } = await runOutlineStage({ ...opts, docsDir, slug }, opts.events, roundCounter)
-  const refine = await runRefineStage({ port: opts.port, docsDir }, slug, items, opts.events, roundCounter)
-  await runTagStage({ port: opts.port, docsDir}, slug, opts.events, roundCounter)
+  const { items, title } = await runOutlineStage({ ...opts, docsDir, slug }, opts.events, roundCounter)
+
+  // 门1：outline 后、refine 前，基于大纲条目查重（命中则只要需新增的条目）
+  const r1 = await reconcileTopics({
+    port: opts.port,
+    docsDir,
+    candidate: { slug, title, tags: [], items },
+    wantItems: true,
+  })
+  if (r1.match) {
+    const targetSlug = r1.targetSlug!
+    // 先物理并入（返回目标现有 chunk 总数作为续号偏移），再只写新增条目，最后带 override 打 tag
+    const off = mergeTopics(docsDir, slug, targetSlug)
+    const refine = await runRefineStage(
+      { port: opts.port, docsDir }, targetSlug, r1.itemsToAdd!, opts.events, roundCounter, off,
+    )
+    await runTagStage(
+      { port: opts.port, docsDir }, targetSlug, opts.events, roundCounter,
+      { title: r1.mergedTitle!, summary: r1.mergedSummary! },
+    )
+    return { slug: targetSlug, chunksWritten: refine.chunksWritten, itemsFailed: refine.itemsFailed }
+  }
+
+  // 门1 未命中：常规 refine（从头编号）+ 常规 tag
+  const refine = await runRefineStage(
+    { port: opts.port, docsDir }, slug, items, opts.events, roundCounter, 0,
+  )
+  await runTagStage({ port: opts.port, docsDir }, slug, opts.events, roundCounter)
+
+  // 门2：tag 后基于富 tags 再查一次（不需要新增条目）
+  const detail = await readTopicDetail(docsDir, slug)
+  const r2 = await reconcileTopics({
+    port: opts.port,
+    docsDir,
+    candidate: { slug, title, tags: detail?.tags ?? [], items: undefined },
+    wantItems: false,
+  })
+  if (r2.match) {
+    const targetSlug = r2.targetSlug!
+    mergeTopics(docsDir, slug, targetSlug)
+    await runTagStage(
+      { port: opts.port, docsDir }, targetSlug, opts.events, roundCounter,
+      { title: r2.mergedTitle!, summary: r2.mergedSummary! },
+    )
+    return { slug: targetSlug, chunksWritten: refine.chunksWritten, itemsFailed: refine.itemsFailed }
+  }
 
   return { slug, chunksWritten: refine.chunksWritten, itemsFailed: refine.itemsFailed }
 }
