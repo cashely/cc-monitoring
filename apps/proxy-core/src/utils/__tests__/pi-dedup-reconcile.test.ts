@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile } from 'fs/promises'
 import os from 'os'
 import path from 'path'
 import { runJsonPrompt } from '../pi-runtime.js'
-import { reconcileTopics, readAllTopics, readTopicDetail } from '../pi-dedup.js'
+import { reconcileTopics, readAllTopics, readTopicDetail, mintSlug } from '../pi-dedup.js'
 
 const mockJson = runJsonPrompt as jest.MockedFunction<typeof runJsonPrompt>
 let tmp: string
@@ -45,6 +45,22 @@ test('readAllTopics: 返回 index.json 的 topics', async () => {
 test('readAllTopics: 空/缺失目录返回 []', async () => {
   await expect(readAllTopics(tmp)).resolves.toEqual([])
 })
+describe('mintSlug', () => {
+  test('LLM 返回合法且空闲的 slug → 直接使用', async () => {
+    mockJson.mockResolvedValue({ slug: 'react-hooks' })
+    await expect(mintSlug({ port: 1, title: 'React Hooks', existing: [] })).resolves.toBe('react-hooks')
+  })
+  test('LLM 返回非法 slug → 降级 slugFromLabel(title)', async () => {
+    mockJson.mockResolvedValue({ slug: 'Bad Slug!' })
+    await expect(mintSlug({ port: 1, title: 'Hello World', existing: [] })).resolves.toBe('hello-world')
+  })
+  test('LLM slug 与 slugFromLabel(title) 均被占 → 追加 -2', async () => {
+    mockJson.mockResolvedValue({ slug: 'my-topic' })
+    await expect(mintSlug({ port: 1, title: 'My Topic', existing: ['my-topic'] }))
+      .resolves.toBe('my-topic-2')
+  })
+})
+
 test('readTopicDetail: 返回 <slug>/index.json 解析结果；缺失返回 null', async () => {
   await mkdir(path.join(tmp, 'a'))
   await writeFile(path.join(tmp, 'a', 'index.json'), JSON.stringify({

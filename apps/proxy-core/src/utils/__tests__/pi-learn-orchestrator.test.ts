@@ -7,13 +7,14 @@ jest.mock('../pi-runtime.js', () => ({
   createPiSession: jest.fn(),
 }))
 
-// Mock pi-dedup：只 mock 阻断 + LLM 裁定；mergeTopics/readTopicDetail 保留真实实现
+// Mock pi-dedup：只 mock 阻断 + LLM 裁定 + mintSlug；其余（mergeTopics/readAllTopics 等）保留真实实现
 jest.mock('../pi-dedup.js', () => {
   const actual = jest.requireActual('../pi-dedup.js')
   return {
     ...actual,
     assertNoOldDirs: jest.fn(),
     reconcileTopics: jest.fn(async () => ({ match: false })),
+    mintSlug: jest.fn(),
   }
 })
 
@@ -62,7 +63,7 @@ jest.mock('../pi-crawl-tools.js', () => {
 })
 
 import { createPiSession } from '../pi-runtime.js'
-import { reconcileTopics, assertNoOldDirs } from '../pi-dedup.js'
+import { reconcileTopics, assertNoOldDirs, mintSlug } from '../pi-dedup.js'
 import { runLearnPipeline, type LearnPipelineEvents, type OutlineItem } from '../pi-learn-orchestrator.js'
 // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
 const crawlToolsMock: {
@@ -73,6 +74,7 @@ const crawlToolsMock: {
 const mockCreatePiSession = createPiSession as jest.MockedFunction<typeof createPiSession>
 const mockReconcile = reconcileTopics as jest.MockedFunction<typeof reconcileTopics>
 const mockAssertNoOld = assertNoOldDirs as jest.MockedFunction<typeof assertNoOldDirs>
+const mockMintSlug = mintSlug as jest.MockedFunction<typeof mintSlug>
 
 // ---------- Fake session ----------
 type SessionHandler = (prompt: string) => Promise<void>
@@ -248,6 +250,44 @@ async function seedOldTopic(dstSlug: string): Promise<void> {
   )
 }
 
+/** 门0 用 S1 handler（file 模式）：旧 topic 已旁挂，fresh dir 由 file 阶段自己写 sources；
+ *  outline session 写 outline.json + seed index.json，chunks 必须为 []（镜像 gate1OutlineHandler） */
+function gate0OutlineHandler(slug: string, items: OutlineItem[]): SessionHandler {
+  return async function (this: FakeSession) {
+    await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
+    await fsp.writeFile(
+      path.join(tmpDir, slug, 'outline.json'),
+      JSON.stringify({ slug, source: 'sources/', items }, null, 2),
+    )
+    await fsp.writeFile(
+      path.join(tmpDir, slug, 'index.json'),
+      JSON.stringify({ slug, title: 'New', summary: '(refining)', tags: [], chunks: [] }, null, 2),
+    )
+  }
+}
+
+/** 门0 用例：预铺 slug=dup 的旧主题（sources + 2 chunks + index + 根 index 登记） */
+async function seedDupTopic(): Promise<void> {
+  await fsp.mkdir(path.join(tmpDir, 'dup', 'chunks'), { recursive: true })
+  await fsp.mkdir(path.join(tmpDir, 'dup', 'sources'), { recursive: true })
+  await fsp.writeFile(
+    path.join(tmpDir, 'dup', 'index.json'),
+    JSON.stringify({ slug: 'dup', title: 'Old Dup', summary: 'old dup summary', tags: [], chunks: [
+      { id: 'chunk-001', title: 'T1', summary: 's1', tags: [] },
+      { id: 'chunk-002', title: 'T2', summary: 's2', tags: [] },
+    ] }, null, 2),
+  )
+  await fsp.writeFile(path.join(tmpDir, 'dup', 'chunks', 'chunk-001.md'), 'OLD BODY 001\n')
+  await fsp.writeFile(path.join(tmpDir, 'dup', 'chunks', 'chunk-002.md'), 'OLD BODY 002\n')
+  await fsp.writeFile(path.join(tmpDir, 'dup', 'sources', 'source-001.md'), 'OLD SOURCE\n')
+  await fsp.writeFile(
+    path.join(tmpDir, 'index.json'),
+    JSON.stringify({ topics: [
+      { slug: 'dup', title: 'Old Dup', summary: 'old dup summary', tags: [] },
+    ] }, null, 2),
+  )
+}
+
 /** tag handler：先捕获 prompt 文本（断言 tag 对哪个 slug / 用了什么 title），再 emit add_topic */
 function tagCaptureHandler(captured: string[]): SessionHandler {
   const add = FakeSession.addTopicHandler(['merged-tag'])
@@ -268,6 +308,9 @@ beforeEach(async () => {
   mockReconcile.mockResolvedValue({ match: false })
   mockAssertNoOld.mockReset()
   mockAssertNoOld.mockImplementation(() => {})
+  // mintSlug 默认另铸固定 slug；门0 碰撞用例可覆盖
+  mockMintSlug.mockReset()
+  mockMintSlug.mockResolvedValue('minted-slug')
   // CrawlGuard 的 mock 由 jest.mock 工厂创建，生命周期跨用例，需手动清调用记录
   crawlToolsMock.CrawlGuard.mockClear()
   // 默认按 mode 路由；具体用例的 mockImplementationOnce 优先
@@ -902,6 +945,118 @@ describe('pi-learn-orchestrator', () => {
     expect(tagPrompts[1]).toContain('主题 slug: oldt')
     expect(tagPrompts[1]).toContain('M2')
     expect(tagPrompts[1]).toContain('s2')
+  })
+
+  // ============================================================
+  // 门0：slug 精确命中（旁挂 / 还原）
+  // ============================================================
+
+  test('门0 match：同 slug 命中 → 旧 chunks 续号并入 + 新增 chunk-003，只保留 dup 目录', async () => {
+    await seedDupTopic()
+
+    // 门0 裁定命中：只新增条目 n（门1/门2 不再到达）
+    mockReconcile.mockResolvedValueOnce({
+      match: true,
+      targetSlug: 'dup',
+      mergedTitle: 'M',
+      mergedSummary: 's',
+      itemsToAdd: [{ id: 'n', title: 'N', oneLine: 'n' }],
+    })
+
+    // S1 outline session: 旁挂后 fresh dup 上写 outline + seed（chunks: []）
+    mockCreatePiSession.mockImplementationOnce(async () =>
+      new FakeSession(gate0OutlineHandler('dup', [{ id: 'a', title: '概念A', oneLine: 'aaa' }])) as any)
+    // S2（merge 后 startOffset=2）：写 chunk-003.md + 在 dst index 注册
+    mockCreatePiSession.mockImplementationOnce(async () =>
+      new FakeSession(FakeSession.readSourceThen(async () => {
+        await fsp.writeFile(path.join(tmpDir, 'dup', 'chunks', 'chunk-003.md'), '# N')
+        const idxPath = path.join(tmpDir, 'dup', 'index.json')
+        const idx = JSON.parse(await fsp.readFile(idxPath, 'utf8'))
+        idx.chunks.push({ id: 'chunk-003', title: 'N', summary: 'n', tags: [] })
+        await fsp.writeFile(idxPath, JSON.stringify(idx, null, 2))
+      })) as any)
+    // S3: 对 dup 带 merged override 跑 tag
+    mockCreatePiSession.mockImplementationOnce(async () =>
+      new FakeSession(FakeSession.addTopicHandler(['merged-tag'])) as any)
+
+    const result = await runLearnPipeline({
+      sourceType: 'file',
+      input: '# new body',
+      label: 'dup.md',
+      port: 9999,
+      events: makeEvents(),
+      docsDir: tmpDir,
+    })
+
+    expect(result.slug).toBe('dup')
+    expect(result.chunksWritten).toBe(1)
+    expect(result.itemsFailed).toBe(0)
+
+    // 只剩 dup 主题目录（无 dup.old）
+    const dirs = (await fsp.readdir(tmpDir, { withFileTypes: true }))
+      .filter((d) => d.isDirectory()).map((d) => d.name)
+    expect(dirs).toEqual(['dup'])
+
+    // 旧 2 chunks + 续号 003；旧正文逐字不变
+    const chunks = await fsp.readdir(path.join(tmpDir, 'dup', 'chunks'))
+    expect(chunks).toEqual(expect.arrayContaining(['chunk-001.md', 'chunk-002.md', 'chunk-003.md']))
+    expect(await fsp.readFile(path.join(tmpDir, 'dup', 'chunks', 'chunk-001.md'), 'utf8')).toBe('OLD BODY 001\n')
+    expect(await fsp.readFile(path.join(tmpDir, 'dup', 'chunks', 'chunk-002.md'), 'utf8')).toBe('OLD BODY 002\n')
+  })
+
+  test('门0 no-match：slug 碰撞 → 新内容另铸 dup-new 继续，旧 dup 原样还原', async () => {
+    await seedDupTopic()
+    mockMintSlug.mockResolvedValue('dup-new')
+    // 门0/门1/门2 全部 no-match（默认值已满足，无需额外配置）
+
+    // S1 outline session
+    mockCreatePiSession.mockImplementationOnce(async () =>
+      new FakeSession(gate0OutlineHandler('dup', [{ id: 'a', title: '概念A', oneLine: 'aaa' }])) as any)
+    // S2：对 activeSlug=dup-new 写 chunk-001 + 注册
+    mockCreatePiSession.mockImplementationOnce(async () =>
+      new FakeSession(FakeSession.readSourceThen(async () => {
+        await fsp.mkdir(path.join(tmpDir, 'dup-new', 'chunks'), { recursive: true })
+        await fsp.writeFile(path.join(tmpDir, 'dup-new', 'chunks', 'chunk-001.md'), '# NEW')
+        const idxPath = path.join(tmpDir, 'dup-new', 'index.json')
+        const idx = JSON.parse(await fsp.readFile(idxPath, 'utf8'))
+        idx.chunks.push({ id: 'chunk-001', title: '概念A', summary: 'aaa', tags: [] })
+        await fsp.writeFile(idxPath, JSON.stringify(idx, null, 2))
+      })) as any)
+    // S3: 对 dup-new 常规 tag
+    mockCreatePiSession.mockImplementationOnce(async () =>
+      new FakeSession(FakeSession.addTopicHandler(['new-tag'])) as any)
+
+    const result = await runLearnPipeline({
+      sourceType: 'file',
+      input: '# new body',
+      label: 'dup.md',
+      port: 9999,
+      events: makeEvents(),
+      docsDir: tmpDir,
+    })
+
+    expect(result.slug).toBe('dup-new')
+    expect(result.chunksWritten).toBe(1)
+
+    // 无 .old；dup 与 dup-new 两个主题目录共存
+    const dirs = (await fsp.readdir(tmpDir, { withFileTypes: true }))
+      .filter((d) => d.isDirectory()).map((d) => d.name).sort()
+    expect(dirs).toEqual(['dup', 'dup-new'])
+
+    // 旧 dup：2 个原始 chunks 正文原样，sources 原样
+    expect(await fsp.readdir(path.join(tmpDir, 'dup', 'chunks')))
+      .toEqual(expect.arrayContaining(['chunk-001.md', 'chunk-002.md']))
+    expect(await fsp.readFile(path.join(tmpDir, 'dup', 'chunks', 'chunk-001.md'), 'utf8')).toBe('OLD BODY 001\n')
+    expect(await fsp.readFile(path.join(tmpDir, 'dup', 'chunks', 'chunk-002.md'), 'utf8')).toBe('OLD BODY 002\n')
+    expect(await fsp.readFile(path.join(tmpDir, 'dup', 'sources', 'source-001.md'), 'utf8')).toBe('OLD SOURCE\n')
+
+    // 新 dup-new：自有 sources + 新 chunk
+    expect(await fsp.readdir(path.join(tmpDir, 'dup-new', 'sources'))).toEqual(['source-001.md'])
+    expect(await fsp.readFile(path.join(tmpDir, 'dup-new', 'chunks', 'chunk-001.md'), 'utf8')).toBe('# NEW')
+
+    // 根 index：dup 与 dup-new 均登记
+    const root = JSON.parse(await fsp.readFile(path.join(tmpDir, 'index.json'), 'utf8'))
+    expect(root.topics.map((t: { slug: string }) => t.slug).sort()).toEqual(['dup', 'dup-new'])
   })
 
   test('阻断：assertNoOldDirs 抛错 → pipeline reject 且不创建任何 session', async () => {

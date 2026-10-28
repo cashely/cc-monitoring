@@ -14,7 +14,7 @@ import { dataDir } from './paths.js'
 import { createPiSession } from './pi-runtime.js'
 import { CrawlGuard } from './pi-crawl-tools.js'
 import { slugFromUrl, slugFromLabel } from './web-crawler.js'
-import { assertNoOldDirs, readTopicDetail, reconcileTopics, mergeTopics } from './pi-dedup.js'
+import { assertNoOldDirs, readAllTopics, readSidecarDetail, readTopicDetail, reconcileTopics, mergeTopics, mintSlug } from './pi-dedup.js'
 
 export interface OutlineItem {
   id: string
@@ -430,24 +430,89 @@ export async function runLearnPipeline(
 
   // 阻断：存在未清理的 .old 旁挂目录时直接拒绝，必须在一切写入之前
   assertNoOldDirs(docsDir)
-  prepareTopicDir(docsDir, slug)
 
   // 全局轮次计数器：所有 session 共享，轮次索引全流水线单调递增
   const roundCounter: RoundCounter = { index: 0 }
+  // activeSlug：门0 slug 碰撞另铸后，下游各门/阶段实际操作的 slug
+  let activeSlug = slug
+  let outline: { items: OutlineItem[]; title: string }
 
-  const { items, title } = await runOutlineStage({ ...opts, docsDir, slug }, opts.events, roundCounter)
+  // 门0：slug 精确命中——已有同 slug 主题时先旁挂旧 topic（含点号不被识别为 topic），再全新建并跑 S1
+  const collision = (await readAllTopics(docsDir)).some((t) => t.slug === slug)
+  if (collision) {
+    fs.renameSync(path.join(docsDir, slug), path.join(docsDir, `${slug}.old`))
+    prepareTopicDir(docsDir, slug)
+    outline = await runOutlineStage({ ...opts, docsDir, slug }, opts.events, roundCounter)
+
+    const sidecar = await readSidecarDetail(docsDir, slug)
+    const r0 = await reconcileTopics({
+      port: opts.port,
+      docsDir,
+      candidate: { slug, title: outline.title, tags: [], items: outline.items },
+      targets: sidecar ? [sidecar] : [],
+      wantItems: true,
+    })
+    if (r0.match) {
+      // dst=canonical：旧 chunks 续号并入，再补新增条目，最后带 merged 打 tag
+      const off = mergeTopics(docsDir, `${slug}.old`, slug)
+      const refine = await runRefineStage(
+        { port: opts.port, docsDir }, slug, r0.itemsToAdd!, opts.events, roundCounter, off,
+      )
+      await runTagStage(
+        { port: opts.port, docsDir }, slug, opts.events, roundCounter,
+        { title: r0.mergedTitle!, summary: r0.mergedSummary! },
+      )
+      return { slug, chunksWritten: refine.chunksWritten, itemsFailed: refine.itemsFailed }
+    }
+
+    // slug 真碰撞：新内容另铸 ns，旧 topic 还原
+    const ns = await mintSlug({
+      port: opts.port,
+      title: outline.title,
+      existing: (await readAllTopics(docsDir)).map((t) => t.slug),
+    })
+    // 新 canonical → ns，更正其 index.slug
+    fs.renameSync(path.join(docsDir, slug), path.join(docsDir, ns))
+    const nsIdxPath = path.join(docsDir, ns, 'index.json')
+    const nsIdx = JSON.parse(fs.readFileSync(nsIdxPath, 'utf8'))
+    nsIdx.slug = ns
+    fs.writeFileSync(nsIdxPath, JSON.stringify(nsIdx, null, 2), 'utf8')
+    // 根 index：把 S1 为新内容登记的 slug 条目改挂 ns
+    const rootPath = path.join(docsDir, 'index.json')
+    const rootIdx = JSON.parse(fs.readFileSync(rootPath, 'utf8')) as {
+      topics: Array<{ slug: string; title: string; summary: string; tags: string[] }>
+    }
+    const newEntry = rootIdx.topics.find((t) => t.slug === slug)
+    if (newEntry) newEntry.slug = ns
+    // 旧 topic 还原：.old → slug
+    fs.renameSync(path.join(docsDir, `${slug}.old`), path.join(docsDir, slug))
+    const oldIdx = JSON.parse(fs.readFileSync(path.join(docsDir, slug, 'index.json'), 'utf8'))
+    const oldRoot = rootIdx.topics.find((t) => t.slug === slug)
+    if (oldRoot) {
+      oldRoot.title = oldIdx.title
+      oldRoot.summary = oldIdx.summary
+      oldRoot.tags = oldIdx.tags
+    } else {
+      rootIdx.topics.push({ slug, title: oldIdx.title, summary: oldIdx.summary, tags: oldIdx.tags })
+    }
+    fs.writeFileSync(rootPath, JSON.stringify(rootIdx, null, 2), 'utf8')
+    activeSlug = ns
+  } else {
+    prepareTopicDir(docsDir, slug)
+    outline = await runOutlineStage({ ...opts, docsDir, slug }, opts.events, roundCounter)
+  }
 
   // 门1：outline 后、refine 前，基于大纲条目查重（命中则只要需新增的条目）
   const r1 = await reconcileTopics({
     port: opts.port,
     docsDir,
-    candidate: { slug, title, tags: [], items },
+    candidate: { slug: activeSlug, title: outline.title, tags: [], items: outline.items },
     wantItems: true,
   })
   if (r1.match) {
     const targetSlug = r1.targetSlug!
     // 先物理并入（返回目标现有 chunk 总数作为续号偏移），再只写新增条目，最后带 override 打 tag
-    const off = mergeTopics(docsDir, slug, targetSlug)
+    const off = mergeTopics(docsDir, activeSlug, targetSlug)
     const refine = await runRefineStage(
       { port: opts.port, docsDir }, targetSlug, r1.itemsToAdd!, opts.events, roundCounter, off,
     )
@@ -460,21 +525,21 @@ export async function runLearnPipeline(
 
   // 门1 未命中：常规 refine（从头编号）+ 常规 tag
   const refine = await runRefineStage(
-    { port: opts.port, docsDir }, slug, items, opts.events, roundCounter, 0,
+    { port: opts.port, docsDir }, activeSlug, outline.items, opts.events, roundCounter, 0,
   )
-  await runTagStage({ port: opts.port, docsDir }, slug, opts.events, roundCounter)
+  await runTagStage({ port: opts.port, docsDir }, activeSlug, opts.events, roundCounter)
 
   // 门2：tag 后基于富 tags 再查一次（不需要新增条目）
-  const detail = await readTopicDetail(docsDir, slug)
+  const detail = await readTopicDetail(docsDir, activeSlug)
   const r2 = await reconcileTopics({
     port: opts.port,
     docsDir,
-    candidate: { slug, title, tags: detail?.tags ?? [], items: undefined },
+    candidate: { slug: activeSlug, title: outline.title, tags: detail?.tags ?? [], items: undefined },
     wantItems: false,
   })
   if (r2.match) {
     const targetSlug = r2.targetSlug!
-    mergeTopics(docsDir, slug, targetSlug)
+    mergeTopics(docsDir, activeSlug, targetSlug)
     await runTagStage(
       { port: opts.port, docsDir }, targetSlug, opts.events, roundCounter,
       { title: r2.mergedTitle!, summary: r2.mergedSummary! },
@@ -482,5 +547,5 @@ export async function runLearnPipeline(
     return { slug: targetSlug, chunksWritten: refine.chunksWritten, itemsFailed: refine.itemsFailed }
   }
 
-  return { slug, chunksWritten: refine.chunksWritten, itemsFailed: refine.itemsFailed }
+  return { slug: activeSlug, chunksWritten: refine.chunksWritten, itemsFailed: refine.itemsFailed }
 }

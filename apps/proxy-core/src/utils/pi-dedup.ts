@@ -3,6 +3,10 @@ import { readFile } from 'fs/promises'
 import fs from 'node:fs'
 import path from 'path'
 import { runJsonPrompt } from './pi-runtime.js'
+import { slugFromLabel } from './web-crawler.js'
+
+// 合法 slug：小写字母数字开头，仅含小写字母数字与连字符
+const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/
 
 // 与 knowledge-store 的 TopicSummary 结构一致；此处复制最小类型，避免导入单例
 export interface TopicSummary { slug: string; title: string; summary: string; tags: string[] }
@@ -194,6 +198,40 @@ export function mergeTopics(docsDir: string, srcSlug: string, dstSlug: string): 
   fs.rmSync(srcDir, { recursive: true, force: true })
   fs.writeFileSync(path.join(dstDir, 'index.json'), JSON.stringify(dstIndex, null, 2))
   return dstIndex.chunks.length
+}
+
+// 读旁挂目录 <slug>.old 的 index.json；缺失/坏 → null
+export async function readSidecarDetail(docsDir: string, slug: string): Promise<TopicIndexLike | null> {
+  try {
+    const raw = await readFile(path.join(docsDir, `${slug}.old`, 'index.json'), 'utf8')
+    return JSON.parse(raw) as TopicIndexLike
+  } catch {
+    return null
+  }
+}
+
+// 据 title 让 LLM 铸一个小写连字符 slug。失败/非法/已占 → 降级 slugFromLabel(title)，
+// 仍被占则追加 -2/-3…。返回保证合法且不落在 existing 内的 slug（除非编号也耗尽，实践不会）。
+export async function mintSlug(opts: { port: number; title: string; existing: string[] }): Promise<string> {
+  try {
+    const result = await runJsonPrompt({
+      port: opts.port,
+      instructions: 'Return ONLY JSON {"slug":"<lowercase-hyphen-slug>"} derived faithfully from the title.',
+      prompt: `Title: ${opts.title}`,
+    }) as { slug?: unknown }
+    if (typeof result.slug === 'string' && SLUG_RE.test(result.slug) && !opts.existing.includes(result.slug)) {
+      return result.slug
+    }
+  } catch {
+    // LLM 调用/解析失败：走确定性降级
+  }
+
+  const base = slugFromLabel(opts.title) || 'topic'
+  if (!opts.existing.includes(base)) return base
+  for (let n = 2; ; n++) {
+    const candidate = `${base}-${n}`
+    if (!opts.existing.includes(candidate)) return candidate
+  }
 }
 
 // 阻断：docsDir 下存在任何 .old 旁挂目录时抛错，要求人工先处理。
