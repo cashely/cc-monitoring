@@ -11,6 +11,7 @@ export interface Provider {
   provider: string
   default: boolean
   is_openai_compatible?: boolean
+  auth_style?: 'bearer' | 'x-api-key'
   created_at: string
   updated_at: string
 }
@@ -27,6 +28,7 @@ export interface ProviderInput {
   provider: string
   default?: boolean
   is_openai_compatible?: boolean
+  auth_style?: 'bearer' | 'x-api-key'
 }
 
 export interface ProviderValidationError {

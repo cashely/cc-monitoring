@@ -13,6 +13,7 @@ export interface Provider {
   provider: string
   default: boolean
   is_openai_compatible: boolean
+  auth_style: 'bearer' | 'x-api-key'
   created_at: string
   updated_at: string
 }
@@ -29,6 +30,7 @@ export interface ProviderInput {
   provider: string
   default?: boolean
   is_openai_compatible?: boolean
+  auth_style?: 'bearer' | 'x-api-key'
 }
 
 export interface ProviderValidationError {
@@ -39,11 +41,8 @@ export interface ProviderValidationError {
 
 const REQUIRED_FIELDS: (keyof ProviderInput)[] = ['name', 'provider']
 
-export function listProviders(db: Database.Database): Provider[] {
-  const rows = db.prepare(
-    'SELECT * FROM providers ORDER BY created_at DESC'
-  ).all() as any[]
-  return rows.map(r => ({
+function mapRow(r: any): Provider {
+  return {
     id: r.id,
     name: r.name,
     base_url: r.base_url,
@@ -56,9 +55,29 @@ export function listProviders(db: Database.Database): Provider[] {
     provider: r.provider,
     default: !!r.is_default,
     is_openai_compatible: !!r.is_openai_compatible,
+    auth_style: r.auth_style === 'x-api-key' ? 'x-api-key' : 'bearer',
     created_at: r.created_at,
     updated_at: r.updated_at,
-  }))
+  }
+}
+
+export function listProviders(db: Database.Database): Provider[] {
+  const rows = db.prepare(
+    'SELECT * FROM providers ORDER BY created_at DESC'
+  ).all() as any[]
+  return rows.map(mapRow)
+}
+
+const activeProviderStmtCache = new WeakMap<Database.Database, Database.Statement>()
+
+export function getActiveProvider(db: Database.Database): Provider | null {
+  let stmt = activeProviderStmtCache.get(db)
+  if (!stmt) {
+    stmt = db.prepare('SELECT * FROM providers WHERE is_default = 1 LIMIT 1')
+    activeProviderStmtCache.set(db, stmt)
+  }
+  const row = stmt.get()
+  return row ? mapRow(row as any) : null
 }
 
 /**
@@ -71,8 +90,8 @@ export function listProviders(db: Database.Database): Provider[] {
 export function saveProviders(db: Database.Database, providers: ProviderInput[]): void {
   const deleteAll = db.prepare('DELETE FROM providers')
   const insertOne = db.prepare(`
-    INSERT INTO providers (name, base_url, api_key, model, haiku_model, sonnet_model, opus_model, subagent_model, provider, is_default, is_openai_compatible)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO providers (name, base_url, api_key, model, haiku_model, sonnet_model, opus_model, subagent_model, provider, is_default, is_openai_compatible, auth_style)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   const transaction = db.transaction(() => {
@@ -89,7 +108,8 @@ export function saveProviders(db: Database.Database, providers: ProviderInput[])
         p.subagent_model && p.subagent_model.trim() !== '' ? p.subagent_model : null,
         p.provider,
         p.default ? 1 : 0,
-        p.is_openai_compatible ? 1 : 0
+        p.is_openai_compatible ? 1 : 0,
+        p.auth_style === 'x-api-key' ? 'x-api-key' : 'bearer'
       )
     }
   })

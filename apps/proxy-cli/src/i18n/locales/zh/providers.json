@@ -11,6 +11,9 @@
     "subagentModel": "Subagent",
     "provider": "供应商",
     "openaiCompatible": "OpenAI兼容",
+    "authStyle": "鉴权方式",
+    "authBearer": "Bearer",
+    "authXApiKey": "X-API-Key",
     "action": "操作"
   },
   "action": {

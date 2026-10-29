@@ -7,6 +7,7 @@ import { saveRequestDB, extractTokenUsage, flushEventBatch, deleteResponseEvents
 import { cleanOldRequestsDB } from '../utils/request-writer.js'
 import { pushNewRequest } from './data-push.js'
 import { initDatabase, closeDatabase, getDatabase } from '../utils/db.js'
+import { getActiveProvider } from '../utils/providers-db.js'
 import { aggregateStats } from '../utils/stats-aggregator.js'
 import { mcpManager } from '../utils/mcp-manager.js'
 import { getMachineId, getMachineIdSync, preloadMachineId } from '../utils/machine-id.js'
@@ -31,10 +32,6 @@ interface ResolvedTarget {
   is_openai_compatible?: boolean
   auth_style?: 'bearer' | 'x-api-key'
 }
-
-// Cached prepared statement for active provider lookup (avoids per-request allocation)
-let activeProviderStmt: import('better-sqlite3').Statement | null = null
-let cachedDbInstance: import('better-sqlite3').Database | null = null
 
 /**
  * Resolves the proxy target per request:
@@ -63,17 +60,7 @@ export function resolveProxyTarget(proxyConfig: ProxyConfig): ResolvedTarget {
     targetPath = configUrl.pathname.replace(/\/$/, '')
 
     const db = getDatabase()
-    // Invalidate cached stmt if DB instance changed (happens in tests with fresh DB per test)
-    if (db !== cachedDbInstance) {
-      activeProviderStmt = null
-      cachedDbInstance = db
-    }
-    if (!activeProviderStmt) {
-      activeProviderStmt = db.prepare(
-        'SELECT base_url, api_key, model, haiku_model, sonnet_model, opus_model, is_openai_compatible, auth_style FROM providers WHERE is_default = 1 LIMIT 1'
-      )
-    }
-    const active = activeProviderStmt.get() as { base_url: string | null, api_key: string | null, model: string | null, haiku_model: string | null, sonnet_model: string | null, opus_model: string | null, is_openai_compatible: number | null, auth_style: string | null } | undefined
+    const active = getActiveProvider(db)
 
     if (active) {
       // Replace base_url only if provided

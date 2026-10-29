@@ -1,8 +1,9 @@
 import Database from 'better-sqlite3'
-import { applySchemaV2, applySchemaV3, applySchemaV7 } from '../db.js'
+import { applySchemaV2, applySchemaV3, applySchemaV7, applySchemaV9 } from '../db.js'
 import {
   listProviders,
   saveProviders,
+  getActiveProvider,
   validateProvider,
   validateProviders,
   Provider,
@@ -20,6 +21,7 @@ describe('providers-db', () => {
     applySchemaV2(db)
     applySchemaV3(db)
     applySchemaV7(db)
+    applySchemaV9(db)
   })
 
   afterEach(() => {
@@ -65,6 +67,38 @@ describe('providers-db', () => {
       const inactive = result.find(p => p.name === 'inactive')
       expect(active?.default).toBe(true)
       expect(inactive?.default).toBe(false)
+    })
+  })
+
+  describe('getActiveProvider', () => {
+    test('returns the is_default row with mapped auth_style', () => {
+      db.prepare(
+        `INSERT INTO providers (name, base_url, api_key, model, provider, is_default, auth_style)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run('active', 'https://a.com', 'key', 'm', 'anthropic', 1, 'x-api-key')
+      db.prepare(
+        `INSERT INTO providers (name, base_url, api_key, model, provider, is_default)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run('inactive', 'https://b.com', 'key2', 'm2', 'anthropic', 0)
+
+      const result = getActiveProvider(db)
+      expect(result).not.toBeNull()
+      expect(result?.name).toBe('active')
+      expect(result?.default).toBe(true)
+      expect(result?.auth_style).toBe('x-api-key')
+    })
+
+    test('returns null when no default row exists', () => {
+      db.prepare(
+        `INSERT INTO providers (name, base_url, api_key, model, provider, is_default)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run('inactive', 'https://b.com', 'key2', 'm2', 'anthropic', 0)
+
+      expect(getActiveProvider(db)).toBeNull()
+    })
+
+    test('returns null on empty table', () => {
+      expect(getActiveProvider(db)).toBeNull()
     })
   })
 
@@ -159,6 +193,28 @@ describe('providers-db', () => {
       const p2 = result.find(p => p.name === 'p2')
       expect(p1?.default).toBe(false)
       expect(p2?.default).toBe(true)
+    })
+
+    test('preserves auth_style x-api-key after save', () => {
+      const input: ProviderInput[] = [
+        { name: 'p1', base_url: 'https://p1.com', api_key: 'k1', model: 'm', provider: 'anthropic', auth_style: 'x-api-key' }
+      ]
+
+      saveProviders(db, input)
+
+      const result = listProviders(db)
+      expect(result[0].auth_style).toBe('x-api-key')
+    })
+
+    test('defaults auth_style to bearer when not provided', () => {
+      const input: ProviderInput[] = [
+        { name: 'p1', base_url: 'https://p1.com', api_key: 'k1', model: 'm', provider: 'anthropic' }
+      ]
+
+      saveProviders(db, input)
+
+      const result = listProviders(db)
+      expect(result[0].auth_style).toBe('bearer')
     })
   })
 

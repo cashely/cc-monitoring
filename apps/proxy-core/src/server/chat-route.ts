@@ -77,7 +77,8 @@ export async function setupChatRoute(
     // Filter and forward headers
     const forwardHeaders = filterForwardHeaders(
       extractSafeHeaders(request.headers),
-      resolved.apiKey
+      resolved.apiKey,
+      resolved.auth_style
     )
     forwardHeaders['x-chat-session-id'] = sessionId
 

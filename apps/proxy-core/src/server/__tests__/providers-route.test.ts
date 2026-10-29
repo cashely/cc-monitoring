@@ -56,6 +56,7 @@ jest.mock('@utils/db', () => {
       provider TEXT NOT NULL,
       is_default INTEGER NOT NULL DEFAULT 0,
       is_openai_compatible INTEGER NOT NULL DEFAULT 0,
+      auth_style TEXT NOT NULL DEFAULT 'bearer',
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     )

@@ -4,7 +4,7 @@ import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import type { AppConfig } from '../config/schema.js'
 import { getDatabase } from '../utils/db.js'
 import { listRequestDB } from '../utils/request-writer.js'
-import { listProviders } from '../utils/providers-db.js'
+import { getActiveProvider } from '../utils/providers-db.js'
 import { knowledgeStore } from '../utils/knowledge-store.js'
 
 export interface McpToolContext {
@@ -31,8 +31,7 @@ async function handleGetStatus(_args: any, ctx: McpToolContext) {
 
   let defaultProvider = null
   try {
-    const providers = listProviders(db)
-    const def = providers.find(p => p.default)
+    const def = getActiveProvider(db)
     if (def) {
       defaultProvider = { name: def.name, model: def.model, base_url: def.base_url }
     }

@@ -11,6 +11,9 @@
     "subagentModel": "Subagent",
     "provider": "Provider",
     "openaiCompatible": "OpenAI Compatible",
+    "authStyle": "Auth Style",
+    "authBearer": "Bearer",
+    "authXApiKey": "X-API-Key",
     "action": "Action"
   },
   "action": {
