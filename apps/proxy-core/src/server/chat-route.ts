@@ -128,6 +128,7 @@ export async function setupChatRoute(
       responseTime: 0,
       model: forwardedModel,
       machineId,
+      userAgent: request.headers['user-agent'],
       baseUrl: resolved.baseUrl
     }, 'pending')
 
@@ -239,6 +240,7 @@ export async function setupChatRoute(
                   responseTime: 0,
                   model: forwardedModel,
                   machineId,
+                  userAgent: request.headers['user-agent'],
                   baseUrl: resolved.baseUrl,
                   usage: loopUsage
                 }, 'completed')
@@ -271,6 +273,7 @@ export async function setupChatRoute(
             responseTime: Date.now() - startTime,
             model: forwardedModel,
             machineId,
+            userAgent: request.headers['user-agent'],
             baseUrl: resolved.baseUrl,
             usage,
             pendingId: cloudRequestId !== request.id ? `${sessionId}:${request.id}` : undefined
@@ -305,6 +308,7 @@ export async function setupChatRoute(
         responseTime: Date.now() - startTime,
         model: forwardedModel,
         machineId,
+        userAgent: request.headers['user-agent'],
         baseUrl: resolved.baseUrl,
         usage,
         pendingId: cloudRequestId !== request.id ? `${sessionId}:${request.id}` : undefined
@@ -365,6 +369,7 @@ export async function setupChatRoute(
           responseTime: Date.now() - startTime,
           model: forwardedModel,
           machineId,
+          userAgent: request.headers['user-agent'],
           baseUrl: resolved.baseUrl,
           usage,
           pendingId: cloudRequestId !== request.id ? `${sessionId}:${request.id}` : undefined
@@ -442,6 +447,7 @@ export async function setupChatRoute(
                 responseTime: 0,
                 model: forwardedModel,
                 machineId,
+                userAgent: request.headers['user-agent'],
                 baseUrl: resolved.baseUrl,
                 usage: loopUsage
               }, 'completed')

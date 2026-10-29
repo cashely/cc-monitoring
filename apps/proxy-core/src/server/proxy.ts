@@ -282,6 +282,7 @@ async function completeStreamSave(
     responseTime: Date.now() - startTime,
     model: forwardedModel || originalModel,
     machineId,
+    userAgent: request.headers['user-agent'],
     baseUrl: resolved.baseUrl,
     usage,
     pendingId: requestId !== request.id ? `${sessionId}:${request.id}` : undefined
@@ -445,6 +446,7 @@ export async function setupProxy(
         responseTime: 0,
         model: forwardedModel,
         machineId,
+        userAgent: request.headers['user-agent'],
         baseUrl: resolved.baseUrl
       }, 'pending')
 
@@ -520,6 +522,7 @@ export async function setupProxy(
             responseTime: Date.now() - startTime,
             model: forwardedModel,
             machineId,
+            userAgent: request.headers['user-agent'],
             baseUrl: resolved.baseUrl,
             usage,
             pendingId: cloudRequestId !== request.id ? `${sessionId}:${request.id}` : undefined
@@ -669,6 +672,7 @@ export async function setupProxy(
           responseTime: Date.now() - startTime,
           model: forwardedModel,
           machineId,
+          userAgent: request.headers['user-agent'],
           baseUrl: resolved.baseUrl,
           usage,
           pendingId: cloudRequestId !== request.id ? `${sessionId}:${request.id}` : undefined
@@ -761,6 +765,7 @@ export async function setupProxy(
         responseTime: Date.now() - startTime,
         model: originalModel,
         machineId: getMachineIdSync() ?? undefined,
+        userAgent: request.headers['user-agent'],
         baseUrl: resolved.baseUrl
       }, 'completed')
 

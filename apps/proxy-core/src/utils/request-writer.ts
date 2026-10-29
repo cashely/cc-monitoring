@@ -47,6 +47,7 @@ export interface RequestSummary {
   baseUrl?: string
   model?: string
   machineId?: string
+  userAgent?: string
   usage?: TokenUsage
 }
 
@@ -137,12 +138,12 @@ export async function saveRequestDB(
   const stmt = db.prepare(`
     INSERT OR REPLACE INTO requests (
       request_id, session_id, timestamp, method, path, status_code, response_time,
-      api_key, proxy_api_key, base_url, model, machine_id,
+      api_key, proxy_api_key, base_url, model, machine_id, user_agent,
       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
       request_headers, request_body, response_headers, response_events,
       completed_at, closed_at, error
     ) VALUES (
-      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     )
   `)
 
@@ -161,6 +162,7 @@ export async function saveRequestDB(
     data.baseUrl || null,
     data.model || null,
     data.machineId || null,
+    data.request.headers['user-agent'] || null,
     usage?.input_tokens || null,
     usage?.output_tokens || null,
     usage?.cache_read_input_tokens || null,
@@ -282,7 +284,7 @@ export async function listRequestDB(
   const rows = db.prepare(`
     SELECT
       request_id, session_id, timestamp, method, path, status_code, response_time,
-      api_key, proxy_api_key, base_url, model, machine_id,
+      api_key, proxy_api_key, base_url, model, machine_id, user_agent,
       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
     FROM requests
     ${whereClause}
@@ -308,6 +310,7 @@ export async function listRequestDB(
       baseUrl: row.base_url,
       model: row.model,
       machineId: row.machine_id,
+      userAgent: row.user_agent,
       usage: row.input_tokens || row.output_tokens ? {
         input_tokens: row.input_tokens,
         output_tokens: row.output_tokens,

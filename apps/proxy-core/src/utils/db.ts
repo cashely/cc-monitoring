@@ -87,6 +87,11 @@ export function initDatabase(): Database.Database {
     db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (9)').run()
   }
 
+  if (currentVersion < 10) {
+    applySchemaV10(db)
+    db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (10)').run()
+  }
+
   return db
 }
 
@@ -172,6 +177,7 @@ function applySchemaV1(db: Database.Database) {
       proxy_api_key TEXT,
       base_url TEXT,
       model TEXT,
+      user_agent TEXT,
       input_tokens INTEGER,
       output_tokens INTEGER,
       cache_read_tokens INTEGER,
@@ -295,6 +301,20 @@ export function applySchemaV9(db: Database.Database) {
   if (!columns.some(c => c.name === 'auth_style')) {
     db.exec("ALTER TABLE providers ADD COLUMN auth_style TEXT NOT NULL DEFAULT 'bearer'")
   }
+}
+
+export function applySchemaV10(db: Database.Database) {
+  // Add user_agent column to requests table
+  // ALTER TABLE ADD COLUMN is idempotent-safe via column-existence check
+  const columns = db.prepare("PRAGMA table_info(requests)").all() as { name: string }[]
+  if (!columns.some(c => c.name === 'user_agent')) {
+    db.exec('ALTER TABLE requests ADD COLUMN user_agent TEXT')
+  }
+  // Backfill historical rows from request_headers JSON (idempotent)
+  db.prepare(`
+    UPDATE requests SET user_agent = json_extract(request_headers, '$.user-agent')
+    WHERE user_agent IS NULL AND request_headers IS NOT NULL
+  `).run()
 }
 
 export function closeDatabase() {

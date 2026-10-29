@@ -224,6 +224,18 @@ export function RequestTable({
       ),
     },
     {
+      title: 'UA',
+      dataIndex: 'userAgent',
+      key: 'userAgent',
+      width: 180,
+      ellipsis: true,
+      render: (value: string) => (
+        <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }} title={value}>
+          {value || '-'}
+        </span>
+      ),
+    },
+    {
       title: '耗时',
       dataIndex: 'responseTime',
       key: 'responseTime',
@@ -304,7 +316,7 @@ export function RequestTable({
         })}
         rowKey="compositeId"
         size="small"
-        scroll={{ x: 1420, y: 'calc(100vh - 200px)' }}
+        scroll={{ x: 1600, y: 'calc(100vh - 200px)' }}
         tableLayout="auto"
         sticky
         footer={() => (
