@@ -11,6 +11,7 @@ export interface TopicSummary { slug: string; title: string; summary: string; ta
 export interface ChunkRef { id: string; title: string; summary: string; tags: string[] }
 export interface TopicDetail { title: string; tags: string[]; sources: unknown[]; chunks: ChunkRef[] }
 export interface ChunkHit { topic: string; chunkId: string; title: string }
+export interface QueryHit { topic: string; chunkId: string; title: string; body: string }
 
 interface RootIndex { topics: TopicSummary[] }
 interface TopicIndex { slug: string; title: string; summary: string; tags: string[]; chunks: ChunkRef[] }
@@ -19,6 +20,7 @@ export interface KnowledgeStore {
   listTopics(): Promise<TopicSummary[]>
   getTopic(topic: string): Promise<TopicDetail>
   searchChunks(query: string): Promise<ChunkHit[]>
+  queryKnowledge(query: string, limit?: number): Promise<QueryHit[]>
   readChunk(topic: string, chunkId: string): Promise<string>
   upsertTopic(input: { slug: string; title: string; summary: string; tags: string[] }): Promise<void>
   upsertChunkRef(input: { topic: string; chunkId: string; title: string; summary: string; tags: string[] }): Promise<void>
@@ -145,10 +147,31 @@ export function createKnowledgeStore(root: string): KnowledgeStore {
     await fs.writeFile(topicPath, JSON.stringify(topicIdx, null, 2), 'utf8')
   }
 
-  async function searchChunks(query: string): Promise<ChunkHit[]> {
-    if (!query.trim()) return []
-    const hits: ChunkHit[] = []
+  /** 匹配词集合：整体 query + whitespace 分割的长度 >1 的 token，去重 */
+  function buildTerms(query: string): string[] {
     const q = query.toLowerCase()
+    const terms = new Set<string>([q])
+    for (const tok of q.split(/\s+/)) {
+      if (tok.length > 1) terms.add(tok)
+    }
+    return [...terms]
+  }
+
+  interface ScannedChunk {
+    topic: string
+    chunkId: string
+    title: string
+    score: number
+    /** 按旧 searchChunks 规则（仅整体 query）是否命中 */
+    wholeQueryHit: boolean
+  }
+
+  /** 扫描所有 topic/chunk，返回打分候选（searchChunks / queryKnowledge 共用） */
+  async function scanChunks(query: string): Promise<ScannedChunk[]> {
+    const q = query.toLowerCase()
+    if (!q.trim()) return []
+    const terms = buildTerms(query)
+    const candidates: ScannedChunk[] = []
     // topic index 本函数作用域缓存，避免每个 chunk 重复读
     const topicIndexCache = new Map<string, TopicIndex | null>()
     let entries: string[]
@@ -166,7 +189,7 @@ export function createKnowledgeStore(root: string): KnowledgeStore {
       const topicIdx = topicIndexCache.get(topic) ?? null
       const topicTags = topicIdx && Array.isArray(topicIdx.tags) ? topicIdx.tags : []
       const chunkRefs = topicIdx && Array.isArray(topicIdx.chunks) ? topicIdx.chunks : []
-      const topicTagHit = topicTags.some(t => t.toLowerCase().includes(q))
+      const topicTagHit = (term: string) => topicTags.some(t => t.toLowerCase().includes(term))
 
       const chunksDir = path.join(root, topic, 'chunks')
       let files: string[]
@@ -179,18 +202,50 @@ export function createKnowledgeStore(root: string): KnowledgeStore {
         const chunkId = file.replace(/\.md$/, '')
         if (!CHUNK_RE.test(chunkId)) continue
         const text = await fs.readFile(path.join(chunksDir, file), 'utf8')
+        const textLc = text.toLowerCase()
         const ref = chunkRefs.find(c => c.id === chunkId)
+        const refTitle = (ref?.title ?? '').toLowerCase()
+        const refSummary = (ref?.summary ?? '').toLowerCase()
         const refTags = ref && Array.isArray(ref.tags) ? ref.tags : []
-        const hit =
-          text.toLowerCase().includes(q) ||
-          (ref?.title ?? '').toLowerCase().includes(q) ||
-          (ref?.summary ?? '').toLowerCase().includes(q) ||
-          topicTagHit ||
-          refTags.some(t => t.toLowerCase().includes(q))
-        if (hit) {
-          hits.push({ topic, chunkId, title: parseChunkTitle(text) })
+
+        let score = 0
+        for (const term of terms) {
+          // 每个字段每词只计一次分，body 不按出现次数刷分
+          if (refTitle.includes(term)) score += 3
+          if (refTags.some(t => t.toLowerCase().includes(term))) score += 2
+          if (topicTagHit(term)) score += 2
+          if (refSummary.includes(term)) score += 1
+          if (textLc.includes(term)) score += 1
         }
+        if (score === 0) continue
+        const wholeQueryHit =
+          textLc.includes(q) ||
+          refTitle.includes(q) ||
+          refSummary.includes(q) ||
+          topicTagHit(q) ||
+          refTags.some(t => t.toLowerCase().includes(q))
+        candidates.push({ topic, chunkId, title: parseChunkTitle(text), score, wholeQueryHit })
       }
+    }
+    return candidates
+  }
+
+  async function searchChunks(query: string): Promise<ChunkHit[]> {
+    if (!query.trim()) return []
+    return (await scanChunks(query))
+      .filter(c => c.wholeQueryHit)
+      .map(({ topic, chunkId, title }) => ({ topic, chunkId, title }))
+  }
+
+  async function queryKnowledge(query: string, limit = 3): Promise<QueryHit[]> {
+    const capped = Math.min(Math.max(limit, 1), 5)
+    const candidates = (await scanChunks(query))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, capped)
+    const hits: QueryHit[] = []
+    for (const c of candidates) {
+      const body = await readChunk(c.topic, c.chunkId)
+      hits.push({ topic: c.topic, chunkId: c.chunkId, title: c.title, body })
     }
     return hits
   }
@@ -208,7 +263,7 @@ export function createKnowledgeStore(root: string): KnowledgeStore {
     return fs.readFile(resolved, 'utf8')
   }
 
-  return { listTopics, getTopic, searchChunks, readChunk, upsertTopic, upsertChunkRef }
+  return { listTopics, getTopic, searchChunks, queryKnowledge, readChunk, upsertTopic, upsertChunkRef }
 }
 
 // 默认单例：绑生产 docsDir

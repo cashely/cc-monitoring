@@ -165,8 +165,21 @@ export const MCP_TOOLS: {
     },
   },
   {
+    name: 'query_knowledge',
+    description: 'Search the knowledge base and return matching chunk bodies in one call. This is the primary tool for answering project/domain questions.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search keywords' },
+        limit: { type: 'number', description: 'Max chunks to return (default 3, max 5).' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'list_topics',
-    description: 'List all knowledge topics with one-line summary. Call this first to discover what topics exist.',
+    description: 'List all knowledge topics with one-line summary. Use this to browse topics when keyword search does not answer the question.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
@@ -181,7 +194,7 @@ export const MCP_TOOLS: {
   },
   {
     name: 'search_chunks',
-    description: 'Keyword search across all chunks. Returns matching chunk list (no body). Use when topic is unknown.',
+    description: 'Keyword search across all chunks, returning a matching chunk list without bodies. Prefer query_knowledge, which returns bodies directly; use this only when you need chunk lists without bodies.',
     inputSchema: {
       type: 'object',
       properties: { query: { type: 'string', description: 'Search keyword' } },
@@ -220,6 +233,15 @@ const HANDLERS: Record<string, ToolHandler> = {
       }
       return err(e)
     }
+  },
+  query_knowledge: async (args) => {
+    const hits = await knowledgeStore.queryKnowledge(args.query ?? '', args.limit)
+    if (hits.length === 0) {
+      return ok('No knowledge chunks matched. Call list_topics to browse available topics, or refine your query.')
+    }
+    return ok(JSON.stringify({
+      hits: hits.map(h => ({ topic: h.topic, chunkId: h.chunkId, title: h.title, body: h.body })),
+    }, null, 2))
   },
   search_chunks: async (args) => ok(JSON.stringify(await knowledgeStore.searchChunks(args.query ?? ''), null, 2)),
   read_chunk: async (args) => {
