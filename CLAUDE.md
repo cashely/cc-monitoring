@@ -133,3 +133,17 @@ Claude Code 行为准则 + 编码约束。项目介绍、命令、架构详见 [
 **步骤三** 在执行任何编码变动之前，必须拆分成方案、目标、校验标准，然后分派不同的子Agent进行具体工作的执行，禁止主Agent执行编码修改
 **步骤四** 在子Agent执行完成以后，主Agent必须从方案、目标以及执行结果对编码进行确认，不允许出现方案以及目标之外的修改处理，确保目标跟结果一致性
 **步骤五** 在所有任务完成以后由主Agent进行修改汇总，给到用户确认，只有经过用户的确认才算完成任务
+
+## Agent skills
+
+### Issue tracker
+
+Issue / spec 以本地 markdown 文件存于 `.scratch/<feature>/`，不使用 GitHub Issues。详见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+五个默认角色标签：`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`（本地模式下用作 issue 文件的 `Status:` 值）。详见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+单上下文布局：根 `GLOSSARY.md` + `docs/adr/`。详见 `docs/agents/domain.md`。
