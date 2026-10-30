@@ -23,6 +23,7 @@ import { dataDir } from './paths.js'
 import { sandboxWriteOps } from './pi-sandbox-ops.js'
 import { knowledgeStore } from './knowledge-store.js'
 import { createCrawlTools, type CrawlGuard } from './pi-crawl-tools.js'
+import { createTimeoutSignal, bindAbort } from './abort-signals.js'
 
 // 知识文档目录：所有文件工具的 cwd 和沙箱白名单根
 const docsDir = path.join(dataDir, 'docs')
@@ -87,6 +88,8 @@ export interface CreatePiSessionOptions {
   mode: PiSessionMode
   /** mode='crawl' 时必填：渐进抓取状态守卫 */
   crawlGuard?: CrawlGuard
+  /** 外部取消信号（mode='crawl' 时接到抓取工具上） */
+  signal?: AbortSignal
 }
 
 const KB_STRUCTURE = `Your knowledge directory (~/.cc-monitoring/docs) stores a **dictionary**: concise, distilled entries a future reader can look up. You do NOT copy source text — you digest it.
@@ -387,7 +390,7 @@ const KT = (name: string): ToolDefinition => KNOWLEDGE_TOOLS.find((t) => t.name 
 const WRITE_TOOL = createWriteToolDefinition(docsDir, { operations: sandboxWriteOps }) as ToolDefinition
 
 /** 按模式构建工具集（ToolDefinition 数组，用于 customTools） */
-function buildModeTools(mode: PiSessionMode, crawlGuard?: CrawlGuard): ToolDefinition[] {
+function buildModeTools(mode: PiSessionMode, crawlGuard?: CrawlGuard, signal?: AbortSignal): ToolDefinition[] {
   switch (mode) {
     case 'chat':
       return [KT('list_topics'), KT('get_topic'), KT('search_chunks'), KT('read_chunk')]
@@ -395,7 +398,8 @@ function buildModeTools(mode: PiSessionMode, crawlGuard?: CrawlGuard): ToolDefin
       return [buildReadSourceTool(), buildAddOutlineTool()]
     case 'crawl':
       if (!crawlGuard) throw new Error('crawl 模式必须传入 crawlGuard')
-      return createCrawlTools(crawlGuard)
+      if (!signal) throw new Error('crawl 模式必须传入 signal')
+      return createCrawlTools(crawlGuard, signal)
     case 'refine':
       return [buildReadSourceTool(), WRITE_TOOL, KT('add_chunk')]
     case 'tag':
@@ -441,7 +445,7 @@ export async function createPiSession(options: CreatePiSessionOptions): Promise<
   let currentSessionId = ''
 
   const systemPrompt = systemPromptForMode(options.mode)
-  const modeTools = buildModeTools(options.mode, options.crawlGuard)
+  const modeTools = buildModeTools(options.mode, options.crawlGuard, options.signal)
   const toolAllowlist = buildToolAllowlist(options.mode)
 
   const resourceLoader = new DefaultResourceLoader({
@@ -487,6 +491,9 @@ export async function createPiSession(options: CreatePiSessionOptions): Promise<
 // ============================================================
 // 无工具 JSON 调用（reconcile 模式）
 
+// 单次 JSON 调用超时：5 分钟
+const STAGE_TIMEOUT_MS = 5 * 60 * 1000
+
 /**
  * 从任意文本截取第一个 `{` 到最后一个 `}` 之间的子串并解析为 JSON 对象。
  * 容忍 prose / 代码围栏包裹。无 `{` 或解析失败时抛错。
@@ -512,8 +519,14 @@ export async function runJsonPrompt(opts: {
   port: number
   instructions: string
   prompt: string
+  signal?: AbortSignal
 }): Promise<unknown> {
   const session = await createPiSession({ port: opts.port, mode: 'reconcile' })
+
+  // 5 分钟超时 + 外部取消：任一触发都调 session.abort()；SDK abort 后 prompt/waitForIdle
+  // 会正常 resolve（不 reject），故 await（经 finally）后需检查 combined.aborted 主动抛错
+  const combined = createTimeoutSignal(STAGE_TIMEOUT_MS, opts.signal)
+  bindAbort(combined, () => session.abort())
 
   // 订阅累积 assistant 文本 chunk
   let accumulated = ''
@@ -531,6 +544,10 @@ export async function runJsonPrompt(opts: {
     await session.waitForIdle()
   } finally {
     unsub()
+  }
+
+  if (combined.aborted) {
+    throw new Error('json prompt 已中止')
   }
 
   return extractJsonObject(accumulated)

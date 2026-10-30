@@ -324,15 +324,32 @@ describe('CrawlGuard signal 透传', () => {
   it('crawl_open/crawl_visit 的 execute 把 signal 透传给 guard.navigate', async () => {
     const nav = jest.fn(async () => ({ title: 'A', text: 'A text', links: ['https://pi.dev/b'] }))
     const guard = new CrawlGuard({ entryUrl: 'https://pi.dev/', docsDir: docsDir(), slug: 'pi', navigate: nav })
-    const tools = createCrawlTools(guard)
-    const byName = Object.fromEntries(tools.map((t) => [t.name, t]))
     const signal = new AbortController().signal
+    const tools = createCrawlTools(guard, signal)
+    const byName = Object.fromEntries(tools.map((t) => [t.name, t]))
 
     await byName.crawl_open.execute('id-1', {}, signal, undefined, {} as any)
     expect(nav).toHaveBeenNthCalledWith(1, 'https://pi.dev/', signal)
 
     await byName.crawl_visit.execute('id-2', { url: 'https://pi.dev/b' }, signal, undefined, {} as any)
     expect(nav).toHaveBeenNthCalledWith(2, 'https://pi.dev/b', signal)
+  })
+
+  it('createCrawlTools 传入已 abort 的外部 signal：crawl_open 把中止 signal 透传给 runEgoBrowser', async () => {
+    mockRunEgoBrowser.mockResolvedValue(
+      JSON.stringify({ title: 'A', text: 'A text', links: [] }),
+    )
+    const guard = new CrawlGuard({ entryUrl: 'https://pi.dev/', docsDir: docsDir(), slug: 'pi' })
+    const external = new AbortController()
+    external.abort()
+    const tools = createCrawlTools(guard, external.signal)
+    const byName = Object.fromEntries(tools.map((t) => [t.name, t]))
+
+    // 未传 SDK tool signal 时直接使用外部 signal 原引用
+    await byName.crawl_open.execute('id-3', {}, undefined, undefined, {} as any)
+    expect(mockRunEgoBrowser).toHaveBeenCalledWith(
+      expect.any(String), { timeoutMs: 60000, signal: external.signal },
+    )
   })
 })
 
@@ -350,14 +367,14 @@ describe('createCrawlTools', () => {
   }
 
   it('提供 crawl_open/crawl_visit/save_source/crawl_finish 四个工具', () => {
-    const tools = createCrawlTools(makeGuard())
+    const tools = createCrawlTools(makeGuard(), new AbortController().signal)
     expect(tools.map((t) => t.name)).toEqual(['crawl_open', 'crawl_visit', 'save_source', 'crawl_finish'])
   })
 
   it('工具错误以可读文本返回（不抛异常）', async () => {
     mockRunEgoBrowser.mockResolvedValue('closed')
     const guard = makeGuard()
-    const tools = createCrawlTools(guard)
+    const tools = createCrawlTools(guard, new AbortController().signal)
     const byName = Object.fromEntries(tools.map((t) => [t.name, t]))
 
     const textOf = (res: { content: Array<{ type: string; text?: string }> }) =>

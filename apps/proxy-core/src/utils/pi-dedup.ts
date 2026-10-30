@@ -93,6 +93,7 @@ export async function reconcileTopics(opts: {
   candidate: { slug: string; title: string; tags: string[]; items?: OutlineItem[] }
   targets?: Array<TopicSummary & { chunks?: ChunkRefLike[] }>
   wantItems: boolean
+  signal: AbortSignal
 }): Promise<ReconcileResult> {
   const targets = opts.targets
     ?? (await readAllTopics(opts.docsDir)).filter(t => t.slug !== opts.candidate.slug)
@@ -125,7 +126,7 @@ export async function reconcileTopics(opts: {
   const prompt = `新主题：\n${JSON.stringify(opts.candidate)}\n\n候选已有主题：\n${JSON.stringify(chosen)}`
 
   try {
-    const result = await runJsonPrompt({ port: opts.port, instructions, prompt }) as Partial<ReconcileResult>
+    const result = await runJsonPrompt({ port: opts.port, instructions, prompt, signal: opts.signal }) as Partial<ReconcileResult>
     // 正载荷必须完整，且 targetSlug 必须在实际提供的 chosen 之中，否则安全降级
     // （同时挡住候选自身 slug 回显、../ 路径穿越及任何未提供的目标）
     const chosenSlugs = chosen.map(t => t.slug)
@@ -225,12 +226,13 @@ export async function readSidecarDetail(docsDir: string, slug: string): Promise<
 
 // 据 title 让 LLM 铸一个小写连字符 slug。失败/非法/已占 → 降级 slugFromLabel(title)，
 // 仍被占则追加 -2/-3…。返回保证合法且不落在 existing 内的 slug（除非编号也耗尽，实践不会）。
-export async function mintSlug(opts: { port: number; title: string; existing: string[] }): Promise<string> {
+export async function mintSlug(opts: { port: number; title: string; existing: string[]; signal: AbortSignal }): Promise<string> {
   try {
     const result = await runJsonPrompt({
       port: opts.port,
       instructions: 'Return ONLY JSON {"slug":"<lowercase-hyphen-slug>"} derived faithfully from the title.',
       prompt: `Title: ${opts.title}`,
+      signal: opts.signal,
     }) as { slug?: unknown }
     if (typeof result.slug === 'string' && SLUG_RE.test(result.slug) && !opts.existing.includes(result.slug)) {
       return result.slug

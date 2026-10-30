@@ -6,6 +6,8 @@ import { runJsonPrompt } from '../pi-runtime.js'
 import { reconcileTopics, readAllTopics, readTopicDetail, mintSlug } from '../pi-dedup.js'
 
 const mockJson = runJsonPrompt as jest.MockedFunction<typeof runJsonPrompt>
+// 本文件用例只验证裁定/降级逻辑，signal 不触发，复用一个常驻 signal
+const signal = new AbortController().signal
 let tmp: string
 
 beforeEach(async () => {
@@ -18,14 +20,14 @@ test('预筛命中 → 调 LLM，match=true 透传 targetSlug/mergedTitle/itemsT
     confidence: 0.62, itemsToAdd: [{ id: 'x', title: 'X', oneLine: 'x' }] })
   const r = await reconcileTopics({ port: 1, docsDir: tmp, wantItems: true,
     candidate: { slug: 'new', title: 'React Hooks', tags: [] },
-    targets: [{ slug: 'a', title: 'React Hooks', summary: '', tags: [], chunks: [] }] })
+    targets: [{ slug: 'a', title: 'React Hooks', summary: '', tags: [], chunks: [] }], signal })
   expect(r.match).toBe(true); expect(r.targetSlug).toBe('a'); expect(r.itemsToAdd).toHaveLength(1)
 })
 test('LLM 抛错（坏 JSON）→ 安全返回 match=false', async () => {
   mockJson.mockRejectedValue(new Error('no json object in response'))
   await expect(reconcileTopics({ port: 1, docsDir: tmp, wantItems: false,
     candidate: { slug: 'new', title: 'T', tags: [] },
-    targets: [{ slug: 'a', title: 'T', summary: '', tags: [], chunks: [] }] }))
+    targets: [{ slug: 'a', title: 'T', summary: '', tags: [], chunks: [] }], signal }))
     .resolves.toMatchObject({ match: false })
 })
 test('正载荷回显候选自身 slug（未提供的目标）→ match=false', async () => {
@@ -33,19 +35,19 @@ test('正载荷回显候选自身 slug（未提供的目标）→ match=false', 
     mergedSummary: 's', itemsToAdd: [] })
   const r = await reconcileTopics({ port: 1, docsDir: tmp, wantItems: true,
     candidate: { slug: 'new', title: 'React Hooks', tags: [] },
-    targets: [{ slug: 'a', title: 'React Hooks', summary: '', tags: [], chunks: [] }] })
+    targets: [{ slug: 'a', title: 'React Hooks', summary: '', tags: [], chunks: [] }], signal })
   expect(r).toEqual({ match: false })
 })
 test('正载荷缺 mergedTitle → match=false', async () => {
   mockJson.mockResolvedValue({ match: true, targetSlug: 'a', mergedSummary: 's', itemsToAdd: [] })
   const r = await reconcileTopics({ port: 1, docsDir: tmp, wantItems: true,
     candidate: { slug: 'new', title: 'React Hooks', tags: [] },
-    targets: [{ slug: 'a', title: 'React Hooks', summary: '', tags: [], chunks: [] }] })
+    targets: [{ slug: 'a', title: 'React Hooks', summary: '', tags: [], chunks: [] }], signal })
   expect(r).toEqual({ match: false })
 })
 test('空目标 → 不调 LLM，match=false', async () => {
   const r = await reconcileTopics({ port: 1, docsDir: tmp, wantItems: false,
-    candidate: { slug: 'new', title: 'zzz', tags: [] }, targets: [] })
+    candidate: { slug: 'new', title: 'zzz', tags: [] }, targets: [], signal })
   expect(r).toEqual({ match: false })
   expect(mockJson).not.toHaveBeenCalled()
 })
@@ -53,7 +55,7 @@ test('预筛空且目标>20 → 不调 LLM，match=false', async () => {
   const targets = Array.from({ length: 21 }, (_, i) =>
     ({ slug: `s${i}`, title: `Distinct ${i}`, summary: '', tags: [], chunks: [] }))
   const r = await reconcileTopics({ port: 1, docsDir: tmp, wantItems: false,
-    candidate: { slug: 'new', title: 'zzzz-noise', tags: [] }, targets })
+    candidate: { slug: 'new', title: 'zzzz-noise', tags: [] }, targets, signal })
   expect(r.match).toBe(false); expect(mockJson).not.toHaveBeenCalled()
 })
 
@@ -69,15 +71,15 @@ test('readAllTopics: 空/缺失目录返回 []', async () => {
 describe('mintSlug', () => {
   test('LLM 返回合法且空闲的 slug → 直接使用', async () => {
     mockJson.mockResolvedValue({ slug: 'react-hooks' })
-    await expect(mintSlug({ port: 1, title: 'React Hooks', existing: [] })).resolves.toBe('react-hooks')
+    await expect(mintSlug({ port: 1, title: 'React Hooks', existing: [], signal })).resolves.toBe('react-hooks')
   })
   test('LLM 返回非法 slug → 降级 slugFromLabel(title)', async () => {
     mockJson.mockResolvedValue({ slug: 'Bad Slug!' })
-    await expect(mintSlug({ port: 1, title: 'Hello World', existing: [] })).resolves.toBe('hello-world')
+    await expect(mintSlug({ port: 1, title: 'Hello World', existing: [], signal })).resolves.toBe('hello-world')
   })
   test('LLM slug 与 slugFromLabel(title) 均被占 → 追加 -2', async () => {
     mockJson.mockResolvedValue({ slug: 'my-topic' })
-    await expect(mintSlug({ port: 1, title: 'My Topic', existing: ['my-topic'] }))
+    await expect(mintSlug({ port: 1, title: 'My Topic', existing: ['my-topic'], signal }))
       .resolves.toBe('my-topic-2')
   })
 })

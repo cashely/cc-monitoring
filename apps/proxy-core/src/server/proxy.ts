@@ -12,6 +12,7 @@ import { aggregateStats } from '../utils/stats-aggregator.js'
 import { mcpManager } from '../utils/mcp-manager.js'
 import { getMachineId, getMachineIdSync, preloadMachineId } from '../utils/machine-id.js'
 import { createEventDecoder } from '../utils/sse-protocol.js'
+import { createClientAbortSignal, createTimeoutSignal } from '../utils/abort-signals.js'
 
 interface ProxyError extends Error {
   code?: string
@@ -275,6 +276,8 @@ export async function setupProxy(
   fastify.all('/v1/*', async (request: ProxyRequest, reply: FastifyReply) => {
     const startTime = Date.now()
     const resolved = resolveProxyTarget(proxyConfig)
+    // 下游客户端中止：整个请求作用域建一次，两处上游 fetch 复用
+    const clientSignal = createClientAbortSignal(request.raw)
     const sessionId = (request.headers['x-claude-code-session-id'] as string) || 'unknown-session'
 
     // Replace model based on tier matching (getProxyModel)
@@ -349,7 +352,7 @@ export async function setupProxy(
           method: request.method,
           headers: openaiHeaders,
           body: JSON.stringify(openaiRequest),
-          signal: AbortSignal.timeout(300000)
+          signal: createTimeoutSignal(300000, clientSignal)
         })
 
         request.log.info(`response status: ${response.status}`)
@@ -452,7 +455,7 @@ export async function setupProxy(
         method: request.method,
         headers: forwardHeaders,
         body: request.method !== 'GET' ? JSON.stringify(request.body) : undefined,
-        signal: AbortSignal.timeout(300000)
+        signal: createTimeoutSignal(300000, clientSignal)
       })
 
       request.log.info(`response status: ${response.status}`)

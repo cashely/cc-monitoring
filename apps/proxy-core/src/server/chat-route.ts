@@ -13,6 +13,7 @@ import { findEnabledTool } from '../tools/index.js'
 import { writeSSEEvent, writeTextAsSSE, shouldMock } from '../utils/sse-writer.js'
 import { SSEStreamProcessor } from '../utils/sse-stream-processor.js'
 import { getMachineId, getMachineIdSync, preloadMachineId } from '../utils/machine-id.js'
+import { createClientAbortSignal, createTimeoutSignal } from '../utils/abort-signals.js'
 
 interface ChatRequest extends FastifyRequest {
   body: any
@@ -31,6 +32,8 @@ export async function setupChatRoute(
   fastify.post('/api/chat', async (request: ChatRequest, reply: FastifyReply) => {
     const startTime = Date.now()
     const resolved = resolveProxyTarget(proxyConfig)
+    // 下游客户端中止：建一次，主 fetch 与 inject 循环内 fetch 全部复用同一 signal
+    const clientSignal = createClientAbortSignal(request.raw)
 
     // Generate or reuse session ID
     const providedSessionId = request.headers['x-chat-session-id'] as string | undefined
@@ -142,7 +145,7 @@ export async function setupChatRoute(
       method: 'POST',
       headers: forwardHeaders,
       body: JSON.stringify(request.body),
-      signal: AbortSignal.timeout(300000)
+      signal: createTimeoutSignal(300000, clientSignal)
     })
 
     request.log.info(`[chat] response status: ${response.status}`)
@@ -181,7 +184,7 @@ export async function setupChatRoute(
                 method: 'POST',
                 headers: forwardHeaders,
                 body: JSON.stringify(b),
-                signal: AbortSignal.timeout(300000)
+                signal: createTimeoutSignal(300000, clientSignal)
               })
               const loopResponseBody = await r.text()
               let loopJson: any
@@ -285,7 +288,7 @@ export async function setupChatRoute(
                 method: 'POST',
                 headers: forwardHeaders,
                 body: JSON.stringify(b),
-                signal: AbortSignal.timeout(300000)
+                signal: createTimeoutSignal(300000, clientSignal)
               })
               const loopRequestId = r.headers.get('x-request-id') || `loop_${request.id}_${Date.now()}`
               return { response: r, requestId: loopRequestId }

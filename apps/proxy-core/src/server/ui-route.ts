@@ -21,6 +21,7 @@ import { setupMcpRoutes } from './mcp-route.js'
 import { setupClaudeSettingsRoutes } from './claude-settings-route.js'
 import { checkAuth } from './auth.js'
 import { encodeSSEFrame } from '../utils/sse-protocol.js'
+import { createClientAbortSignal } from '../utils/abort-signals.js'
 
 // Exec API types
 interface ExecRequestBody {
@@ -306,8 +307,10 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
 
       if (!stream) {
         // 非流式：跑完流水线，返回汇总（不返回 output 文本——流水线产物落盘）
+        // 客户端在响应返回前断开 → abort 流水线
+        const signal = createClientAbortSignal(request.raw)
         try {
-          const result = await runLearnPipeline({ sourceType, input: prompt, label, port, events: noopLearnEvents })
+          const result = await runLearnPipeline({ sourceType, input: prompt, label, port, events: noopLearnEvents, signal })
           return {
             success: true,
             output: `slug=${result.slug} chunks=${result.chunksWritten} failed=${result.itemsFailed}`,
@@ -386,14 +389,14 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
           })),
       }
 
-      // 通道关闭时不做主动 abort（orchestrator 当前不暴露 abort API），
-      // 让 runLearnPipeline promise 自然 resolve/reject；res.write 已通过 res.destroyed 守卫。
+      // 通道关闭（关窗/客户端中止）→ abort 流水线，各阶段经 session.abort() 真取消
+      const learnController = new AbortController()
       res.on('close', () => {
-        // no-op: 仅防止悬挂引用；流水线继续跑到自然结束或每阶段超时
+        learnController.abort()
       })
 
       try {
-        await runLearnPipeline({ sourceType, input: prompt, label, port, events })
+        await runLearnPipeline({ sourceType, input: prompt, label, port, events, signal: learnController.signal })
         finish(0)
       } catch (err: any) {
         request.log.error({ err }, 'learn pipeline failed')

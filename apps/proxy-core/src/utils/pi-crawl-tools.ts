@@ -217,16 +217,18 @@ const ok = (text: string) => ({
 const errAsText = (e: unknown) =>
   ok(`error: ${e instanceof Error ? e.message : String(e)}`)
 
-export function createCrawlTools(guard: CrawlGuard): ToolDefinition[] {
+export function createCrawlTools(guard: CrawlGuard, signal: AbortSignal): ToolDefinition[] {
+  // SDK 传入 tool signal 时用它（session 中止时随之中止）；否则用外部 pipeline signal
+  const pickSignal = (toolSignal?: AbortSignal): AbortSignal => toolSignal ?? signal
   return [
     {
       name: 'crawl_open',
       label: 'crawl_open',
       description: '打开本次任务的入口 URL，返回标题、正文与同站链接。抓取第一步调用。',
       parameters: Type.Object({}),
-      async execute(_id, _params: Record<string, never>, signal?: AbortSignal) {
+      async execute(_id, _params: Record<string, never>, toolSignal?: AbortSignal) {
         try {
-          return ok(JSON.stringify(await guard.open(signal)))
+          return ok(JSON.stringify(await guard.open(pickSignal(toolSignal))))
         } catch (e) {
           return errAsText(e)
         }
@@ -237,9 +239,9 @@ export function createCrawlTools(guard: CrawlGuard): ToolDefinition[] {
       label: 'crawl_visit',
       description: '访问入口同站的子页面（必须是 crawl_open/上一次 crawl_visit 返回链接中的 http(s) 页面）。',
       parameters: Type.Object({ url: Type.String({ description: '要访问的同站完整 URL' }) }),
-      async execute(_id, params: { url: string }, signal?: AbortSignal) {
+      async execute(_id, params: { url: string }, toolSignal?: AbortSignal) {
         try {
-          return ok(JSON.stringify(await guard.visit(params.url, signal)))
+          return ok(JSON.stringify(await guard.visit(params.url, pickSignal(toolSignal))))
         } catch (e) {
           return errAsText(e)
         }

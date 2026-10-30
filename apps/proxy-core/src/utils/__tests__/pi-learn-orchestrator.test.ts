@@ -299,6 +299,8 @@ function tagCaptureHandler(captured: string[]): SessionHandler {
 
 // ---------- Test scaffolding ----------
 let tmpDir: string
+// 现有用例不触发取消，复用一个常驻 signal（同一引用贯穿各阶段）
+const externalSignal = new AbortController().signal
 
 beforeEach(async () => {
   tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'learn-pipe-'))
@@ -350,6 +352,7 @@ describe('pi-learn-orchestrator', () => {
         port: 9999,
         events: makeEvents(),
         docsDir: tmpDir,
+        signal: externalSignal,
       }),
     ).rejects.toThrow(/outline 未生成/)
 
@@ -409,6 +412,7 @@ describe('pi-learn-orchestrator', () => {
       port: 9999,
       events,
       docsDir: tmpDir,
+      signal: externalSignal,
     })
 
     expect(result.slug).toBe('my-topic')
@@ -457,6 +461,7 @@ describe('pi-learn-orchestrator', () => {
       port: 9999,
       events,
       docsDir: tmpDir,
+      signal: externalSignal,
     })
 
     expect(result.slug).toBe(slug)
@@ -483,6 +488,7 @@ describe('pi-learn-orchestrator', () => {
         port: 9999,
         events,
         docsDir: tmpDir,
+        signal: externalSignal,
       }),
     ).rejects.toThrow()
 
@@ -539,6 +545,7 @@ describe('pi-learn-orchestrator', () => {
       port: 9999,
       events,
       docsDir: tmpDir,
+      signal: externalSignal,
     })
 
     // item0 失败（port down），item1 成功
@@ -592,6 +599,7 @@ describe('pi-learn-orchestrator', () => {
       port: 9999,
       events,
       docsDir: tmpDir,
+      signal: externalSignal,
     })
 
     expect(result.slug).toBe(slug)
@@ -638,6 +646,7 @@ describe('pi-learn-orchestrator', () => {
       port: 9999,
       events,
       docsDir: tmpDir,
+      signal: externalSignal,
     })
 
     expect(result.slug).toBe(slug)
@@ -683,6 +692,7 @@ describe('pi-learn-orchestrator', () => {
       port: 9999,
       events,
       docsDir: tmpDir,
+      signal: externalSignal,
     })
 
     expect(result.chunksWritten).toBe(0)
@@ -719,6 +729,7 @@ describe('pi-learn-orchestrator', () => {
         port: 9999,
         events,
         docsDir: tmpDir,
+        signal: externalSignal,
       }),
     ).rejects.toThrow()
 
@@ -744,6 +755,7 @@ describe('pi-learn-orchestrator', () => {
       port: 9999,
       events,
       docsDir: tmpDir,
+      signal: externalSignal,
     })
 
     // sources：入口 + 同站子页共 2 份
@@ -777,6 +789,7 @@ describe('pi-learn-orchestrator', () => {
       port: 9999,
       events,
       docsDir: tmpDir,
+      signal: externalSignal,
     })
 
     // 两个 crawl session（guard 也重建）+ outline/refine/tag
@@ -807,6 +820,7 @@ describe('pi-learn-orchestrator', () => {
         port: 9999,
         events,
         docsDir: tmpDir,
+        signal: externalSignal,
       }),
     ).rejects.toThrow(/crawl 未收集到页面/)
 
@@ -858,6 +872,7 @@ describe('pi-learn-orchestrator', () => {
       port: 9999,
       events: makeEvents(),
       docsDir: tmpDir,
+      signal: externalSignal,
     })
 
     // 返回目标 slug；refine 只写了 1 个新增 chunk
@@ -929,6 +944,7 @@ describe('pi-learn-orchestrator', () => {
       port: 9999,
       events: makeEvents(),
       docsDir: tmpDir,
+      signal: externalSignal,
     })
 
     expect(result.slug).toBe('oldt')
@@ -986,6 +1002,7 @@ describe('pi-learn-orchestrator', () => {
       port: 9999,
       events: makeEvents(),
       docsDir: tmpDir,
+      signal: externalSignal,
     })
 
     expect(result.slug).toBe('dup')
@@ -1033,6 +1050,7 @@ describe('pi-learn-orchestrator', () => {
       port: 9999,
       events: makeEvents(),
       docsDir: tmpDir,
+      signal: externalSignal,
     })
 
     expect(result.slug).toBe('dup-new')
@@ -1072,9 +1090,173 @@ describe('pi-learn-orchestrator', () => {
         port: 9999,
         events: makeEvents(),
         docsDir: tmpDir,
+        signal: externalSignal,
       }),
     ).rejects.toThrow(/检测到未清理的旁挂目录/)
 
     expect(mockCreatePiSession).not.toHaveBeenCalled()
+  })
+
+  // ============================================================
+  // 贯穿式 AbortSignal
+  // ============================================================
+
+  /**
+   * prompt 挂起直到 abort 被调。模拟真实 pi SDK：abort 被吞成 stopReason="aborted"
+   * 的 assistant 消息，在途 prompt 正常 resolve（不 reject）。
+   */
+  function makeBlockingSession() {
+    const listeners = new Set<(ev: any) => void>()
+    let resolvePrompt: (() => void) | undefined
+    let aborted = false
+    return {
+      sessionId: 'blocking',
+      subscribe: (fn: (ev: any) => void) => {
+        listeners.add(fn)
+        return () => { listeners.delete(fn) }
+      },
+      prompt: jest.fn(async () => {
+        for (const l of listeners) l({ type: 'message_start', message: { role: 'assistant' } })
+        await new Promise<void>((resolve) => { resolvePrompt = resolve })
+      }),
+      waitForIdle: jest.fn(async () => {}),
+      abort: jest.fn(async () => {
+        if (aborted) return
+        aborted = true
+        // 真实 SDK：resolve 在途 prompt，不 rethrow
+        resolvePrompt?.()
+      }),
+    }
+  }
+
+  /** 等到 mock 被首次调用（prompt 真正在途） */
+  async function waitForCalled(mock: jest.Mock): Promise<void> {
+    await new Promise<void>((resolve) => {
+      const tick = () => (mock.mock.calls.length > 0 ? resolve() : setImmediate(tick))
+      tick()
+    })
+  }
+
+  test('signal 预先 abort：prompt 仍 resolve，runLearnPipeline 靠信号检查 reject', async () => {
+    const preAborted = new AbortController()
+    preAborted.abort()
+    const session = new FakeSession(async () => {})
+    const abortSpy = jest.spyOn(session, 'abort')
+    mockCreatePiSession.mockImplementation(async () => session as any)
+
+    await expect(
+      runLearnPipeline({
+        sourceType: 'file',
+        input: '# body',
+        label: 'x.md',
+        port: 9999,
+        events: makeEvents(),
+        docsDir: tmpDir,
+        signal: preAborted.signal,
+      }),
+    ).rejects.toThrow(/learn 运行已中止/)
+
+    // bindAbort 对已 abort signal 立即触发 session.abort()；prompt 本身正常 resolve
+    expect(abortSpy).toHaveBeenCalledTimes(1)
+    // 只发生 outline 一个 session 的尝试，后续阶段/查重零调用
+    expect(mockCreatePiSession).toHaveBeenCalledTimes(1)
+    expect(mockReconcile).not.toHaveBeenCalled()
+  })
+
+  test('运行中 abort：prompt 正常 resolve，runLearnPipeline 靠信号检查 reject、后续阶段不执行', async () => {
+    const session = makeBlockingSession()
+    mockCreatePiSession.mockImplementation(async () => session as any)
+    const controller = new AbortController()
+    const events = makeEvents()
+
+    const p = runLearnPipeline({
+      sourceType: 'file',
+      input: '# body',
+      label: 'x.md',
+      port: 9999,
+      events,
+      docsDir: tmpDir,
+      signal: controller.signal,
+    })
+
+    // 等 prompt 真正在途后再 abort（验证非"预先 abort"路径）
+    await waitForCalled(session.prompt)
+    expect(session.abort).not.toHaveBeenCalled()
+    controller.abort()
+
+    // 不是靠 prompt reject，而是 await 后 combined.aborted 检查主动抛错
+    await expect(p).rejects.toThrow(/learn 运行已中止/)
+    expect(session.abort).toHaveBeenCalledTimes(1)
+    // refine/tag 阶段零启动；查重也不执行
+    expect(mockCreatePiSession).toHaveBeenCalledTimes(1)
+    expect(events.calls).not.toContain('stageStart:refine')
+    expect(events.calls).not.toContain('stageStart:tag')
+    expect(mockReconcile).not.toHaveBeenCalled()
+  })
+
+  test('signal 透传到 reconcileTopics：门1 收到同一 signal 引用', async () => {
+    const mySignal = new AbortController().signal
+
+    await runLearnPipeline({
+      sourceType: 'file',
+      input: '# body',
+      label: 'sig.md',
+      port: 9999,
+      events: makeEvents(),
+      docsDir: tmpDir,
+      signal: mySignal,
+    })
+
+    expect(mockReconcile.mock.calls[0][0].signal).toBe(mySignal)
+  })
+
+  test('signal 透传到 mintSlug：门0 slug 碰撞未合并时收到同一 signal 引用', async () => {
+    await seedDupTopic()
+    const mySignal = new AbortController().signal
+
+    await runLearnPipeline({
+      sourceType: 'file',
+      input: '# new body',
+      label: 'dup.md',
+      port: 9999,
+      events: makeEvents(),
+      docsDir: tmpDir,
+      signal: mySignal,
+    })
+
+    expect(mockMintSlug).toHaveBeenCalledTimes(1)
+    expect(mockMintSlug.mock.calls[0][0].signal).toBe(mySignal)
+  })
+
+  test('超时路径：5 分钟超时 signal 触发 → session.abort 调用、pipeline reject', async () => {
+    // Node 的 AbortSignal.timeout 内部 timer 不受 fake clock 控制，且 fake timers 下
+    // fs.promises IO 不 settle；mock 成等价 signal，prompt 在途后手动触发（模拟 5 分钟到点）
+    const timeoutController = new AbortController()
+    const timeoutSpy = jest
+      .spyOn(AbortSignal, 'timeout')
+      .mockReturnValue(timeoutController.signal)
+
+    const session = makeBlockingSession()
+    mockCreatePiSession.mockImplementation(async () => session as any)
+
+    const p = runLearnPipeline({
+      sourceType: 'file',
+      input: '# body',
+      label: 'x.md',
+      port: 9999,
+      events: makeEvents(),
+      docsDir: tmpDir,
+      signal: new AbortController().signal,
+    })
+
+    await waitForCalled(session.prompt)
+    expect(session.abort).not.toHaveBeenCalled()
+    // 模拟 5 分钟超时触发
+    timeoutController.abort()
+
+    expect(timeoutSpy).toHaveBeenCalledWith(5 * 60 * 1000)
+    expect(session.abort).toHaveBeenCalledTimes(1)
+    // prompt 正常 resolve，靠 combined.aborted 检查抛错中止
+    await expect(p).rejects.toThrow(/learn 运行已中止/)
   })
 })

@@ -13,6 +13,7 @@ import path from 'node:path'
 import { dataDir } from './paths.js'
 import { createPiSession } from './pi-runtime.js'
 import { CrawlGuard } from './pi-crawl-tools.js'
+import { createTimeoutSignal, bindAbort } from './abort-signals.js'
 import { slugFromUrl, slugFromLabel } from './web-crawler.js'
 import { assertNoOldDirs, readAllTopics, readSidecarDetail, readTopicDetail, reconcileTopics, mergeTopics, mintSlug } from './pi-dedup.js'
 
@@ -44,6 +45,8 @@ export interface RunLearnPipelineOptions {
   label?: string
   port: number
   events: LearnPipelineEvents
+  /** 外部取消信号：客户端断开（关窗）时 abort，流水线各阶段随之中止 */
+  signal: AbortSignal
   /** 注入式 docsDir（测试用）；默认 ~/.cc-monitoring/docs */
   docsDir?: string
 }
@@ -64,27 +67,6 @@ type RoundCounter = { index: number }
 // 防止 pi session 在 stuck LLM 响应上无限挂起，导致 SSE 通道常开、前端永久转圈。
 const STAGE_TIMEOUT_MS = 5 * 60 * 1000
 
-/**
- * Promise.race 包一层超时。超时触发时调用 abortFn（session.abort()），
- * 然后 reject；正常 settle 时清掉 timer，避免泄漏。
- */
-function withTimeout<T>(p: Promise<T>, ms: number, abortFn: () => Promise<void>): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeoutP = new Promise<T>((_, reject) => {
-    timer = setTimeout(() => {
-      // 触发 abort，尽量让底层 fetch/pi session 提前收尾；reject 用明确错误
-      abortFn().catch(() => {})
-      reject(new Error(`stage 超时 ${ms}ms`))
-    }, ms)
-  })
-  return Promise.race([
-    p.finally(() => {
-      if (timer) clearTimeout(timer)
-    }),
-    timeoutP,
-  ])
-}
-
 interface RunPromptResult {
   /** 本 session 内是否成功调了 add_topic 且 tags 非空 */
   addTopicCalled: boolean
@@ -101,6 +83,7 @@ async function runPrompt(
   promptText: string,
   events: LearnPipelineEvents,
   roundCounter: RoundCounter,
+  signal: AbortSignal,
 ): Promise<RunPromptResult> {
   const result: RunPromptResult = { addTopicCalled: false, readSourceOk: false }
   // Finding 1：tool_execution_start 时只记录「即将调 add_topic 且 tags 非空」，
@@ -161,16 +144,16 @@ async function runPrompt(
       // 事件转发失败不中断流水线
     }
   })
+  // 5 分钟超时 + 外部取消：任一触发都调 session.abort()；SDK abort 后 prompt/waitForIdle
+  // 会正常 resolve（不 reject），故 await 后需检查 combined.aborted 主动抛错中止
+  const combined = createTimeoutSignal(STAGE_TIMEOUT_MS, signal)
+  bindAbort(combined, () => session.abort())
   try {
-    // Finding 3：整个 prompt + waitForIdle 包 5 分钟超时；超时 abort 并抛错。
-    await withTimeout(
-      (async () => {
-        await session.prompt(promptText)
-        await session.waitForIdle()
-      })(),
-      STAGE_TIMEOUT_MS,
-      () => session.abort(),
-    )
+    await session.prompt(promptText)
+    await session.waitForIdle()
+    if (combined.aborted) {
+      throw new Error('learn 运行已中止')
+    }
   } finally {
     unsub()
     // 在途轮次补闭合（abort/超时/异常导致 message_end 缺失）；回调异常不外泄
@@ -216,6 +199,7 @@ async function runOutlineStage(
     port: number
     docsDir: string
     slug: string
+    signal: AbortSignal
   },
   events: LearnPipelineEvents,
   roundCounter: RoundCounter,
@@ -231,12 +215,13 @@ async function runOutlineStage(
         port: opts.port,
         mode: 'crawl',
         crawlGuard: guard,
+        signal: opts.signal,
       })) as unknown as SessionLike
       const crawlPrompt =
         `Entry URL: ${opts.input}\n` +
         `Topic slug: ${opts.slug}\n` +
         `Call crawl_open to start, save every useful page with save_source, then call crawl_finish.`
-      await runPrompt(crawlSession, crawlPrompt, events, roundCounter)
+      await runPrompt(crawlSession, crawlPrompt, events, roundCounter, opts.signal)
 
       if (countSourceFiles(opts.docsDir, opts.slug) === 0) {
         // 替换前关闭旧 guard（close 容错），再全新 guard + session 重试一次
@@ -246,8 +231,9 @@ async function runOutlineStage(
           port: opts.port,
           mode: 'crawl',
           crawlGuard: guard,
+          signal: opts.signal,
         })) as unknown as SessionLike
-        await runPrompt(crawlSession, crawlPrompt, events, roundCounter)
+        await runPrompt(crawlSession, crawlPrompt, events, roundCounter, opts.signal)
         if (countSourceFiles(opts.docsDir, opts.slug) === 0) {
           throw new Error('crawl 未收集到页面')
         }
@@ -262,7 +248,7 @@ async function runOutlineStage(
       `Topic slug: ${opts.slug}\n` +
       `Call read_source(${JSON.stringify(opts.slug)}) to read the prepared sources, then call add_outline with this EXACT slug (${JSON.stringify(opts.slug)}). ` +
       `Provide an appropriate title and the outline items.`
-    await runPrompt(session, prompt, events, roundCounter)
+    await runPrompt(session, prompt, events, roundCounter, opts.signal)
 
     const outlinePath = path.join(opts.docsDir, opts.slug, 'outline.json')
     if (!fs.existsSync(outlinePath)) throw new Error('outline 未生成')
@@ -283,7 +269,7 @@ async function runOutlineStage(
 // refine 阶段
 // ============================================================
 async function runRefineStage(
-  opts: { port: number; docsDir: string },
+  opts: { port: number; docsDir: string; signal: AbortSignal },
   slug: string,
   items: OutlineItem[],
   events: LearnPipelineEvents,
@@ -312,7 +298,7 @@ async function runRefineStage(
         let failReason = 'chunk 文件未生成'
         for (let attempt = 0; attempt < 2 && !ok; attempt++) {
           const session = (await createPiSession({ port: opts.port, mode: 'refine' })) as unknown as SessionLike
-          const res = await runPrompt(session, prompt, events, roundCounter)
+          const res = await runPrompt(session, prompt, events, roundCounter, opts.signal)
           if (!res.readSourceOk) {
             failReason = 'read_source 未成功读取'
             continue
@@ -369,7 +355,7 @@ async function runRefineStage(
 // tag 阶段
 // ============================================================
 async function runTagStage(
-  opts: { port: number; docsDir: string },
+  opts: { port: number; docsDir: string; signal: AbortSignal },
   slug: string,
   events: LearnPipelineEvents,
   roundCounter: RoundCounter,
@@ -404,7 +390,7 @@ async function runTagStage(
     let tagged = false
     for (let attempt = 0; attempt < 2 && !tagged; attempt++) {
       const session = (await createPiSession({ port: opts.port, mode: 'tag' })) as unknown as SessionLike
-      const res = await runPrompt(session, prompt, events, roundCounter)
+      const res = await runPrompt(session, prompt, events, roundCounter, opts.signal)
       if (res.addTopicCalled) {
         tagged = true
         break
@@ -451,15 +437,16 @@ export async function runLearnPipeline(
       candidate: { slug, title: outline.title, tags: [], items: outline.items },
       targets: sidecar ? [sidecar] : [],
       wantItems: true,
+      signal: opts.signal,
     })
     if (r0.match) {
       // dst=canonical：旧 chunks 续号并入，再补新增条目，最后带 merged 打 tag
       const off = mergeTopics(docsDir, `${slug}.old`, slug)
       const refine = await runRefineStage(
-        { port: opts.port, docsDir }, slug, r0.itemsToAdd!, opts.events, roundCounter, off,
+        { port: opts.port, docsDir, signal: opts.signal }, slug, r0.itemsToAdd!, opts.events, roundCounter, off,
       )
       await runTagStage(
-        { port: opts.port, docsDir }, slug, opts.events, roundCounter,
+        { port: opts.port, docsDir, signal: opts.signal }, slug, opts.events, roundCounter,
         { title: r0.mergedTitle!, summary: r0.mergedSummary! },
       )
       return { slug, chunksWritten: refine.chunksWritten, itemsFailed: refine.itemsFailed }
@@ -470,6 +457,7 @@ export async function runLearnPipeline(
       port: opts.port,
       title: outline.title,
       existing: (await readAllTopics(docsDir)).map((t) => t.slug),
+      signal: opts.signal,
     })
     // 新 canonical → ns，更正其 index.slug
     fs.renameSync(path.join(docsDir, slug), path.join(docsDir, ns))
@@ -508,16 +496,17 @@ export async function runLearnPipeline(
     docsDir,
     candidate: { slug: activeSlug, title: outline.title, tags: [], items: outline.items },
     wantItems: true,
+    signal: opts.signal,
   })
   if (r1.match) {
     const targetSlug = r1.targetSlug!
     // 先物理并入（返回目标现有 chunk 总数作为续号偏移），再只写新增条目，最后带 override 打 tag
     const off = mergeTopics(docsDir, activeSlug, targetSlug)
     const refine = await runRefineStage(
-      { port: opts.port, docsDir }, targetSlug, r1.itemsToAdd!, opts.events, roundCounter, off,
+      { port: opts.port, docsDir, signal: opts.signal }, targetSlug, r1.itemsToAdd!, opts.events, roundCounter, off,
     )
     await runTagStage(
-      { port: opts.port, docsDir }, targetSlug, opts.events, roundCounter,
+      { port: opts.port, docsDir, signal: opts.signal }, targetSlug, opts.events, roundCounter,
       { title: r1.mergedTitle!, summary: r1.mergedSummary! },
     )
     return { slug: targetSlug, chunksWritten: refine.chunksWritten, itemsFailed: refine.itemsFailed }
@@ -525,9 +514,9 @@ export async function runLearnPipeline(
 
   // 门1 未命中：常规 refine（从头编号）+ 常规 tag
   const refine = await runRefineStage(
-    { port: opts.port, docsDir }, activeSlug, outline.items, opts.events, roundCounter, 0,
+    { port: opts.port, docsDir, signal: opts.signal }, activeSlug, outline.items, opts.events, roundCounter, 0,
   )
-  await runTagStage({ port: opts.port, docsDir }, activeSlug, opts.events, roundCounter)
+  await runTagStage({ port: opts.port, docsDir, signal: opts.signal }, activeSlug, opts.events, roundCounter)
 
   // 门2：tag 后基于富 tags 再查一次（不需要新增条目）
   const detail = await readTopicDetail(docsDir, activeSlug)
@@ -536,12 +525,13 @@ export async function runLearnPipeline(
     docsDir,
     candidate: { slug: activeSlug, title: outline.title, tags: detail?.tags ?? [], items: undefined },
     wantItems: false,
+    signal: opts.signal,
   })
   if (r2.match) {
     const targetSlug = r2.targetSlug!
     mergeTopics(docsDir, activeSlug, targetSlug)
     await runTagStage(
-      { port: opts.port, docsDir }, targetSlug, opts.events, roundCounter,
+      { port: opts.port, docsDir, signal: opts.signal }, targetSlug, opts.events, roundCounter,
       { title: r2.mergedTitle!, summary: r2.mergedSummary! },
     )
     return { slug: targetSlug, chunksWritten: refine.chunksWritten, itemsFailed: refine.itemsFailed }
