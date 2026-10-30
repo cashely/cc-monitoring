@@ -1,9 +1,10 @@
 import { initDatabase, getDatabase } from './db.js'
 import { parseUpstreamEvents } from './inject-loop.js'
+import { pushNewRequest } from '../server/data-push.js'
 
-export interface RequestData {
-  requestId: string
+export interface RecordedRequest {
   sessionId: string
+  localRequestId: string
   timestamp: string
   apiKey?: string
   proxyApiKey?: string
@@ -15,14 +16,6 @@ export interface RequestData {
     path: string
     headers: Record<string, string>
     body?: any
-  }
-  response?: {
-    statusCode: number
-    headers?: Record<string, string>
-    events?: any[]  // Only used for initial pending save (empty array) and JSON responses
-    completedAt?: string
-    closedAt?: string
-    error?: string
   }
 }
 
@@ -51,38 +44,67 @@ export interface RequestSummary {
   usage?: TokenUsage
 }
 
-export function extractTokenUsage(events: any[] | undefined): TokenUsage | undefined {
-  if (!events) return undefined
-  const messageDelta = events.find((e: any) => e?.type === 'message_delta')
-  return messageDelta?.usage
+export interface RequestRecorder {
+  pending(): Promise<void>
+  appendEvent(event: any): void
+  complete(args: { cloudRequestId?: string; statusCode: number; headers?: Record<string, string> }): Promise<void>
+  fail(args: { statusCode: number; error: string }): void
 }
 
-// --- SSE Event Batch Writer (incremental DB writes during streaming) ---
+interface LoadedRequest {
+  requestId: string
+  sessionId: string
+  timestamp: string
+  apiKey?: string
+  proxyApiKey?: string
+  baseUrl?: string
+  model?: string
+  machineId?: string
+  request: {
+    method: string
+    path: string
+    headers: Record<string, string>
+    body?: any
+  }
+  response?: {
+    statusCode: number
+    headers?: Record<string, string>
+    events?: any[]
+    completedAt?: string
+    closedAt?: string
+    error?: string
+  }
+}
 
-export const EVENT_BATCH_SIZE = 10
+// --- Private implementation ---
 
-// Cached prepared statements for batch writes
+const EVENT_BATCH_SIZE = 10
+
+interface EventEntry {
+  index: number
+  type?: string
+  data: unknown
+}
+
+// Cached prepared statement for batch writes
 let insertEventStmt: import('better-sqlite3').Statement | null = null
-let deleteRequestStmt: import('better-sqlite3').Statement | null = null
 let cachedDbInstance: import('better-sqlite3').Database | null = null
 
-// Invalidate cached stmts when DB instance changes (tests create fresh DB per suite)
+// Invalidate cached stmt when DB instance changes (tests create fresh DB per suite)
 function ensureStmtCacheValid(db: import('better-sqlite3').Database): void {
   if (db !== cachedDbInstance) {
     insertEventStmt = null
-    deleteRequestStmt = null
     cachedDbInstance = db
   }
 }
 
 /**
  * Flush a batch of SSE events to the response_events table.
- * Called during streaming every ~10 events to avoid in-memory accumulation.
  */
-export function flushEventBatch(
+function flushEventBatch(
   sessionId: string,
   requestId: string,
-  batch: Array<{ index: number; type?: string; data: unknown }>,
+  batch: EventEntry[],
   startIndex: number
 ): void {
   const db = getDatabase()
@@ -104,36 +126,27 @@ export function flushEventBatch(
   }
 }
 
-/**
- * Delete response_events rows for a request (used when cloudRequestId differs from local requestId).
- */
-export function deleteResponseEvents(requestId: string, sessionId: string): void {
-  const db = getDatabase()
-  db.prepare('DELETE FROM response_events WHERE request_id = ? AND session_id = ?').run(requestId, sessionId)
+function extractUsage(events: any[] | undefined): TokenUsage | undefined {
+  if (!events) return undefined
+  const messageDelta = events.find((e: any) => e?.type === 'message_delta')
+  return messageDelta?.usage
 }
 
-// --- Request DB Operations ---
+interface CompletedRowArgs {
+  meta: RecordedRequest
+  requestId: string
+  statusCode: number
+  responseTime: number
+  headers?: Record<string, string>
+  usage?: TokenUsage
+  completedAt?: string
+  closedAt?: string
+  error?: string
+}
 
-// Save request to SQLite database
-export async function saveRequestDB(
-  sessionId: string,
-  requestId: string,
-  data: RequestData
-): Promise<void> {
-  const db = initDatabase()
-
-  const events = data.response?.events
-  const usage = events ? extractTokenUsage(events) : undefined
-
-  // For JSON responses (non-streaming), events are still in the array — flush them first
-  if (events && events.length > 0) {
-    const batch = events.map((e: any, i: number) => ({
-      index: i,
-      type: e?.type ?? undefined,
-      data: e
-    }))
-    flushEventBatch(sessionId, requestId, batch, 0)
-  }
+function writeCompletedRow(args: CompletedRowArgs): void {
+  const db = getDatabase()
+  const { meta } = args
 
   const stmt = db.prepare(`
     INSERT OR REPLACE INTO requests (
@@ -148,66 +161,216 @@ export async function saveRequestDB(
   `)
 
   stmt.run(
-    requestId,
-    sessionId,
-    data.timestamp,
-    data.request.method,
-    data.request.path,
-    data.response?.statusCode ?? 0,
-    data.response?.completedAt && data.timestamp
-      ? Math.round(new Date(data.response.completedAt).getTime() - new Date(data.timestamp).getTime())
-      : 0,
-    data.apiKey || null,
-    data.proxyApiKey || null,
-    data.baseUrl || null,
-    data.model || null,
-    data.machineId || null,
-    data.request.headers['user-agent'] || null,
-    usage?.input_tokens || null,
-    usage?.output_tokens || null,
-    usage?.cache_read_input_tokens || null,
-    usage?.cache_creation_input_tokens || null,
-    JSON.stringify(data.request.headers),
-    data.request.body ? JSON.stringify(data.request.body) : null,
-    data.response?.headers ? JSON.stringify(data.response.headers) : null,
+    args.requestId,
+    meta.sessionId,
+    meta.timestamp,
+    meta.request.method,
+    meta.request.path,
+    args.statusCode,
+    args.responseTime,
+    meta.apiKey || null,
+    meta.proxyApiKey || null,
+    meta.baseUrl || null,
+    meta.model || null,
+    meta.machineId || null,
+    meta.request.headers['user-agent'] || null,
+    args.usage?.input_tokens || null,
+    args.usage?.output_tokens || null,
+    args.usage?.cache_read_input_tokens || null,
+    args.usage?.cache_creation_input_tokens || null,
+    JSON.stringify(meta.request.headers),
+    meta.request.body ? JSON.stringify(meta.request.body) : null,
+    args.headers ? JSON.stringify(args.headers) : null,
     null,  // response_events now stored in separate table
-    data.response?.completedAt || null,
-    data.response?.closedAt || null,
-    data.response?.error || null
+    args.completedAt || null,
+    args.closedAt || null,
+    args.error || null
   )
 }
 
-// Update token columns for a request (streaming: usage extracted from tailBuffer after save)
-export function updateRequestTokens(
+function buildSummary(
+  meta: RecordedRequest,
   requestId: string,
-  sessionId: string,
-  usage: TokenUsage | undefined
-): void {
-  const db = getDatabase()
-  db.prepare(
-    'UPDATE requests SET input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, cache_creation_tokens = ? WHERE request_id = ? AND session_id = ?'
-  ).run(
-    usage?.input_tokens || null,
-    usage?.output_tokens || null,
-    usage?.cache_read_input_tokens || null,
-    usage?.cache_creation_input_tokens || null,
+  statusCode: number,
+  responseTime: number,
+  usage: TokenUsage | undefined,
+  withPendingId: boolean
+): RequestSummary & { pendingId?: string } {
+  return {
     requestId,
-    sessionId
-  )
+    sessionId: meta.sessionId,
+    compositeId: `${meta.sessionId}:${requestId}`,
+    timestamp: meta.timestamp,
+    method: meta.request.method,
+    path: meta.request.path,
+    statusCode,
+    responseTime,
+    baseUrl: meta.baseUrl,
+    model: meta.model,
+    machineId: meta.machineId,
+    userAgent: meta.request.headers['user-agent'],
+    usage,
+    pendingId: withPendingId ? `${meta.sessionId}:${meta.localRequestId}` : undefined
+  }
 }
 
-// Delete a request row by requestId + sessionId (for pending → completed replacement)
-export function deleteRequestRow(requestId: string, sessionId: string): void {
-  const db = getDatabase()
-  ensureStmtCacheValid(db)
-  if (!deleteRequestStmt) {
-    deleteRequestStmt = db.prepare('DELETE FROM requests WHERE request_id = ? AND session_id = ?')
+// --- Public API ---
+
+export function createRequestRecorder(meta: RecordedRequest): RequestRecorder {
+  const eventBatch: EventEntry[] = []
+  const tailBuffer: any[] = []
+  let eventIndex = 0
+  const startTime = Date.now()
+  let pendingCalled = false
+
+  function flushRemaining(): void {
+    if (eventBatch.length > 0) {
+      flushEventBatch(meta.sessionId, meta.localRequestId, eventBatch, eventIndex - eventBatch.length)
+      eventBatch.length = 0
+    }
   }
-  deleteRequestStmt.run(requestId, sessionId)
+
+  function appendEvent(event: any): void {
+    const entry: EventEntry = { index: eventIndex, type: event?.type, data: event }
+    eventBatch.push(entry)
+
+    // Maintain tail buffer (last 5 events for usage extraction)
+    tailBuffer.push(event)
+    if (tailBuffer.length > 5) {
+      tailBuffer.shift()
+    }
+
+    // Flush batch to DB when threshold reached
+    if (eventBatch.length >= EVENT_BATCH_SIZE) {
+      flushEventBatch(meta.sessionId, meta.localRequestId, eventBatch, eventIndex - eventBatch.length + 1)
+      eventBatch.length = 0 // Reset batch (memory freed)
+    }
+
+    eventIndex++
+  }
+
+  return {
+    async pending(): Promise<void> {
+      if (pendingCalled) return
+      pendingCalled = true
+
+      writeCompletedRow({
+        meta,
+        requestId: meta.localRequestId,
+        statusCode: 0,
+        responseTime: 0
+      })
+      pushNewRequest(buildSummary(meta, meta.localRequestId, 0, 0, undefined, false), 'pending')
+    },
+
+    appendEvent,
+
+    async complete({ cloudRequestId, statusCode, headers }): Promise<void> {
+      // Flush remaining events in batch
+      flushRemaining()
+
+      // Usage synthesis: prefer message_delta, otherwise convert OpenAI-style usage
+      let usage = extractUsage(tailBuffer)
+      if (!usage) {
+        const openaiEvent = tailBuffer.find((e: any) => e?.usage)
+        if (openaiEvent) {
+          appendEvent({
+            type: 'message_delta',
+            usage: {
+              output_tokens: openaiEvent.usage.completion_tokens || 0
+            }
+          })
+          usage = extractUsage(tailBuffer)
+        }
+      }
+      // Ensure the synthetic event (if any) is written before row replacement
+      flushRemaining()
+
+      const completedAt = new Date().toISOString()
+      const finalId = cloudRequestId ?? meta.localRequestId
+      const responseTime = Date.now() - startTime
+      const db = getDatabase()
+
+      if (finalId !== meta.localRequestId) {
+        const replace = db.transaction(() => {
+          db.prepare(
+            'UPDATE response_events SET request_id = ? WHERE request_id = ? AND session_id = ?'
+          ).run(finalId, meta.localRequestId, meta.sessionId)
+          writeCompletedRow({
+            meta, requestId: finalId, statusCode, responseTime, headers, usage, completedAt
+          })
+          db.prepare(
+            'DELETE FROM requests WHERE request_id = ? AND session_id = ?'
+          ).run(meta.localRequestId, meta.sessionId)
+        })
+        replace()
+      } else {
+        writeCompletedRow({
+          meta, requestId: finalId, statusCode, responseTime, headers, usage, completedAt
+        })
+      }
+
+      pushNewRequest(
+        buildSummary(meta, finalId, statusCode, responseTime, usage, finalId !== meta.localRequestId),
+        'completed'
+      )
+    },
+
+    fail({ statusCode, error }): void {
+      const responseTime = Date.now() - startTime
+      const closedAt = new Date().toISOString()
+
+      getDatabase().prepare(
+        'UPDATE requests SET status_code = ?, response_time = ?, closed_at = ?, error = ? WHERE request_id = ? AND session_id = ?'
+      ).run(statusCode, responseTime, closedAt, error, meta.localRequestId, meta.sessionId)
+
+      pushNewRequest(
+        buildSummary(meta, meta.localRequestId, statusCode, responseTime, undefined, false),
+        'completed'
+      )
+    }
+  }
+}
+
+// Record an inject loop iteration: completed row + events + push, no pending, responseTime 0
+export async function recordIteration(
+  meta: RecordedRequest & {
+    response: { statusCode: number; headers?: Record<string, string>; events?: any[] }
+  }
+): Promise<void> {
+  initDatabase()
+
+  const events = meta.response.events ?? []
+  if (events.length > 0) {
+    const batch: EventEntry[] = events.map((e: any, i: number) => ({
+      index: i,
+      type: e?.type,
+      data: e
+    }))
+    flushEventBatch(meta.sessionId, meta.localRequestId, batch, 0)
+  }
+
+  const usage = extractUsage(events)
+  const completedAt = new Date().toISOString()
+
+  writeCompletedRow({
+    meta,
+    requestId: meta.localRequestId,
+    statusCode: meta.response.statusCode,
+    responseTime: 0,
+    headers: meta.response.headers,
+    usage,
+    completedAt
+  })
+
+  pushNewRequest(
+    buildSummary(meta, meta.localRequestId, meta.response.statusCode, 0, usage, false),
+    'completed'
+  )
 }
 
 // Load single request by compositeId (sessionId:requestId)
-export async function loadRequestDB(compositeId: string): Promise<RequestData> {
+export async function loadRequestDB(compositeId: string): Promise<LoadedRequest> {
   const db = initDatabase()
 
   const colonIndex = compositeId.indexOf(':')

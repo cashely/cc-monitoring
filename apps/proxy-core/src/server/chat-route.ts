@@ -3,10 +3,9 @@ import { Readable } from 'stream'
 import { randomUUID } from 'node:crypto'
 import { ProxyConfig } from '../types/config.js'
 import { loadConfig } from '../config/index.js'
-import { saveRequestDB, extractTokenUsage, type RequestData, loadSessionHistory } from '../utils/request-writer.js'
+import { createRequestRecorder, recordIteration, type RecordedRequest, loadSessionHistory } from '../utils/request-writer.js'
 import { cleanOldRequestsDB } from '../utils/request-writer.js'
-import { pushNewRequest } from './data-push.js'
-import { initDatabase, getDatabase } from '../utils/db.js'
+import { initDatabase } from '../utils/db.js'
 import { resolveProxyTarget, getProxyModel, filterForwardHeaders, extractSafeHeaders } from './proxy.js'
 import { injectMcpTools } from '../utils/tool-injector.js'
 import { runInjectLoop, parseSSEText, parseUpstreamEvents, findInjectedCall, runJsonInjectLoop, runStreamingInjectLoop } from '../utils/inject-loop.js'
@@ -93,9 +92,9 @@ export async function setupChatRoute(
 
     // Build request data
     const machineId = getMachineIdSync() ?? undefined
-    const requestData: RequestData = {
-      requestId: request.id,
+    const meta: RecordedRequest = {
       sessionId,
+      localRequestId: request.id,
       timestamp: new Date().toISOString(),
       apiKey,
       proxyApiKey,
@@ -107,31 +106,14 @@ export async function setupChatRoute(
         path: request.url,
         headers: forwardHeaders,
         body: request.body
-      },
-      response: {
-        statusCode: 0,
-        events: []
       }
     }
+    const rec = createRequestRecorder(meta)
 
     await cleanOldRequestsDB(maxDays)
 
     // Save initial record + push pending status to frontend
-    await saveRequestDB(sessionId, request.id, requestData)
-    pushNewRequest({
-      requestId: request.id,
-      sessionId,
-      compositeId: `${sessionId}:${request.id}`,
-      method: request.method,
-      path: request.url,
-      timestamp: requestData.timestamp,
-      statusCode: 0,
-      responseTime: 0,
-      model: forwardedModel,
-      machineId,
-      userAgent: request.headers['user-agent'],
-      baseUrl: resolved.baseUrl
-    }, 'pending')
+    await rec.pending()
 
     // Mock interception (PoC)
     if (shouldMock(request.body)) {
@@ -167,9 +149,6 @@ export async function setupChatRoute(
 
     // Extract cloud request ID
     const cloudRequestId = response.headers.get('x-request-id') || request.id
-    requestData.requestId = cloudRequestId
-    requestData.response!.statusCode = response.status
-    requestData.response!.headers = Object.fromEntries(response.headers)
 
     // Check response type
     const contentType = response.headers.get('content-type') || ''
@@ -182,9 +161,9 @@ export async function setupChatRoute(
       let jsonBody: any
       try {
         jsonBody = JSON.parse(responseBody)
-        requestData.response!.events!.push(jsonBody)
+        rec.appendEvent(jsonBody)
       } catch {
-        requestData.response!.events!.push({ raw: responseBody })
+        rec.appendEvent({ raw: responseBody })
       }
 
       // JSON inject loop: if MCP tools injected and response has tool_use
@@ -209,76 +188,33 @@ export async function setupChatRoute(
               try { loopJson = JSON.parse(loopResponseBody) } catch { /* ignore */ }
 
               // Record each loop iteration as a separate request
-              if (loopJson) {
-                const loopRequestId = r.headers.get('x-request-id') || `loop_${request.id}_${Date.now()}`
-                const loopData: RequestData = {
-                  requestId: loopRequestId,
-                  sessionId,
-                  timestamp: new Date().toISOString(),
-                  apiKey,
-                  proxyApiKey,
-                  baseUrl: resolved.baseUrl,
-                  model: forwardedModel,
-                  machineId,
-                  request: { method: 'POST', path: '/api/chat', headers: forwardHeaders, body: b },
-                  response: {
-                    statusCode: r.status,
-                    headers: Object.fromEntries(r.headers),
-                    events: [loopJson],
-                    completedAt: new Date().toISOString()
-                  }
-                }
-                await saveRequestDB(sessionId, loopRequestId, loopData)
-                const loopUsage = extractTokenUsage(loopData.response!.events)
-                pushNewRequest({
-                  requestId: loopRequestId,
-                  sessionId,
-                  compositeId: `${sessionId}:${loopRequestId}`,
-                  method: 'POST',
-                  path: '/api/chat',
-                  timestamp: loopData.timestamp,
+              await recordIteration({
+                sessionId,
+                localRequestId: r.headers.get('x-request-id') || `loop_${request.id}_${Date.now()}`,
+                timestamp: new Date().toISOString(),
+                apiKey,
+                proxyApiKey,
+                baseUrl: resolved.baseUrl,
+                model: forwardedModel,
+                machineId,
+                request: { method: 'POST', path: '/api/chat', headers: forwardHeaders, body: b },
+                response: {
                   statusCode: r.status,
-                  responseTime: 0,
-                  model: forwardedModel,
-                  machineId,
-                  userAgent: request.headers['user-agent'],
-                  baseUrl: resolved.baseUrl,
-                  usage: loopUsage
-                }, 'completed')
-              }
+                  headers: Object.fromEntries(r.headers),
+                  events: loopJson ? [loopJson] : []
+                }
+              })
               return loopJson || JSON.parse(loopResponseBody)
             }
           })
 
           request.log.info(`[chat] json loop done: ${loopResult.iterations} iter (${cloudRequestId})`)
 
-          requestData.response!.completedAt = new Date().toISOString()
-
-          // Remove pending row if cloudRequestId differs from request.id
-          if (cloudRequestId !== request.id) {
-            const db = getDatabase()
-            db.prepare('DELETE FROM requests WHERE request_id = ? AND session_id = ?').run(request.id, sessionId)
-          }
-
-          await saveRequestDB(sessionId, cloudRequestId, requestData)
-
-          const usage = extractTokenUsage(requestData.response!.events)
-          pushNewRequest({
-            requestId: cloudRequestId,
-            sessionId,
-            compositeId: `${sessionId}:${cloudRequestId}`,
-            method: request.method,
-            path: request.url,
-            timestamp: requestData.timestamp,
+          await rec.complete({
+            cloudRequestId: cloudRequestId !== request.id ? cloudRequestId : undefined,
             statusCode: response.status,
-            responseTime: Date.now() - startTime,
-            model: forwardedModel,
-            machineId,
-            userAgent: request.headers['user-agent'],
-            baseUrl: resolved.baseUrl,
-            usage,
-            pendingId: cloudRequestId !== request.id ? `${sessionId}:${request.id}` : undefined
-          }, 'completed')
+            headers: Object.fromEntries(response.headers)
+          })
 
           const finalBody = { ...loopResult.finalBody, _sessionId: sessionId }
           reply.code(200).header('x-chat-session-id', sessionId).send(JSON.stringify(finalBody))
@@ -287,33 +223,11 @@ export async function setupChatRoute(
       }
 
       // Normal JSON passthrough
-      requestData.response!.completedAt = new Date().toISOString()
-
-      // Remove pending row if cloudRequestId differs from request.id
-      if (cloudRequestId !== request.id) {
-        const db = getDatabase()
-        db.prepare('DELETE FROM requests WHERE request_id = ? AND session_id = ?').run(request.id, sessionId)
-      }
-
-      await saveRequestDB(sessionId, cloudRequestId, requestData)
-
-      const usage = extractTokenUsage(requestData.response!.events)
-      pushNewRequest({
-        requestId: cloudRequestId,
-        sessionId,
-        compositeId: `${sessionId}:${cloudRequestId}`,
-        method: request.method,
-        path: request.url,
-        timestamp: requestData.timestamp,
+      await rec.complete({
+        cloudRequestId: cloudRequestId !== request.id ? cloudRequestId : undefined,
         statusCode: response.status,
-        responseTime: Date.now() - startTime,
-        model: forwardedModel,
-        machineId,
-        userAgent: request.headers['user-agent'],
-        baseUrl: resolved.baseUrl,
-        usage,
-        pendingId: cloudRequestId !== request.id ? `${sessionId}:${request.id}` : undefined
-      }, 'completed')
+        headers: Object.fromEntries(response.headers)
+      })
 
       // Inject session ID into response for passthrough
       try {
@@ -346,35 +260,12 @@ export async function setupChatRoute(
       nodeStream.on('end', async () => {
         processor.flushLeftover()
 
-        // 保存原始请求到 DB
-        requestData.response!.events = processor.events
-        requestData.response!.completedAt = new Date().toISOString()
-
-        // Remove pending row if cloudRequestId differs from request.id
-        if (cloudRequestId !== request.id) {
-          const db = getDatabase()
-          db.prepare('DELETE FROM requests WHERE request_id = ? AND session_id = ?').run(request.id, sessionId)
-        }
-
-        await saveRequestDB(sessionId, cloudRequestId, requestData)
-
-        const usage = extractTokenUsage(requestData.response!.events)
-        pushNewRequest({
-          requestId: cloudRequestId,
-          sessionId,
-          compositeId: `${sessionId}:${cloudRequestId}`,
-          method: request.method,
-          path: request.url,
-          timestamp: requestData.timestamp,
+        for (const ev of processor.events) rec.appendEvent(ev)
+        await rec.complete({
+          cloudRequestId: cloudRequestId !== request.id ? cloudRequestId : undefined,
           statusCode: response.status,
-          responseTime: Date.now() - startTime,
-          model: forwardedModel,
-          machineId,
-          userAgent: request.headers['user-agent'],
-          baseUrl: resolved.baseUrl,
-          usage,
-          pendingId: cloudRequestId !== request.id ? `${sessionId}:${request.id}` : undefined
-        }, 'completed')
+          headers: Object.fromEntries(response.headers)
+        })
 
         request.log.info(`[chat] stream completed: ${cloudRequestId} ${response.status} (${Date.now() - startTime}ms, ${processor.events.length} events)`)
 
@@ -419,9 +310,9 @@ export async function setupChatRoute(
             },
             sessionId,
             saveIterationDB: async (loopRequestId, loopProcessor, loopStatusCode, loopBody) => {
-              const loopData: RequestData = {
-                requestId: loopRequestId,
+              await recordIteration({
                 sessionId,
+                localRequestId: loopRequestId,
                 timestamp: new Date().toISOString(),
                 apiKey,
                 proxyApiKey,
@@ -431,27 +322,9 @@ export async function setupChatRoute(
                 request: { method: 'POST', path: '/api/chat', headers: forwardHeaders, body: loopBody },
                 response: {
                   statusCode: loopStatusCode,
-                  events: loopProcessor.events,
-                  completedAt: new Date().toISOString()
+                  events: loopProcessor.events
                 }
-              }
-              await saveRequestDB(sessionId, loopRequestId, loopData)
-              const loopUsage = extractTokenUsage(loopProcessor.events)
-              pushNewRequest({
-                requestId: loopRequestId,
-                sessionId,
-                compositeId: `${sessionId}:${loopRequestId}`,
-                method: 'POST',
-                path: '/api/chat',
-                timestamp: loopData.timestamp,
-                statusCode: loopStatusCode,
-                responseTime: 0,
-                model: forwardedModel,
-                machineId,
-                userAgent: request.headers['user-agent'],
-                baseUrl: resolved.baseUrl,
-                usage: loopUsage
-              }, 'completed')
+              })
             },
             raw: reply.raw
           })

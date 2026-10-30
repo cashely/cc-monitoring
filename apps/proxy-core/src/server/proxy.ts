@@ -3,7 +3,7 @@ import { Readable, finished } from 'stream'
 import { convertClaudeToOpenAIRequest, convertOpenAIToClaudeResponse, createStreamTransformer, buildOpenAIHeaders } from '../utils/openai-converter.js'
 import { ProxyConfig } from '../types/config.js'
 import { loadConfig } from '../config/index.js'
-import { saveRequestDB, extractTokenUsage, flushEventBatch, deleteResponseEvents, deleteRequestRow, updateRequestTokens, EVENT_BATCH_SIZE, type RequestData } from '../utils/request-writer.js'
+import { createRequestRecorder, type RequestRecorder, type RecordedRequest } from '../utils/request-writer.js'
 import { cleanOldRequestsDB } from '../utils/request-writer.js'
 import { pushNewRequest } from './data-push.js'
 import { initDatabase, closeDatabase, getDatabase } from '../utils/db.js'
@@ -194,88 +194,6 @@ export function getErrorStatusCode(error: ProxyError): number {
   return 500
 }
 
-/**
- * Push a parsed SSE event into batch/tail buffers.
- * Flushes batch to DB when it reaches EVENT_BATCH_SIZE (10).
- * Only memory held: current batch (≤10 events) + tail (≤5 events).
- */
-function pushEventToBuffers(
-  event: any,
-  sessionId: string,
-  requestId: string,
-  eventBatch: Array<{ index: number; type?: string; data: unknown }>,
-  tailBuffer: any[],
-  eventIndexRef: { value: number }
-): void {
-  const entry = { index: eventIndexRef.value, type: event?.type, data: event }
-  eventBatch.push(entry)
-
-  // Maintain tail buffer (last 5 events for usage extraction)
-  tailBuffer.push(event)
-  if (tailBuffer.length > 5) {
-    tailBuffer.shift()
-  }
-
-  // Flush batch to DB when threshold reached
-  if (eventBatch.length >= EVENT_BATCH_SIZE) {
-    flushEventBatch(sessionId, requestId, eventBatch, eventIndexRef.value - eventBatch.length + 1)
-    eventBatch.length = 0 // Reset batch (memory freed)
-  }
-
-  eventIndexRef.value++
-}
-
-/**
- * Flush remaining batch + update request completion in DB.
- * Extracts token usage from tail buffer (no need for full events array).
- */
-async function completeStreamSave(
-  sessionId: string,
-  requestId: string,
-  requestData: RequestData,
-  eventBatch: Array<{ index: number; type?: string; data: unknown }>,
-  tailBuffer: any[],
-  eventIndexRef: { value: number },
-  startTime: number,
-  statusCode: number,
-  resolved: ResolvedTarget,
-  forwardedModel: string | undefined,
-  originalModel: string | undefined,
-  machineId: string | undefined,
-  request: ProxyRequest
-): Promise<void> {
-  // Flush remaining events in batch
-  if (eventBatch.length > 0) {
-    flushEventBatch(sessionId, requestId, eventBatch, eventIndexRef.value - eventBatch.length)
-    eventBatch.length = 0
-  }
-
-  requestData.response!.completedAt = new Date().toISOString()
-  requestData.response!.events = []  // Not needed for streaming, clear to avoid serialization
-
-  await saveRequestDB(sessionId, requestId, requestData)
-
-  const usage = extractTokenUsage(tailBuffer)
-  updateRequestTokens(requestId, sessionId, usage)
-
-  pushNewRequest({
-    requestId,
-    sessionId,
-    compositeId: `${sessionId}:${requestId}`,
-    method: request.method,
-    path: request.url,
-    timestamp: requestData.timestamp,
-    statusCode,
-    responseTime: Date.now() - startTime,
-    model: forwardedModel || originalModel,
-    machineId,
-    userAgent: request.headers['user-agent'],
-    baseUrl: resolved.baseUrl,
-    usage,
-    pendingId: requestId !== request.id ? `${sessionId}:${request.id}` : undefined
-  }, 'completed')
-}
-
 export function getErrorMessage(error: ProxyError): string {
   if (error.code === 'ECONNREFUSED') {
     return 'Target server unreachable'
@@ -360,6 +278,7 @@ export async function setupProxy(
 
     // Replace model based on tier matching (getProxyModel)
     const originalModel = request.body?.model
+    let rec: RequestRecorder | undefined
     try {
       const proxyModel = getProxyModel(originalModel, resolved)
       if (proxyModel && request.body && typeof request.body === 'object') {
@@ -391,9 +310,9 @@ export async function setupProxy(
 
       // Log complete request data (Fastify already parsed body)
       const machineId = getMachineIdSync() ?? undefined
-      const requestData: RequestData = {
-        requestId: request.id, // Will be updated with cloud x-request-id later
+      const meta: RecordedRequest = {
         sessionId,
+        localRequestId: request.id, // Will be replaced with cloud x-request-id row on completion
         timestamp: new Date().toISOString(),
         apiKey,
         proxyApiKey,
@@ -405,37 +324,14 @@ export async function setupProxy(
           path: request.url,
           headers: forwardHeaders,
           body: request.body // Full payload: model, messages, tools, MCP params, etc.
-        },
-        response: {
-          statusCode: 0, // Will be updated after fetch
-          events: [] // Only used for JSON responses; streaming uses batch buffer
         }
       }
-
-      // SSE event batch buffer: flush to DB every ~10 events to avoid in-memory accumulation
-      // Tail buffer: keep last 5 events for token usage extraction at stream end
-      const eventBatch: Array<{ index: number; type?: string; data: unknown }> = []
-      const tailBuffer: any[] = []
-      const eventIndexRef = { value: 0 }
+      rec = createRequestRecorder(meta)
 
       request.log.info(`request logged: ${request.id} ${request.method} ${request.url}`)
 
       // Save initial record + push pending status to frontend
-      await saveRequestDB(sessionId, request.id, requestData)
-      pushNewRequest({
-        requestId: request.id,
-        sessionId,
-        compositeId: `${sessionId}:${request.id}`,
-        method: request.method,
-        path: request.url,
-        timestamp: requestData.timestamp,
-        statusCode: 0,
-        responseTime: 0,
-        model: forwardedModel,
-        machineId,
-        userAgent: request.headers['user-agent'],
-        baseUrl: resolved.baseUrl
-      }, 'pending')
+      await rec.pending()
 
       // --- OpenAI Compatible Mode ---
       if (resolved.is_openai_compatible) {
@@ -459,10 +355,6 @@ export async function setupProxy(
 
         // Extract cloud request ID
         const cloudRequestId = response.headers.get('x-request-id') || request.id
-        requestData.requestId = cloudRequestId
-
-        requestData.response!.statusCode = response.status
-        requestData.response!.headers = Object.fromEntries(response.headers)
 
         // Check response type
         const contentType = response.headers.get('content-type') || ''
@@ -478,42 +370,21 @@ export async function setupProxy(
             const openaiRes = JSON.parse(responseBody)
             const claudeRes = convertOpenAIToClaudeResponse(openaiRes, forwardedModel || originalModel)
             claudeResponseBody = JSON.stringify(claudeRes)
-            requestData.response!.events!.push(claudeRes)
+            rec.appendEvent(claudeRes)
           } catch {
             claudeResponseBody = responseBody
             try {
-              requestData.response!.events!.push(JSON.parse(responseBody))
+              rec.appendEvent(JSON.parse(responseBody))
             } catch {
-              requestData.response!.events!.push({ raw: responseBody })
+              rec.appendEvent({ raw: responseBody })
             }
           }
 
-          requestData.response!.completedAt = new Date().toISOString()
-
-          if (cloudRequestId !== request.id) {
-            deleteResponseEvents(request.id, sessionId)
-            deleteRequestRow(request.id, sessionId)
-          }
-
-          await saveRequestDB(sessionId, cloudRequestId, requestData)
-
-          const usage = extractTokenUsage(requestData.response!.events)
-          pushNewRequest({
-            requestId: cloudRequestId,
-            sessionId,
-            compositeId: `${sessionId}:${cloudRequestId}`,
-            method: request.method,
-            path: request.url,
-            timestamp: requestData.timestamp,
+          await rec.complete({
+            cloudRequestId: cloudRequestId !== request.id ? cloudRequestId : undefined,
             statusCode: response.status,
-            responseTime: Date.now() - startTime,
-            model: forwardedModel,
-            machineId,
-            userAgent: request.headers['user-agent'],
-            baseUrl: resolved.baseUrl,
-            usage,
-            pendingId: cloudRequestId !== request.id ? `${sessionId}:${request.id}` : undefined
-          }, 'completed')
+            headers: Object.fromEntries(response.headers)
+          })
 
           const elapsed = Date.now() - startTime
           request.log.info(`json response (openai): ${cloudRequestId} ${response.status} (${elapsed}ms)`)
@@ -533,7 +404,6 @@ export async function setupProxy(
           const nodeStream = Readable.fromWeb(response.body as any)
           const transformStream = createStreamTransformer(forwardedModel || originalModel)
 
-          // Record SSE events via batch buffer (memory: ≤10 batch + ≤5 tail)
           nodeStream.on('data', (chunk: Buffer) => {
             const text = chunk.toString()
             const lines = text.split('\n')
@@ -543,7 +413,7 @@ export async function setupProxy(
                 if (eventData && eventData !== '[DONE]') {
                   try {
                     const event = JSON.parse(eventData)
-                    pushEventToBuffers(event, sessionId, cloudRequestId, eventBatch, tailBuffer, eventIndexRef)
+                    rec!.appendEvent(event)
                   } catch {
                     // Not valid JSON, skip
                   }
@@ -558,31 +428,15 @@ export async function setupProxy(
               request.log.error(`openai stream error: ${err.message}`)
             }
 
-            // Convert OpenAI stream usage to Claude format for extractTokenUsage compatibility
-            const lastChunk = tailBuffer.find((e: any) => e?.usage)
-            if (lastChunk?.usage) {
-              const syntheticEvent = {
-                type: 'message_delta',
-                usage: {
-                  output_tokens: lastChunk.usage.completion_tokens || 0
-                }
-              }
-              pushEventToBuffers(syntheticEvent, sessionId, cloudRequestId, eventBatch, tailBuffer, eventIndexRef)
-            }
-
-            if (cloudRequestId !== request.id) {
-              deleteResponseEvents(request.id, sessionId)
-              deleteRequestRow(request.id, sessionId)
-            }
-
             // Flush remaining batch + complete request
             try {
-              await completeStreamSave(
-                sessionId, cloudRequestId, requestData, eventBatch, tailBuffer, eventIndexRef,
-                startTime, response.status, resolved, forwardedModel, originalModel, machineId, request
-              )
+              await rec!.complete({
+                cloudRequestId: cloudRequestId !== request.id ? cloudRequestId : undefined,
+                statusCode: response.status,
+                headers: Object.fromEntries(response.headers)
+              })
               const elapsed = Date.now() - startTime
-              request.log.info(`stream completed (openai): ${cloudRequestId} ${response.status} (${elapsed}ms, ${eventIndexRef.value} events)`)
+              request.log.info(`stream completed (openai): ${cloudRequestId} ${response.status} (${elapsed}ms)`)
             } catch (dbErr: any) {
               request.log.error(`openai stream save failed: ${dbErr.message}`)
             }
@@ -614,11 +468,6 @@ export async function setupProxy(
 
       // Extract cloud request ID from response header
       const cloudRequestId = response.headers.get('x-request-id') || request.id
-      requestData.requestId = cloudRequestId
-
-      // Update response status in requestData
-      requestData.response!.statusCode = response.status
-      requestData.response!.headers = Object.fromEntries(response.headers)
 
       // Check response type: SSE stream or JSON
       const contentType = response.headers.get('content-type') || ''
@@ -632,38 +481,16 @@ export async function setupProxy(
         // Record JSON body as a single event
         try {
           const jsonBody = JSON.parse(responseBody)
-          requestData.response!.events!.push(jsonBody)
+          rec.appendEvent(jsonBody)
         } catch {
-          requestData.response!.events!.push({ raw: responseBody })
+          rec.appendEvent({ raw: responseBody })
         }
 
-        requestData.response!.completedAt = new Date().toISOString()
-
-        // Remove pending row if cloudRequestId differs from request.id
-        if (cloudRequestId !== request.id) {
-          deleteResponseEvents(request.id, sessionId)
-          deleteRequestRow(request.id, sessionId)
-        }
-
-        await saveRequestDB(sessionId, cloudRequestId, requestData)
-
-        const usage = extractTokenUsage(requestData.response!.events)
-        pushNewRequest({
-          requestId: cloudRequestId,
-          sessionId,
-          compositeId: `${sessionId}:${cloudRequestId}`,
-          method: request.method,
-          path: request.url,
-          timestamp: requestData.timestamp,
+        await rec.complete({
+          cloudRequestId: cloudRequestId !== request.id ? cloudRequestId : undefined,
           statusCode: response.status,
-          responseTime: Date.now() - startTime,
-          model: forwardedModel,
-          machineId,
-          userAgent: request.headers['user-agent'],
-          baseUrl: resolved.baseUrl,
-          usage,
-          pendingId: cloudRequestId !== request.id ? `${sessionId}:${request.id}` : undefined
-        }, 'completed')
+          headers: Object.fromEntries(response.headers)
+        })
 
         const elapsed = Date.now() - startTime
         request.log.info(`json response: ${cloudRequestId} ${response.status} (${elapsed}ms)`)
@@ -685,7 +512,6 @@ export async function setupProxy(
         // Convert Web ReadableStream to Node Readable stream
         const nodeStream = Readable.fromWeb(response.body as any)
 
-        // Record SSE events via batch buffer (memory: ≤10 batch + ≤5 tail)
         nodeStream.on('data', (chunk: Buffer) => {
           const text = chunk.toString()
 
@@ -696,7 +522,7 @@ export async function setupProxy(
               if (eventData && eventData !== '[DONE]') {
                 try {
                   const event = JSON.parse(eventData)
-                  pushEventToBuffers(event, sessionId, cloudRequestId, eventBatch, tailBuffer, eventIndexRef)
+                  rec!.appendEvent(event)
                 } catch {
                   // Not valid JSON, skip
                 }
@@ -711,18 +537,14 @@ export async function setupProxy(
             request.log.error(`claude stream error: ${err.message}`)
           }
 
-          if (cloudRequestId !== request.id) {
-            deleteResponseEvents(request.id, sessionId)
-            deleteRequestRow(request.id, sessionId)
-          }
-
           try {
-            await completeStreamSave(
-              sessionId, cloudRequestId, requestData, eventBatch, tailBuffer, eventIndexRef,
-              startTime, response.status, resolved, forwardedModel, originalModel, machineId, request
-            )
+            await rec!.complete({
+              cloudRequestId: cloudRequestId !== request.id ? cloudRequestId : undefined,
+              statusCode: response.status,
+              headers: Object.fromEntries(response.headers)
+            })
             const elapsed = Date.now() - startTime
-            request.log.info(`stream completed: ${cloudRequestId} ${response.status} (${elapsed}ms, ${eventIndexRef.value} events)`)
+            request.log.info(`stream completed: ${cloudRequestId} ${response.status} (${elapsed}ms)`)
           } catch (dbErr: any) {
             request.log.error(`stream save failed: ${dbErr.message}`)
           }
@@ -740,23 +562,27 @@ export async function setupProxy(
         errorCode: error.code || 'unknown'
       }, 'proxy error')
 
-      // Fetch failed — no cloudRequestId available, use Fastify request.id
-      pushNewRequest({
-        requestId: request.id,
-        sessionId,
-        compositeId: `${sessionId}:${request.id}`,
-        method: request.method,
-        path: request.url,
-        timestamp: new Date().toISOString(),
-        statusCode: getErrorStatusCode(error),
-        responseTime: Date.now() - startTime,
-        model: originalModel,
-        machineId: getMachineIdSync() ?? undefined,
-        userAgent: request.headers['user-agent'],
-        baseUrl: resolved.baseUrl
-      }, 'completed')
-
       const statusCode = getErrorStatusCode(error)
+      if (rec) {
+        rec.fail({ statusCode, error: getErrorMessage(error) })
+      } else {
+        // pending() 之前就抛错（header/meta 准备阶段），无 DB 行可更新，仅推送
+        pushNewRequest({
+          requestId: request.id,
+          sessionId,
+          compositeId: `${sessionId}:${request.id}`,
+          method: request.method,
+          path: request.url,
+          timestamp: new Date().toISOString(),
+          statusCode,
+          responseTime: Date.now() - startTime,
+          model: originalModel,
+          machineId: getMachineIdSync() ?? undefined,
+          userAgent: request.headers['user-agent'],
+          baseUrl: resolved.baseUrl
+        }, 'completed')
+      }
+
       reply.code(statusCode).send({
         error: getErrorMessage(error),
         requestId: request.id
