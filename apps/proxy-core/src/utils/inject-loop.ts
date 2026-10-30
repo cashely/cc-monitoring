@@ -23,24 +23,6 @@ export interface ParsedUpstream {
   usage: any
 }
 
-/** 解析上游 SSE 全文 -> 事件数组（收集 data: 行的 JSON） */
-export function parseSSEText(text: string): any[] {
-  const events: any[] = []
-  for (const line of text.split('\n')) {
-    if (line.startsWith('data:')) {
-      const d = line.slice(5).trim()
-      if (d && d !== '[DONE]') {
-        try {
-          events.push(JSON.parse(d))
-        } catch {
-          // 非 JSON 行跳过
-        }
-      }
-    }
-  }
-  return events
-}
-
 /** 从事件数组重建有序内容块 + stop_reason + usage */
 export function parseUpstreamEvents(events: any[]): ParsedUpstream {
   const blocks = new Map<number, ParsedBlock>()
@@ -105,67 +87,9 @@ function blocksToAssistantContent(blocks: ParsedBlock[]): any[] {
   return content
 }
 
-function collectText(parsed: ParsedUpstream): string {
-  return parsed.blocks
-    .filter((b) => b.type === 'text' && b.text)
-    .map((b) => b.text)
-    .join('')
-}
-
-export interface InjectLoopResult {
-  text: string
-  iterations: number
-  stoppedByLimit: boolean
-}
-
-/**
- * SSE 内部循环：命中已启用 tool -> 执行 exec -> 追加对话 -> 再调上游 -> 直到 end_turn。
- * opts.body 会被原地追加 messages。
- *
- * @param opts.events 首次上游响应事件（已确认命中注入 tool）
- * @param opts.callUpstream 用给定 body 再次调上游，返回事件数组
- * @param opts.maxIterations 死循环护栏（tool 描述可能诱导模型反复调用）
- */
-export async function runInjectLoop(opts: {
-  events: any[]
-  body: any
-  callUpstream: (body: any) => Promise<any[]>
-  maxIterations?: number
-}): Promise<InjectLoopResult> {
-  const maxIterations = opts.maxIterations ?? 3
-  let parsed = parseUpstreamEvents(opts.events)
-  let iterations = 0
-
-  while (iterations < maxIterations) {
-    const call = findInjectedCall(parsed)
-    if (!call || parsed.stopReason !== 'tool_use') {
-      return { text: collectText(parsed), iterations, stoppedByLimit: false }
-    }
-
-    const tool = findEnabledTool(call.name!)!
-    const result = await tool.exec(call.input)
-    opts.body.messages.push({ role: 'assistant', content: blocksToAssistantContent(parsed.blocks) })
-    opts.body.messages.push({
-      role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: call.id, content: result }]
-    })
-
-    const nextEvents = await opts.callUpstream(opts.body)
-    parsed = parseUpstreamEvents(nextEvents)
-    iterations++
-  }
-
-  return { text: collectText(parsed) || '(内部循环达到最大轮次)', iterations, stoppedByLimit: true }
-}
-
 /**
  * SSE 流式注入循环：命中已启用 tool → 执行 exec → 追加对话 → 再调上游 → 新 SSE 流式转发到同一 reply.raw。
  * 每次迭代作为独立 DB 记录。客户端实时看到续接 SSE。
- *
- * 与 runInjectLoop 的区别：
- * - 不缓冲上游响应，直接流式转发
- * - 不返回合成 text，客户端已实时收到原始 SSE
- * - 每次迭代用 SSEStreamProcessor 边转发边解析
  */
 export interface StreamingInjectLoopResult {
   iterations: number
@@ -214,8 +138,9 @@ export async function runStreamingInjectLoop(opts: {
     // 保存这次迭代到 DB
     await opts.saveIterationDB(requestId, processor, statusCode, opts.body)
 
-    parsed = processor.getParsedUpstream()
+    // 先收尾残帧再取解析结果，保证最后一帧参与解析
     processor.flushLeftover()
+    parsed = processor.getParsedUpstream()
     iterations++
   }
 
@@ -234,7 +159,6 @@ export interface JsonInjectLoopResult {
 
 /**
  * JSON 内部循环：非流式请求中命中 MCP tool -> 执行 exec -> 追加对话 -> 再调上游 -> 直到 end_turn。
- * 与 SSE 版 runInjectLoop 对称，但处理 parsed JSON response body 而非 SSE event 数组。
  *
  * @param opts.initialBody 首次上游 JSON 响应（已确认命中 MCP tool）
  * @param opts.requestBody 请求体（messages 会被原地追加）

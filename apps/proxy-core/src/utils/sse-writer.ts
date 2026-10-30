@@ -1,7 +1,8 @@
 import type { ServerResponse } from 'http'
+import { encodeSSEFrame } from './sse-protocol.js'
 
 /**
- * SSE 构造器（后端）—— 与 sse-accumulator（解析器）互为逆向。
+ * SSE 构造器（后端）—— 与 sse-protocol（帧解析器）互为逆向。
  *
  * 用于 proxy 主动构造并回写合成 SSE 流，让 Claude Code 客户端
  * 将其识别为一次正常的模型文本回答。事件骨架遵循 Anthropic
@@ -10,7 +11,7 @@ import type { ServerResponse } from 'http'
 
 /** 写单个 SSE 事件：`event: <type>\ndata: {json}\n\n`（Anthropic 双行格式） */
 export function writeSSEEvent(raw: ServerResponse, event: { type: string; [k: string]: unknown }): void {
-  raw.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+  raw.write(encodeSSEFrame({ event: event.type, data: JSON.stringify(event) }))
 }
 
 /**

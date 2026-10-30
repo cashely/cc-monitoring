@@ -7,10 +7,8 @@ jest.mock('../../tools/index.js', () => ({
 }))
 
 import {
-  parseSSEText,
   parseUpstreamEvents,
-  findInjectedCall,
-  runInjectLoop
+  findInjectedCall
 } from '../inject-loop.js'
 
 const TOOL_NAME = '__test_tool'
@@ -43,14 +41,6 @@ function toolResponse(echo: string) {
 }
 
 describe('inject-loop', () => {
-  describe('parseSSEText', () => {
-    it('should collect data: line JSON, skip [DONE] and non-json', () => {
-      const raw = 'event: message_stop\ndata: {"type":"message_stop"}\n\ndata: [DONE]\n\ndata: notjson\n\n'
-      const events = parseSSEText(raw)
-      expect(events).toEqual([{ type: 'message_stop' }])
-    })
-  })
-
   describe('parseUpstreamEvents', () => {
     it('should rebuild text block and stop_reason', () => {
       const p = parseUpstreamEvents(textResponse('hello world'))
@@ -80,51 +70,4 @@ describe('inject-loop', () => {
     })
   })
 
-  describe('runInjectLoop', () => {
-    it('should execute tool, append messages, and return final text on end_turn', async () => {
-      const body = { messages: [{ role: 'user', content: 'do __PROBE__' }] }
-      let call = 0
-      const result = await runInjectLoop({
-        events: toolResponse('echoed'),
-        body,
-        callUpstream: async () => {
-          call++
-          // 第二次调用返回最终文本
-          return textResponse('final answer')
-        }
-      })
-      expect(result.text).toBe('final answer')
-      expect(result.iterations).toBe(1)
-      expect(result.stoppedByLimit).toBe(false)
-      expect(call).toBe(1)
-      // messages 被追加了 assistant(tool_use) + user(tool_result)
-      expect(body.messages.length).toBe(3)
-      expect(body.messages[1]).toMatchObject({ role: 'assistant' })
-      expect((body.messages[2] as any).content[0]).toMatchObject({ type: 'tool_result', tool_use_id: 'tu_1' })
-    })
-
-    it('should return immediately if first response is not an injected tool call', async () => {
-      const body = { messages: [] as any[] }
-      const result = await runInjectLoop({
-        events: textResponse('direct'),
-        body,
-        callUpstream: async () => textResponse('should not be called')
-      })
-      expect(result.text).toBe('direct')
-      expect(result.iterations).toBe(0)
-      expect(body.messages.length).toBe(0)
-    })
-
-    it('should stop at maxIterations when model keeps calling the tool (死循环护栏)', async () => {
-      const body = { messages: [] as any[] }
-      const result = await runInjectLoop({
-        events: toolResponse('loop'),
-        body,
-        callUpstream: async () => toolResponse('loop again'), // 永远调注入 tool
-        maxIterations: 2
-      })
-      expect(result.stoppedByLimit).toBe(true)
-      expect(result.iterations).toBe(2)
-    })
-  })
 })

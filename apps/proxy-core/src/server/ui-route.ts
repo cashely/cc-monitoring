@@ -20,6 +20,7 @@ import { setupProvidersRoutes } from './providers-route.js'
 import { setupMcpRoutes } from './mcp-route.js'
 import { setupClaudeSettingsRoutes } from './claude-settings-route.js'
 import { checkAuth } from './auth.js'
+import { encodeSSEFrame } from '../utils/sse-protocol.js'
 
 // Exec API types
 interface ExecRequestBody {
@@ -333,7 +334,7 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
 
       const sendSSE = (event: string, data: string) => {
         if (res.destroyed) return
-        res.write(`event: ${event}\ndata: ${data}\n\n`)
+        res.write(encodeSSEFrame({ event, data }))
       }
 
       let finished = false
@@ -456,7 +457,7 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
 
       const sendSSE = (event: string, data: string) => {
         if (res.destroyed) return
-        res.write(`event: ${event}\ndata: ${data}\n\n`)
+        res.write(encodeSSEFrame({ event, data }))
       }
 
       let finished = false

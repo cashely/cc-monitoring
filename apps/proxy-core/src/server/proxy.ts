@@ -11,6 +11,7 @@ import { getActiveProvider } from '../utils/providers-db.js'
 import { aggregateStats } from '../utils/stats-aggregator.js'
 import { mcpManager } from '../utils/mcp-manager.js'
 import { getMachineId, getMachineIdSync, preloadMachineId } from '../utils/machine-id.js'
+import { createEventDecoder } from '../utils/sse-protocol.js'
 
 interface ProxyError extends Error {
   code?: string
@@ -404,26 +405,16 @@ export async function setupProxy(
           const nodeStream = Readable.fromWeb(response.body as any)
           const transformStream = createStreamTransformer(forwardedModel || originalModel)
 
+          // 旁路解码器：只做事件入库，不介入转发管道；[DONE] 走 onDone 留空，天然不入库
+          const tapDecoder = createEventDecoder((e) => rec!.appendEvent(e))
+
           nodeStream.on('data', (chunk: Buffer) => {
-            const text = chunk.toString()
-            const lines = text.split('\n')
-            for (const line of lines) {
-              if (line.startsWith('data:')) {
-                const eventData = line.slice(5).trim()
-                if (eventData && eventData !== '[DONE]') {
-                  try {
-                    const event = JSON.parse(eventData)
-                    rec!.appendEvent(event)
-                  } catch {
-                    // Not valid JSON, skip
-                  }
-                }
-              }
-            }
+            tapDecoder.write(chunk)
           })
 
           // Use finished() for reliable stream completion detection
           finished(nodeStream, async (err) => {
+            tapDecoder.end()
             if (err) {
               request.log.error(`openai stream error: ${err.message}`)
             }
@@ -512,27 +503,16 @@ export async function setupProxy(
         // Convert Web ReadableStream to Node Readable stream
         const nodeStream = Readable.fromWeb(response.body as any)
 
-        nodeStream.on('data', (chunk: Buffer) => {
-          const text = chunk.toString()
+        // 旁路解码器：只做事件入库，不介入转发管道；[DONE] 走 onDone 留空，天然不入库
+        const tapDecoder = createEventDecoder((e) => rec!.appendEvent(e))
 
-          const lines = text.split('\n')
-          for (const line of lines) {
-            if (line.startsWith('data:')) {
-              const eventData = line.slice(5).trim()
-              if (eventData && eventData !== '[DONE]') {
-                try {
-                  const event = JSON.parse(eventData)
-                  rec!.appendEvent(event)
-                } catch {
-                  // Not valid JSON, skip
-                }
-              }
-            }
-          }
+        nodeStream.on('data', (chunk: Buffer) => {
+          tapDecoder.write(chunk)
         })
 
         // Save request data when stream completes
         finished(nodeStream, async (err) => {
+          tapDecoder.end()
           if (err) {
             request.log.error(`claude stream error: ${err.message}`)
           }

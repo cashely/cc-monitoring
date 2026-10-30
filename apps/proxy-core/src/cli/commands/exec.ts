@@ -1,52 +1,43 @@
 import { loadConfig } from '../../config/index.js'
+import { createSSEDecoder } from '../../utils/sse-protocol.js'
 
 async function parseSSEStream(response: Response): Promise<number> {
   const reader = response.body!.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
+  const textDecoder = new TextDecoder()
   let exitCode = 0
+
+  // 用帧解码器：业务按帧的 event 字段（data/error/done）分发
+  const frameDecoder = createSSEDecoder((frame) => {
+    const eventType = frame.event
+    if (!eventType) return
+
+    try {
+      const data = JSON.parse(frame.data.join('\n'))
+      if (eventType === 'data') {
+        if (data.type === 'stderr') {
+          process.stderr.write(data.content)
+        } else {
+          process.stdout.write(data.content)
+        }
+      } else if (eventType === 'error') {
+        console.error('\nError:', data.message)
+      } else if (eventType === 'done') {
+        exitCode = data.code ?? 0
+      }
+    } catch {
+      // Ignore malformed JSON
+    }
+  })
 
   while (true) {
     const { done, value } = await reader.read()
     if (done) break
 
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || '' // Keep incomplete line in buffer
-
-    let eventType = ''
-    let eventData = ''
-
-    for (const line of lines) {
-      if (line.startsWith('event: ')) {
-        eventType = line.slice(7)
-      } else if (line.startsWith('data: ')) {
-        eventData = line.slice(6)
-      } else if (line === '') {
-        // End of event
-        if (eventType && eventData) {
-          try {
-            const data = JSON.parse(eventData)
-            if (eventType === 'data') {
-              if (data.type === 'stderr') {
-                process.stderr.write(data.content)
-              } else {
-                process.stdout.write(data.content)
-              }
-            } else if (eventType === 'error') {
-              console.error('\nError:', data.message)
-            } else if (eventType === 'done') {
-              exitCode = data.code ?? 0
-            }
-          } catch {
-            // Ignore malformed JSON
-          }
-        }
-        eventType = ''
-        eventData = ''
-      }
-    }
+    frameDecoder.write(textDecoder.decode(value, { stream: true }))
   }
+
+  // 收尾：末尾无空行的残留帧由此输出
+  frameDecoder.end()
 
   return exitCode
 }

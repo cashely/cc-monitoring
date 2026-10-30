@@ -1,4 +1,5 @@
 import { Transform, TransformCallback } from 'stream'
+import { createSSEDecoder, encodeSSEFrame, type SSEDecoder } from './sse-protocol.js'
 
 // --- Claude API Types ---
 interface ClaudeTool {
@@ -265,14 +266,19 @@ export function buildOpenAIHeaders(apiKey: string): Record<string, string> {
  */
 export function createStreamTransformer(model: string): Transform {
   let initialized = false
-  let buffer = ''
   const messageId = `msg_${Math.random().toString(36).substr(2, 9)}`
 
   const toolCalls: { [index: number]: { id: string; name: string; args: string; claudeIndex: number; started: boolean } } = {}
   let contentBlockIndex = 0
 
+  // 上一帧的原始 data 字符串（帧驱动下对应原 lines[length-2] 的数据来源）
+  let lastDataRaw = ''
+  let decoder: SSEDecoder | null = null
+  // [DONE] 已在 decoder 回调内收尾，transform 末尾不再重复 callback
+  let doneHandled = false
+
   const sendEvent = (event: string, data: object) => {
-    return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+    return encodeSSEFrame({ event, data: JSON.stringify(data) })
   }
 
   return new Transform({
@@ -298,91 +304,96 @@ export function createStreamTransformer(model: string): Transform {
         initialized = true
       }
 
-      buffer += chunk.toString()
+      if (!decoder) {
+        decoder = createSSEDecoder((frame) => {
+          const data = frame.data.join('\n')
 
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
+          if (data.trim() === '[DONE]') {
+            // Send closing events
+            this.push(sendEvent('content_block_stop', { type: 'content_block_stop', index: 0 }))
+            Object.values(toolCalls).forEach(tc => {
+              if (tc.started) {
+                this.push(sendEvent('content_block_stop', { type: 'content_block_stop', index: tc.claudeIndex }))
+              }
+            })
 
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        const data = line.substring(6)
+            let finalStopReason = 'end_turn'
+            try {
+              const lastChunk = JSON.parse(lastDataRaw)
+              const finishReason = lastChunk.choices[0].finish_reason
+              if (finishReason === 'tool_calls') finalStopReason = 'tool_use'
+              if (finishReason === 'length') finalStopReason = 'max_tokens'
+            } catch {}
 
-        if (data.trim() === '[DONE]') {
-          // Send closing events
-          this.push(sendEvent('content_block_stop', { type: 'content_block_stop', index: 0 }))
-          Object.values(toolCalls).forEach(tc => {
-            if (tc.started) {
-              this.push(sendEvent('content_block_stop', { type: 'content_block_stop', index: tc.claudeIndex }))
-            }
-          })
-
-          let finalStopReason = 'end_turn'
-          try {
-            const lastChunk = JSON.parse(lines[lines.length - 2].substring(6))
-            const finishReason = lastChunk.choices[0].finish_reason
-            if (finishReason === 'tool_calls') finalStopReason = 'tool_use'
-            if (finishReason === 'length') finalStopReason = 'max_tokens'
-          } catch {}
-
-          this.push(sendEvent('message_delta', {
-            type: 'message_delta',
-            delta: { stop_reason: finalStopReason, stop_sequence: null },
-            usage: { output_tokens: 0 }
-          }))
-          this.push(sendEvent('message_stop', { type: 'message_stop' }))
-          callback()
-          this.destroy()
-          return
-        }
-
-        try {
-          const openaiChunk = JSON.parse(data)
-          const delta = openaiChunk.choices[0]?.delta
-          if (!delta) continue
-
-          if (delta.content) {
-            this.push(sendEvent('content_block_delta', {
-              type: 'content_block_delta',
-              index: 0,
-              delta: { type: 'text_delta', text: delta.content }
+            this.push(sendEvent('message_delta', {
+              type: 'message_delta',
+              delta: { stop_reason: finalStopReason, stop_sequence: null },
+              usage: { output_tokens: 0 }
             }))
+            this.push(sendEvent('message_stop', { type: 'message_stop' }))
+            doneHandled = true
+            callback()
+            this.destroy()
+            return
           }
 
-          if (delta.tool_calls) {
-            for (const tc_delta of delta.tool_calls) {
-              const index = tc_delta.index
-              if (!toolCalls[index]) {
-                toolCalls[index] = { id: '', name: '', args: '', claudeIndex: 0, started: false }
-              }
-              if (tc_delta.id) toolCalls[index].id = tc_delta.id
-              if (tc_delta.function?.name) toolCalls[index].name = tc_delta.function.name
-              if (tc_delta.function?.arguments) toolCalls[index].args += tc_delta.function.arguments
+          lastDataRaw = data
 
-              if (toolCalls[index].id && toolCalls[index].name && !toolCalls[index].started) {
-                contentBlockIndex++
-                toolCalls[index].claudeIndex = contentBlockIndex
-                toolCalls[index].started = true
-                this.push(sendEvent('content_block_start', {
-                  type: 'content_block_start',
-                  index: contentBlockIndex,
-                  content_block: { type: 'tool_use', id: toolCalls[index].id, name: toolCalls[index].name, input: {} }
-                }))
-              }
+          try {
+            const openaiChunk = JSON.parse(data)
+            const delta = openaiChunk.choices[0]?.delta
+            if (!delta) return
 
-              if (toolCalls[index].started && tc_delta.function?.arguments) {
-                this.push(sendEvent('content_block_delta', {
-                  type: 'content_block_delta',
-                  index: toolCalls[index].claudeIndex,
-                  delta: { type: 'input_json_delta', partial_json: tc_delta.function.arguments }
-                }))
+            if (delta.content) {
+              this.push(sendEvent('content_block_delta', {
+                type: 'content_block_delta',
+                index: 0,
+                delta: { type: 'text_delta', text: delta.content }
+              }))
+            }
+
+            if (delta.tool_calls) {
+              for (const tc_delta of delta.tool_calls) {
+                const index = tc_delta.index
+                if (!toolCalls[index]) {
+                  toolCalls[index] = { id: '', name: '', args: '', claudeIndex: 0, started: false }
+                }
+                if (tc_delta.id) toolCalls[index].id = tc_delta.id
+                if (tc_delta.function?.name) toolCalls[index].name = tc_delta.function.name
+                if (tc_delta.function?.arguments) toolCalls[index].args += tc_delta.function.arguments
+
+                if (toolCalls[index].id && toolCalls[index].name && !toolCalls[index].started) {
+                  contentBlockIndex++
+                  toolCalls[index].claudeIndex = contentBlockIndex
+                  toolCalls[index].started = true
+                  this.push(sendEvent('content_block_start', {
+                    type: 'content_block_start',
+                    index: contentBlockIndex,
+                    content_block: { type: 'tool_use', id: toolCalls[index].id, name: toolCalls[index].name, input: {} }
+                  }))
+                }
+
+                if (toolCalls[index].started && tc_delta.function?.arguments) {
+                  this.push(sendEvent('content_block_delta', {
+                    type: 'content_block_delta',
+                    index: toolCalls[index].claudeIndex,
+                    delta: { type: 'input_json_delta', partial_json: tc_delta.function.arguments }
+                  }))
+                }
               }
             }
+          } catch {
+            // Ignore JSON parse errors in SSE chunks
           }
-        } catch {
-          // Ignore JSON parse errors in SSE chunks
-        }
+        })
       }
 
+      decoder.write(chunk)
+      if (!doneHandled) callback()
+    },
+
+    flush(callback: TransformCallback) {
+      decoder?.end()
       callback()
     }
   })
