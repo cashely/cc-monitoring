@@ -21,6 +21,7 @@ export interface RequestSummary {
   usage?: TokenUsage
   status?: 'pending' | 'completed'
   pendingId?: string  // compositeId of the pending record to replace
+  closedAt?: string   // 流中断时间（ISO），存在表示非正常结束
 }
 
 export interface RequestDetails {

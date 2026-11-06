@@ -43,6 +43,7 @@ export function aggregateStats(): void {
       COUNT(*) as request_count
     FROM requests
     WHERE timestamp >= ?
+      AND closed_at IS NULL
     GROUP BY hour
   `).all(hourlyCutoff) as any[]
 
@@ -134,6 +135,7 @@ export function getTodayStats(since: string): TodayStats {
       COUNT(*) as request_count
     FROM requests
     WHERE timestamp >= ?
+      AND closed_at IS NULL
   `).get(since) as any
 
   // Per-model usage count since local midnight
@@ -141,6 +143,7 @@ export function getTodayStats(since: string): TodayStats {
     SELECT model, COUNT(*) as count
     FROM requests
     WHERE timestamp >= ?
+      AND closed_at IS NULL
       AND model IS NOT NULL AND model != ''
     GROUP BY model
     ORDER BY count DESC

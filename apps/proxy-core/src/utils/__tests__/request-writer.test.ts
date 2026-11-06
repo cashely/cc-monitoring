@@ -2,7 +2,13 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import path from 'path'
 import { configureDbPath, initDatabase, closeDatabase, getDatabase } from '../db.js'
-import { createRequestRecorder, recordIteration, type RecordedRequest } from '../request-writer.js'
+import {
+  createRequestRecorder,
+  recordIteration,
+  listRequestDB,
+  interruptStaleRequestsOnStartup,
+  type RecordedRequest
+} from '../request-writer.js'
 import { pushNewRequest } from '../../server/data-push.js'
 
 jest.mock('../../server/data-push.js', () => ({ pushNewRequest: jest.fn() }))
@@ -225,5 +231,117 @@ describe('request-writer', () => {
     const parsed = JSON.parse(deltaRows[deltaRows.length - 1].event_data)
     expect(parsed.type).toBe('message_delta')
     expect(parsed.usage.output_tokens).toBe(42)
+  })
+
+  it('headers() writes real status_code while completed_at stays NULL and pushes pending', async () => {
+    const meta = makeMeta('headers')
+    const rec = createRequestRecorder(meta)
+    await rec.pending()
+    pushMock.mockClear()
+
+    rec.headers({ statusCode: 200, headers: { 'content-type': 'text/event-stream' } })
+
+    const row = getRequestRow(meta.localRequestId, meta.sessionId)
+    expect(row.status_code).toBe(200)
+    expect(row.completed_at).toBeNull()
+    expect(row.closed_at).toBeNull()
+    expect(JSON.parse(row.response_headers)['content-type']).toBe('text/event-stream')
+
+    expect(pushMock).toHaveBeenCalledTimes(1)
+    expect(pushMock).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: meta.localRequestId, statusCode: 200, responseTime: 0 }),
+      'pending'
+    )
+  })
+
+  it('interrupt() flushes events and writes closed_at/error keeping passed status_code, pushes completed with closedAt', async () => {
+    const meta = makeMeta('interrupt')
+    const rec = createRequestRecorder(meta)
+    await rec.pending()
+    rec.appendEvent({ type: 'chunk', seq: 1 })
+    pushMock.mockClear()
+
+    rec.interrupt({ statusCode: 200, error: 'stream interrupted: socket hang up' })
+
+    const row = getRequestRow(meta.localRequestId, meta.sessionId)
+    expect(row.status_code).toBe(200)
+    expect(row.completed_at).toBeNull()
+    expect(row.closed_at).toBeTruthy()
+    expect(row.error).toBe('stream interrupted: socket hang up')
+
+    // 剩余事件在中断前已落库
+    expect(getEventRows(meta.localRequestId, meta.sessionId)).toHaveLength(1)
+
+    expect(pushMock).toHaveBeenCalledTimes(1)
+    expect(pushMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: meta.localRequestId,
+        statusCode: 200,
+        closedAt: expect.any(String)
+      }),
+      'completed'
+    )
+  })
+
+  it('listRequestDB maps closed_at to closedAt only on closed rows', async () => {
+    const closedMeta = makeMeta('listclosed')
+    const closedRec = createRequestRecorder(closedMeta)
+    await closedRec.pending()
+    closedRec.interrupt({ statusCode: 200, error: 'boom' })
+
+    const openMeta = makeMeta('listopen')
+    const openRec = createRequestRecorder(openMeta)
+    await openRec.pending()
+    await openRec.complete({ statusCode: 200 })
+
+    const { requests } = await listRequestDB()
+    const closed = requests.find(r => r.requestId === closedMeta.localRequestId)
+    const open = requests.find(r => r.requestId === openMeta.localRequestId)
+    expect(closed).toBeTruthy()
+    expect(closed!.closedAt).toEqual(expect.any(String))
+    expect(open).toBeTruthy()
+    expect(open!.closedAt).toBeUndefined()
+  })
+
+  it('interruptStaleRequestsOnStartup() marks aged orphan rows and leaves fresh/completed rows untouched', async () => {
+    // 超龄无主行：已收到响应头（200），时间戳回拨到 6 分钟前
+    const oldMeta = makeMeta('staleold')
+    const oldRec = createRequestRecorder(oldMeta)
+    await oldRec.pending()
+    oldRec.headers({ statusCode: 200 })
+    getDatabase()
+      .prepare('UPDATE requests SET timestamp = ? WHERE request_id = ? AND session_id = ?')
+      .run(new Date(Date.now() - 6 * 60000).toISOString(), oldMeta.localRequestId, oldMeta.sessionId)
+
+    // 刚 pending 的新行，不超龄
+    const freshMeta = makeMeta('stalefresh')
+    const freshRec = createRequestRecorder(freshMeta)
+    await freshRec.pending()
+
+    // 超龄但已完成的行
+    const doneMeta = makeMeta('staledone')
+    const doneRec = createRequestRecorder(doneMeta)
+    await doneRec.pending()
+    await doneRec.complete({ statusCode: 200 })
+    getDatabase()
+      .prepare('UPDATE requests SET timestamp = ? WHERE request_id = ? AND session_id = ?')
+      .run(new Date(Date.now() - 6 * 60000).toISOString(), doneMeta.localRequestId, doneMeta.sessionId)
+
+    const count = interruptStaleRequestsOnStartup()
+
+    expect(count).toBe(1)
+
+    const oldRow = getRequestRow(oldMeta.localRequestId, oldMeta.sessionId)
+    expect(oldRow.closed_at).toBeTruthy()
+    expect(oldRow.error).toBe('interrupted: proxy restarted')
+    expect(oldRow.status_code).toBe(200)
+    expect(oldRow.completed_at).toBeNull()
+
+    const freshRow = getRequestRow(freshMeta.localRequestId, freshMeta.sessionId)
+    expect(freshRow.closed_at).toBeNull()
+    expect(freshRow.error).toBeNull()
+
+    const doneRow = getRequestRow(doneMeta.localRequestId, doneMeta.sessionId)
+    expect(doneRow.closed_at).toBeNull()
   })
 })

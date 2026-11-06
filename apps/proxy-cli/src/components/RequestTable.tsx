@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Table, TableProps, Button, Checkbox, Tag } from 'antd'
 import { GitCompareArrows, Loader2 } from 'lucide-react'
 import { RequestSummary } from '../types/request'
@@ -19,6 +19,16 @@ interface RequestTableProps {
 
 const PAGE_SIZE = 100
 const MAX_CAP = 500
+
+// pending 超过该时长仍未完成 → 僵尸客户端兜底，按中断展示
+const STALE_PENDING_MS = 5 * 60_000
+
+function isStalePending(record: RequestSummary, now: number): boolean {
+  return (
+    record.status === 'pending' &&
+    now - new Date(record.timestamp).getTime() > STALE_PENDING_MS
+  )
+}
 
 // Session 颜色轮询 palette（亮色，白色文字可读，暗/亮主题均适用）
 const SESSION_PALETTE = [
@@ -57,6 +67,13 @@ export function RequestTable({
   const [displayedCount, setDisplayedCount] = useState(PAGE_SIZE)
   const [loadingMore, setLoadingMore] = useState(false)
   const [hasMore, setHasMore] = useState(true)
+  // stale 判定依赖当前时间，30s 驱动一次重渲染
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const timer = setInterval(() => setTick(t => t + 1), 30_000)
+    return () => clearInterval(timer)
+  }, [])
+  const now = Date.now()
 
   // 合并新请求（处理 pending→completed 替换）
   useMemo(() => {
@@ -161,7 +178,7 @@ export function RequestTable({
         const sessionColor = getSessionColor(value)
         return (
           <div className="flex items-center gap-2" style={{ minWidth: 0 }}>
-            {record.status === 'pending' && (
+            {record.status === 'pending' && !isStalePending(record, now) && (
               <Loader2
                 size={14}
                 className="flex-shrink-0 animate-spin"
@@ -252,7 +269,18 @@ export function RequestTable({
       dataIndex: 'statusCode',
       key: 'statusCode',
       width: 80,
-      render: (value: number) => {
+      render: (value: number, record: any) => {
+        // 中断：后端 closedAt（statusCode 0 或 2xx），或僵尸 pending 兜底
+        const interrupted =
+          isStalePending(record, now) ||
+          (!!record.closedAt && (value === 0 || (value >= 200 && value < 300)))
+        if (interrupted) {
+          return (
+            <span className="text-xs font-medium" style={{ color: 'var(--color-warning)' }}>
+              中断
+            </span>
+          )
+        }
         const color = value >= 200 && value < 300 ? 'var(--color-success)' : 'var(--color-error)'
         return (
           <span className="text-xs font-medium" style={{ color }}>

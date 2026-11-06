@@ -42,12 +42,15 @@ export interface RequestSummary {
   machineId?: string
   userAgent?: string
   usage?: TokenUsage
+  closedAt?: string
 }
 
 export interface RequestRecorder {
   pending(): Promise<void>
   appendEvent(event: any): void
+  headers(args: { statusCode: number; headers?: Record<string, string> }): void
   complete(args: { cloudRequestId?: string; statusCode: number; headers?: Record<string, string> }): Promise<void>
+  interrupt(args: { statusCode: number; error: string }): void
   fail(args: { statusCode: number; error: string }): void
 }
 
@@ -194,7 +197,8 @@ function buildSummary(
   statusCode: number,
   responseTime: number,
   usage: TokenUsage | undefined,
-  withPendingId: boolean
+  withPendingId: boolean,
+  closedAt?: string
 ): RequestSummary & { pendingId?: string } {
   return {
     requestId,
@@ -210,7 +214,8 @@ function buildSummary(
     machineId: meta.machineId,
     userAgent: meta.request.headers['user-agent'],
     usage,
-    pendingId: withPendingId ? `${meta.sessionId}:${meta.localRequestId}` : undefined
+    pendingId: withPendingId ? `${meta.sessionId}:${meta.localRequestId}` : undefined,
+    closedAt
   }
 }
 
@@ -265,6 +270,23 @@ export function createRequestRecorder(meta: RecordedRequest): RequestRecorder {
 
     appendEvent,
 
+    // 上游响应头到达：回写真实 status_code，状态仍 pending（UI 保留 spinner）
+    headers({ statusCode, headers }): void {
+      getDatabase().prepare(
+        'UPDATE requests SET status_code = ?, response_headers = ? WHERE request_id = ? AND session_id = ?'
+      ).run(
+        statusCode,
+        headers ? JSON.stringify(headers) : null,
+        meta.localRequestId,
+        meta.sessionId
+      )
+
+      pushNewRequest(
+        buildSummary(meta, meta.localRequestId, statusCode, 0, undefined, false, undefined),
+        'pending'
+      )
+    },
+
     async complete({ cloudRequestId, statusCode, headers }): Promise<void> {
       // Flush remaining events in batch
       flushRemaining()
@@ -316,6 +338,22 @@ export function createRequestRecorder(meta: RecordedRequest): RequestRecorder {
       )
     },
 
+    // 流被截断/挂死：保留真实 status_code，通过 closed_at + error 标记中断
+    interrupt({ statusCode, error }): void {
+      flushRemaining()
+      const responseTime = Date.now() - startTime
+      const closedAt = new Date().toISOString()
+
+      getDatabase().prepare(
+        'UPDATE requests SET status_code = ?, response_time = ?, closed_at = ?, error = ? WHERE request_id = ? AND session_id = ?'
+      ).run(statusCode, responseTime, closedAt, error, meta.localRequestId, meta.sessionId)
+
+      pushNewRequest(
+        buildSummary(meta, meta.localRequestId, statusCode, responseTime, undefined, false, closedAt),
+        'completed'
+      )
+    },
+
     fail({ statusCode, error }): void {
       const responseTime = Date.now() - startTime
       const closedAt = new Date().toISOString()
@@ -325,7 +363,7 @@ export function createRequestRecorder(meta: RecordedRequest): RequestRecorder {
       ).run(statusCode, responseTime, closedAt, error, meta.localRequestId, meta.sessionId)
 
       pushNewRequest(
-        buildSummary(meta, meta.localRequestId, statusCode, responseTime, undefined, false),
+        buildSummary(meta, meta.localRequestId, statusCode, responseTime, undefined, false, closedAt),
         'completed'
       )
     }
@@ -448,7 +486,7 @@ export async function listRequestDB(
     SELECT
       request_id, session_id, timestamp, method, path, status_code, response_time,
       api_key, proxy_api_key, base_url, model, machine_id, user_agent,
-      input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+      input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, closed_at
     FROM requests
     ${whereClause}
     ORDER BY timestamp DESC
@@ -479,7 +517,8 @@ export async function listRequestDB(
         output_tokens: row.output_tokens,
         cache_read_input_tokens: row.cache_read_tokens,
         cache_creation_input_tokens: row.cache_creation_tokens
-      } : undefined
+      } : undefined,
+      closedAt: row.closed_at || undefined
     })),
     hasMore
   }
@@ -500,6 +539,29 @@ export async function cleanOldRequestsDB(daysToKeep = 7): Promise<void> {
   // Delete response_events first (foreign data), then requests
   db.prepare(`DELETE FROM response_events WHERE request_id IN (SELECT request_id FROM requests WHERE timestamp < ?)`).run(cutoff)
   db.prepare(`DELETE FROM requests WHERE timestamp < ?`).run(cutoff)
+}
+
+// 启动时回收上次进程遗留的僵尸 SSE 行：未完成、未关闭且超龄，逐行标记为中断
+// （status_code 保持原值不动），返回处理行数
+export function interruptStaleRequestsOnStartup(maxAgeMs = 5 * 60000): number {
+  const db = initDatabase()
+  const cutoff = new Date(Date.now() - maxAgeMs).toISOString()
+
+  const rows = db.prepare(`
+    SELECT request_id, session_id
+    FROM requests
+    WHERE completed_at IS NULL AND closed_at IS NULL AND timestamp < ?
+  `).all(cutoff) as { request_id: string; session_id: string }[]
+
+  const closedAt = new Date().toISOString()
+  const stmt = db.prepare(
+    'UPDATE requests SET closed_at = ?, error = ? WHERE request_id = ? AND session_id = ?'
+  )
+  for (const row of rows) {
+    stmt.run(closedAt, 'interrupted: proxy restarted', row.request_id, row.session_id)
+  }
+
+  return rows.length
 }
 
 // Load session history for multi-turn chat resume
