@@ -12,6 +12,8 @@ interface RequestTableProps {
   initialRequests: RequestSummary[]
   onCompare: (selectedIds: string[]) => void
   onRowClick: (request: RequestSummary) => void
+  selectedRowKeys: string[]
+  onSelectedRowKeysChange: (keys: string[]) => void
   loading?: boolean
 }
 
@@ -47,13 +49,14 @@ export function RequestTable({
   initialRequests,
   onCompare,
   onRowClick,
+  selectedRowKeys,
+  onSelectedRowKeysChange,
   loading: externalLoading,
 }: RequestTableProps): JSX.Element {
   const [allRequests, setAllRequests] = useState<RequestSummary[]>(initialRequests)
   const [displayedCount, setDisplayedCount] = useState(PAGE_SIZE)
   const [loadingMore, setLoadingMore] = useState(false)
   const [hasMore, setHasMore] = useState(true)
-  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
 
   // 合并新请求（处理 pending→completed 替换）
   useMemo(() => {
@@ -139,14 +142,12 @@ export function RequestTable({
           checked={selectedRowKeys.includes(record.compositeId)}
           onClick={(e) => e.stopPropagation()}
           onChange={(e) => {
-            setSelectedRowKeys(prev => {
-              if (e.target.checked) {
-                const newSelected = [...prev, record.compositeId]
-                return newSelected.slice(-2)
-              } else {
-                return prev.filter(k => k !== record.compositeId)
-              }
-            })
+            if (e.target.checked) {
+              const newSelected = [...selectedRowKeys, record.compositeId]
+              onSelectedRowKeysChange(newSelected.slice(-2))
+            } else {
+              onSelectedRowKeysChange(selectedRowKeys.filter(k => k !== record.compositeId))
+            }
           }}
         />
       ),
@@ -325,7 +326,7 @@ export function RequestTable({
               type="primary"
               icon={<GitCompareArrows size={16} />}
               disabled={selectedRowKeys.length !== 2}
-              onClick={() => onCompare(selectedRowKeys as string[])}
+              onClick={() => onCompare(selectedRowKeys)}
             >
               对比
             </Button>

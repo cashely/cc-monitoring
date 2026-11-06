@@ -8,12 +8,14 @@ describe('ModelTag', () => {
     expect(screen.getByText('claude-3-5-sonnet')).toBeInTheDocument()
   })
 
-  it('has purple color classes', () => {
+  it('has purple color styles', () => {
     const { container } = render(<ModelTag model="claude-3-opus" />)
     const tag = container.firstChild as HTMLElement
-    expect(tag).toHaveClass('bg-purple-500/20')
-    expect(tag).toHaveClass('text-purple-600')
-    expect(tag).toHaveClass('border-purple-500/30')
+    expect(tag).toHaveStyle({
+      backgroundColor: 'rgba(168, 85, 247, 0.2)',
+      color: '#A855F7',
+      borderColor: 'rgba(168, 85, 247, 0.3)'
+    })
   })
 
   it('has tag styling classes', () => {

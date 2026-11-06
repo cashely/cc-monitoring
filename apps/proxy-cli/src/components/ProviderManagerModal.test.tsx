@@ -68,7 +68,7 @@ describe('ProviderManagerModal', () => {
     await waitFor(() => expect(screen.getByDisplayValue('aliyun')).toBeDefined())
 
     const inputsBefore = screen.getAllByRole('textbox').length
-    fireEvent.click(screen.getByText('添加'))
+    fireEvent.click(screen.getByText(/^添\s加$/))
 
     const inputsAfter = screen.getAllByRole('textbox').length
     expect(inputsAfter).toBe(inputsBefore + 9)
@@ -80,7 +80,7 @@ describe('ProviderManagerModal', () => {
     render(<ProviderManagerModal isOpen={true} onClose={onClose} />)
     await waitFor(() => expect(screen.getByDisplayValue('aliyun')).toBeDefined())
 
-    const deleteButtons = screen.getAllByText('删除')
+    const deleteButtons = document.querySelectorAll('button.ant-btn-dangerous')
     fireEvent.click(deleteButtons[0])
 
     expect(confirmSpy).toHaveBeenCalled()
@@ -95,7 +95,7 @@ describe('ProviderManagerModal', () => {
     render(<ProviderManagerModal isOpen={true} onClose={onClose} />)
     await waitFor(() => expect(screen.getByDisplayValue('aliyun')).toBeDefined())
 
-    const deleteButtons = screen.getAllByText('删除')
+    const deleteButtons = document.querySelectorAll('button.ant-btn-dangerous')
     fireEvent.click(deleteButtons[0])
 
     expect(confirmSpy).toHaveBeenCalledWith('确认删除此供应商？')
@@ -122,7 +122,7 @@ describe('ProviderManagerModal', () => {
     render(<ProviderManagerModal isOpen={true} onClose={onClose} />)
     await waitFor(() => expect(screen.getByDisplayValue('aliyun')).toBeDefined())
 
-    fireEvent.click(screen.getByText('保存'))
+    fireEvent.click(screen.getByText(/^保\s存$/))
 
     expect(screen.getByText('保存中...')).toBeDefined()
 
@@ -133,7 +133,7 @@ describe('ProviderManagerModal', () => {
     render(<ProviderManagerModal isOpen={true} onClose={onClose} />)
     await waitFor(() => expect(screen.getByDisplayValue('aliyun')).toBeDefined())
 
-    fireEvent.click(screen.getByText('保存'))
+    fireEvent.click(screen.getByText(/^保\s存$/))
 
     await waitFor(() => expect(screen.getByText('保存成功')).toBeDefined())
   })
@@ -150,7 +150,7 @@ describe('ProviderManagerModal', () => {
     render(<ProviderManagerModal isOpen={true} onClose={onClose} />)
     await waitFor(() => expect(screen.getByDisplayValue('aliyun')).toBeDefined())
 
-    fireEvent.click(screen.getByText('保存'))
+    fireEvent.click(screen.getByText(/^保\s存$/))
 
     await waitFor(() => {
       expect(screen.getByText('第1行: name 必填')).toBeDefined()
@@ -164,7 +164,7 @@ describe('ProviderManagerModal', () => {
     render(<ProviderManagerModal isOpen={true} onClose={onClose} />)
     await waitFor(() => expect(screen.getByDisplayValue('aliyun')).toBeDefined())
 
-    fireEvent.click(screen.getByText('保存'))
+    fireEvent.click(screen.getByText(/^保\s存$/))
 
     await waitFor(() => expect(screen.getByText('网络错误')).toBeDefined())
   })
@@ -175,7 +175,7 @@ describe('ProviderManagerModal', () => {
     render(<ProviderManagerModal isOpen={true} onClose={onClose} />)
     await waitFor(() => expect(screen.getByDisplayValue('aliyun')).toBeDefined())
 
-    fireEvent.click(screen.getByText('保存'))
+    fireEvent.click(screen.getByText(/^保\s存$/))
 
     await waitFor(() => expect(screen.getByText('网络错误')).toBeDefined())
   })
@@ -189,7 +189,7 @@ describe('ProviderManagerModal', () => {
     render(<ProviderManagerModal isOpen={true} onClose={onClose} />)
     await waitFor(() => expect(screen.getByDisplayValue('aliyun')).toBeDefined())
 
-    fireEvent.click(screen.getByText('保存'))
+    fireEvent.click(screen.getByText(/^保\s存$/))
 
     await waitFor(() => expect(screen.getByText('服务器内部错误')).toBeDefined())
   })
@@ -208,16 +208,16 @@ describe('ProviderManagerModal', () => {
 
     const activatedButtons = screen.getAllByText('已激活')
     expect(activatedButtons.length).toBe(1)
-    expect((activatedButtons[0] as HTMLButtonElement).disabled).toBe(true)
+    expect(activatedButtons[0].closest('button')!.disabled).toBe(true)
   })
 
   test('renders activate button for non-default provider', async () => {
     render(<ProviderManagerModal isOpen={true} onClose={onClose} />)
     await waitFor(() => expect(screen.getByDisplayValue('aliyun')).toBeDefined())
 
-    const activateButtons = screen.getAllByText('激活')
+    const activateButtons = screen.getAllByText(/^激\s活$/)
     expect(activateButtons.length).toBe(1)
-    expect((activateButtons[0] as HTMLButtonElement).disabled).toBe(false)
+    expect(activateButtons[0].closest('button')!.disabled).toBe(false)
   })
 
   test('clicking activate sets only that row as default', async () => {
@@ -226,15 +226,15 @@ describe('ProviderManagerModal', () => {
 
     // Initially aliyun is active (disabled), openai is not
     expect(screen.getAllByText('已激活').length).toBe(1)
-    expect(screen.getAllByText('激活').length).toBe(1)
+    expect(screen.getAllByText(/^激\s活$/).length).toBe(1)
 
     // Click activate on openai row
-    fireEvent.click(screen.getByText('激活'))
+    fireEvent.click(screen.getByText(/^激\s活$/))
 
     // Now openai should be activated, aliyun should show activate button
     await waitFor(() => {
       expect(screen.getAllByText('已激活').length).toBe(1)
-      expect(screen.getAllByText('激活').length).toBe(1)
+      expect(screen.getAllByText(/^激\s活$/).length).toBe(1)
     })
 
     // The activated button should now be in the openai row (second row)
@@ -252,7 +252,7 @@ describe('ProviderManagerModal', () => {
     await waitFor(() => expect(screen.getByDisplayValue('aliyun')).toBeDefined())
 
     // Click save with default state (aliyun active)
-    fireEvent.click(screen.getByText('保存'))
+    fireEvent.click(screen.getByText(/^保\s存$/))
 
     await waitFor(() => expect(mockSaveProviders).toHaveBeenCalled())
     const payload = mockSaveProviders.mock.calls[0][0] as any[]
@@ -276,7 +276,7 @@ describe('ProviderManagerModal', () => {
     render(<ProviderManagerModal isOpen={true} onClose={onClose} />)
     await waitFor(() => expect(screen.getByText('供应商管理')).toBeDefined())
 
-    fireEvent.click(screen.getAllByText('关闭')[0])
+    fireEvent.click(screen.getAllByText(/^关\s闭$/)[0])
 
     expect(onClose).toHaveBeenCalled()
   })
@@ -311,7 +311,7 @@ describe('ProviderManagerModal timer cleanup', () => {
     expect(screen.getByDisplayValue('aliyun')).toBeDefined()
 
     // Trigger save
-    fireEvent.click(screen.getByText('保存'))
+    fireEvent.click(screen.getByText(/^保\s存$/))
 
     // Let the save resolve
     await act(async () => {
@@ -336,7 +336,7 @@ describe('ProviderManagerModal timer cleanup', () => {
 
     expect(screen.getByDisplayValue('aliyun')).toBeDefined()
 
-    fireEvent.click(screen.getByText('保存'))
+    fireEvent.click(screen.getByText(/^保\s存$/))
 
     await act(async () => {
       vi.advanceTimersByTime(0)

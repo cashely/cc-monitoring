@@ -34,7 +34,7 @@ describe('useLearnStream', () => {
     })
 
     expect(mockCreate).toHaveBeenCalledTimes(1)
-    expect(mockCreate).toHaveBeenLastCalledWith('https://x.com', undefined, 'learn')
+    expect(mockCreate).toHaveBeenLastCalledWith('https://x.com', undefined, 'learn', undefined, 'url', 'X')
     expect(result.current.status).toBe('streaming')
     expect(result.current.stage).toBeNull()
   })
@@ -47,7 +47,7 @@ describe('useLearnStream', () => {
     act(() => {
       result.current.start({ source: 'url', payload: 'https://x.com' })
     })
-    expect(mockCreate).toHaveBeenLastCalledWith('https://x.com', undefined, 'learn')
+    expect(mockCreate).toHaveBeenLastCalledWith('https://x.com', undefined, 'learn', undefined, 'url', undefined)
 
     // 后端下发 pi sessionId，流水线结束
     act(() => {

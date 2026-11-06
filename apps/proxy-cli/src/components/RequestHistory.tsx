@@ -56,6 +56,8 @@ export function RequestHistory({ requests, loading }: RequestHistoryProps): JSX.
         initialRequests={requests}
         onCompare={handleCompare}
         onRowClick={handleRowClick}
+        selectedRowKeys={selectedIds}
+        onSelectedRowKeysChange={setSelectedIds}
         loading={loading}
       />
 

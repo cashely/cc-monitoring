@@ -39,4 +39,30 @@ class MockWebSocket {
 
 vi.stubGlobal('WebSocket', MockWebSocket)
 
+// jsdom does not implement IntersectionObserver
+class MockIntersectionObserver {
+  root = null
+  rootMargin = ''
+  thresholds = []
+  observe = vi.fn()
+  unobserve = vi.fn()
+  disconnect = vi.fn()
+  takeRecords = vi.fn()
+}
+vi.stubGlobal('IntersectionObserver', MockIntersectionObserver)
+
+// jsdom does not implement window.matchMedia
+if (!window.matchMedia) {
+  window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn()
+  }))
+}
+
 export { MockWebSocket }

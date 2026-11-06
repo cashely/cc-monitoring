@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen } from './test/utils'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { App } from './App'
 
@@ -45,7 +45,7 @@ describe('App', () => {
 
   it('renders the app header', () => {
     render(<App />)
-    expect(screen.getByText('Claude 代理助手')).toBeTruthy()
+    expect(screen.getByText('CC Monitoring')).toBeTruthy()
   })
 
   it('renders StatsBarChart period toggles and RequestHistory empty state', () => {

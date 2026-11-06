@@ -14,10 +14,10 @@ describe('ConnectionBanner', () => {
     expect(screen.getByText(/WebSocket 连接断开/)).toBeDefined()
   })
 
-  it('has fixed positioning and z-50 for visibility', () => {
+  it('has fixed positioning and high z-index for visibility', () => {
     render(<ConnectionBanner connected={false} />)
     const banner = screen.getByText(/WebSocket 连接断开/).closest('div')!
     expect(banner.className).toContain('fixed')
-    expect(banner.className).toContain('z-50')
+    expect(banner.className).toContain('z-[60]')
   })
 })
