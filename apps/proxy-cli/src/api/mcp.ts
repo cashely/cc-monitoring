@@ -1,4 +1,4 @@
-import type { McpServerWithStatus, McpServerInput, McpTool } from '../types/mcp'
+import type { McpServerWithStatus, McpServerInput } from '../types/mcp'
 
 const API_BASE = '/ui/api'
 
@@ -39,7 +39,3 @@ export async function reconnectMcpServer(id: number): Promise<{ success: boolean
   return res.json()
 }
 
-export async function fetchMcpTools(): Promise<{ tools: McpTool[] }> {
-  const res = await fetch(`${API_BASE}/mcp/tools`)
-  return res.json()
-}

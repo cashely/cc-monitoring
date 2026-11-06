@@ -3,19 +3,6 @@ import { describe, it, expect, vi } from 'vitest'
 import { RequestHistory } from './RequestHistory'
 import { RequestSummary } from '../types/request'
 
-vi.mock('./RequestCard', () => ({
-  RequestCard: ({ summary, isSelected, onToggleSelect }: any) => (
-    <div data-testid={`card-${summary.compositeId}`}>
-      <input
-        type="checkbox"
-        data-testid={`cb-${summary.compositeId}`}
-        checked={!!isSelected}
-        onChange={() => onToggleSelect?.(summary.compositeId)}
-      />
-    </div>
-  ),
-}))
-
 vi.mock('./RequestCompareModal', () => ({
   RequestCompareModal: ({ leftId, rightId, onClose }: any) => (
     <div data-testid="compare-modal" data-left={leftId} data-right={rightId}>

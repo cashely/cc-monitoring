@@ -48,7 +48,7 @@ describe('App', () => {
     expect(screen.getByText('Claude 代理助手')).toBeTruthy()
   })
 
-  it('renders ConnectionBanner, StatsBarChart, RequestHistory, and StatusPanel', () => {
+  it('renders StatsBarChart period toggles and RequestHistory empty state', () => {
     render(<App />)
     // StatsBarChart renders with toggle buttons
     expect(screen.getByText('时')).toBeTruthy()

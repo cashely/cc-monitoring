@@ -29,9 +29,3 @@ export interface McpServerInput {
   headers?: Record<string, string>
   enabled?: boolean
 }
-
-export interface McpTool {
-  name: string
-  description: string
-  input_schema: Record<string, unknown>
-}
