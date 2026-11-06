@@ -7,6 +7,7 @@ import { createRequestRecorder, type RequestRecorder, type RecordedRequest } fro
 import { cleanOldRequestsDB } from '../utils/request-writer.js'
 import { pushNewRequest } from './data-push.js'
 import { initDatabase, closeDatabase, getDatabase } from '../utils/db.js'
+import { recoverCrashedTasks } from '../utils/learn-tasks-db.js'
 import { getActiveProvider } from '../utils/providers-db.js'
 import { aggregateStats } from '../utils/stats-aggregator.js'
 import { mcpManager } from '../utils/mcp-manager.js'
@@ -218,7 +219,13 @@ export async function setupProxy(
   const maxDays = fullConfig.storage?.maxDays ?? 7
 
   // Initialize SQLite database
-  initDatabase()
+  const db = initDatabase()
+
+  // 回收上次进程遗留的无主 running learn 任务（进程崩溃/被 kill）
+  const recoveredTasks = recoverCrashedTasks(db)
+  if (recoveredTasks > 0) {
+    console.log(`Recovered ${recoveredTasks} crashed learn task(s) from previous run`)
+  }
 
   // Initialize MCP connections (after DB is ready)
   try {

@@ -50,6 +50,8 @@ export interface RunLearnPipelineOptions {
   signal: AbortSignal
   /** 注入式 docsDir（测试用）；默认 ~/.cc-monitoring/docs */
   docsDir?: string
+  /** slug 算出后、任何文件改动前同步调用（落 running 行用）；抛错直接传播 */
+  onStart?: (slug: string) => void
 }
 
 // pi AgentSession 的最小鸭子类型接口（避免直接依赖 pi-coding-agent 类型）
@@ -412,6 +414,9 @@ export async function runLearnPipeline(
 ): Promise<{ slug: string; chunksWritten: number; itemsFailed: number }> {
   const docsDir = opts.docsDir ?? path.join(dataDir, 'docs')
   const slug = opts.sourceType === 'url' ? slugFromUrl(opts.input) : slugFromLabel(opts.label ?? 'topic')
+
+  // 状态机落库钩子：任何文件/目录改动之前调用，抛错直接传播（此时无任何改动）
+  opts.onStart?.(slug)
 
   // 阻断：存在未清理的 .old 旁挂目录时直接拒绝，必须在一切写入之前
   assertNoOldDirs(docsDir)

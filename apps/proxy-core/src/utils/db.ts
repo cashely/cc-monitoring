@@ -92,6 +92,11 @@ export function initDatabase(): Database.Database {
     db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (10)').run()
   }
 
+  if (currentVersion < 11) {
+    applySchemaV11(db)
+    db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (11)').run()
+  }
+
   return db
 }
 
@@ -315,6 +320,27 @@ export function applySchemaV10(db: Database.Database) {
     UPDATE requests SET user_agent = json_extract(request_headers, '$.user-agent')
     WHERE user_agent IS NULL AND request_headers IS NOT NULL
   `).run()
+}
+
+export function applySchemaV11(db: Database.Database) {
+  // learn 流水线状态机落库：文件操作前插 running，结束转 completed/failed/aborted；
+  // 服务启动时无主 running 回收为 crashed。partial unique index 硬守同 slug 并发运行。
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS learn_tasks (
+      task_id TEXT PRIMARY KEY,
+      slug TEXT NOT NULL,
+      source_type TEXT NOT NULL,
+      label TEXT NOT NULL,
+      status TEXT NOT NULL,
+      error TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      ended_at TEXT
+    )
+  `)
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_learn_tasks_running_slug
+      ON learn_tasks(slug) WHERE status = 'running'
+  `)
 }
 
 export function closeDatabase() {

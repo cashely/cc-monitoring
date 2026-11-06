@@ -1228,6 +1228,70 @@ describe('pi-learn-orchestrator', () => {
     expect(mockMintSlug.mock.calls[0][0].signal).toBe(mySignal)
   })
 
+  test('onStart 钩子被调用，参数为算出的 slug', async () => {
+    const slug = 'hook-topic'
+
+    // S1: 写 outline.json + seed index.json + chunk（同 S3 happy path 模式）
+    mockCreatePiSession.mockImplementationOnce(async () => {
+      return new FakeSession(async () => {
+        await fsp.mkdir(path.join(tmpDir, slug, 'chunks'), { recursive: true })
+        await fsp.writeFile(
+          path.join(tmpDir, slug, 'outline.json'),
+          JSON.stringify({ slug, source: 'sources/', items: [{ id: 'a', title: '概念A', oneLine: 'aaa' }] }, null, 2),
+        )
+        await fsp.writeFile(
+          path.join(tmpDir, slug, 'index.json'),
+          JSON.stringify({ slug, title: 'Hook', summary: '(refining)', tags: [], chunks: [
+            { id: 'chunk-001', title: '概念A', summary: 'aaa', tags: [] },
+          ] }, null, 2),
+        )
+        await fsp.writeFile(path.join(tmpDir, slug, 'chunks', 'chunk-001.md'), '# 概念A')
+      }) as any
+    })
+    mockCreatePiSession.mockImplementationOnce(async () => new FakeSession(FakeSession.readSourceThen(async () => {})) as any)
+    mockCreatePiSession.mockImplementationOnce(async () => {
+      return new FakeSession(FakeSession.addTopicHandler(['a-tag'])) as any
+    })
+
+    const onStart = jest.fn()
+    const result = await runLearnPipeline({
+      sourceType: 'file',
+      input: '# body',
+      label: `${slug}.md`,
+      port: 9999,
+      events: makeEvents(),
+      docsDir: tmpDir,
+      signal: externalSignal,
+      onStart,
+    })
+
+    expect(result.slug).toBe(slug)
+    expect(onStart).toHaveBeenCalledTimes(1)
+    expect(onStart).toHaveBeenCalledWith(slug)
+  })
+
+  test('onStart 抛错 → pipeline reject，docs 目录无任何改动且不创建 session', async () => {
+    const onStart = jest.fn(() => {
+      throw new Error('已有同主题的学习任务在运行')
+    })
+
+    await expect(
+      runLearnPipeline({
+        sourceType: 'file',
+        input: '# body',
+        label: 'boom.md',
+        port: 9999,
+        events: makeEvents(),
+        docsDir: tmpDir,
+        signal: externalSignal,
+        onStart,
+      }),
+    ).rejects.toThrow(/已有同主题的学习任务在运行/)
+
+    expect(await fsp.readdir(tmpDir)).toEqual([])
+    expect(mockCreatePiSession).not.toHaveBeenCalled()
+  })
+
   test('超时路径：5 分钟超时 signal 触发 → session.abort 调用、pipeline reject', async () => {
     // Node 的 AbortSignal.timeout 内部 timer 不受 fake clock 控制，且 fake timers 下
     // fs.promises IO 不 settle；mock 成等价 signal，prompt 在途后手动触发（模拟 5 分钟到点）

@@ -23,6 +23,14 @@ import { checkAuth } from './auth.js'
 import { encodeSSEFrame } from '../utils/sse-protocol.js'
 import { createClientAbortSignal } from '../utils/abort-signals.js'
 import { createPiEventEmitter } from '../utils/pi-events.js'
+import { getDatabase } from '../utils/db.js'
+import { insertRunning, markCompleted, markFailed, markAborted } from '../utils/learn-tasks-db.js'
+
+// 同 slug running 唯一守卫撞约束：better-sqlite3 暴露扩展错误码，message 兜底
+function isLearnRunningConstraint(err: any): boolean {
+  return err?.code === 'SQLITE_CONSTRAINT_UNIQUE'
+    || (typeof err?.message === 'string' && /UNIQUE constraint failed/i.test(err.message))
+}
 
 // Exec API types
 interface ExecRequestBody {
@@ -310,14 +318,33 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
         // 非流式：跑完流水线，返回汇总（不返回 output 文本——流水线产物落盘）
         // 客户端在响应返回前断开 → abort 流水线
         const signal = createClientAbortSignal(request.raw)
+        const db = getDatabase()
+        let taskId: string | undefined
         try {
-          const result = await runLearnPipeline({ sourceType, input: prompt, label, port, events: noopLearnEvents, signal })
+          const result = await runLearnPipeline({
+            sourceType, input: prompt, label, port, events: noopLearnEvents, signal,
+            onStart: (slug) => {
+              const r = insertRunning(db, { slug, sourceType, label: label ?? (sourceType === 'url' ? prompt : 'topic') })
+              taskId = r.taskId
+            },
+          })
+          if (taskId) markCompleted(db, taskId)
           return {
             success: true,
             output: `slug=${result.slug} chunks=${result.chunksWritten} failed=${result.itemsFailed}`,
           }
         } catch (err: any) {
           request.log.error({ err }, 'learn pipeline failed')
+          if (isLearnRunningConstraint(err)) {
+            return reply.code(409).send({
+              success: false,
+              error: '已有同主题的学习任务在运行，请等待其结束后再试',
+            })
+          }
+          if (taskId) {
+            if (signal.aborted) markAborted(db, taskId)
+            else markFailed(db, taskId, err?.message || 'learn pipeline failed')
+          }
           return reply.code(500).send({
             success: false,
             error: err?.message || 'learn pipeline failed',
@@ -396,11 +423,33 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
         learnController.abort()
       })
 
+      const db = getDatabase()
+      let taskId: string | undefined
+
       try {
-        await runLearnPipeline({ sourceType, input: prompt, label, port, events, signal: learnController.signal })
+        await runLearnPipeline({
+          sourceType, input: prompt, label, port, events, signal: learnController.signal,
+          onStart: (slug) => {
+            const r = insertRunning(db, { slug, sourceType, label: label ?? (sourceType === 'url' ? prompt : 'topic') })
+            taskId = r.taskId
+          },
+        })
+        if (taskId) markCompleted(db, taskId)
         finish(0)
       } catch (err: any) {
         request.log.error({ err }, 'learn pipeline failed')
+        if (isLearnRunningConstraint(err)) {
+          // onStart 撞约束时流水线尚未做任何文件改动，无 taskId 不标终态
+          if (!res.destroyed) {
+            sendSSE('error', JSON.stringify({ message: '已有同主题的学习任务在运行，请等待其结束后再试' }))
+          }
+          finish(1)
+          return
+        }
+        if (taskId) {
+          if (learnController.signal.aborted) markAborted(db, taskId)
+          else markFailed(db, taskId, err?.message || 'learn pipeline failed')
+        }
         if (!res.destroyed) {
           sendSSE('error', JSON.stringify({ message: err?.message || 'learn pipeline failed' }))
         }

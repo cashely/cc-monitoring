@@ -19,3 +19,7 @@ pi SDK 的 AgentSession，取消（abort）的最小单位；一次流水线各�
 ## 会话事件
 
 pi SDK 原始事件经映射后得到的领域事件：轮次开关（round_start/round_end）、文本与思考增量（text_delta/thinking_delta）、工具起止（tool_start/tool_end）。区别于 SSE 帧（传输封装）与 pi 原始事件（SDK 协议）。
+
+## Learn 任务
+
+一次 learn 运行在 learn_tasks 表中的状态机行，状态为 running / completed / failed / aborted / crashed；同 slug 同时只许一个 running。
