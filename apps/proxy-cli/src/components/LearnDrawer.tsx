@@ -166,6 +166,15 @@ export function LearnDrawer({ open, task, onClose }: LearnDrawerProps): JSX.Elem
         ))
       )}
 
+      {status === 'cancelled' && (
+        <div
+          className="glass rounded-lg p-2 mt-2 text-xs"
+          style={{ color: 'var(--color-text-muted)' }}
+        >
+          {t('chat.learnCancelled')}
+        </div>
+      )}
+
       {status === 'done' && rounds.length > 0 && (
         <>
           <div className="text-xs mt-3" style={{ color: 'var(--color-success)' }}>

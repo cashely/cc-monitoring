@@ -69,6 +69,7 @@
     "roundLabel": "第 {{n}} 轮",
     "roundLearning": "学习中…",
     "roundDone": "已完成",
+    "learnCancelled": "已取消",
     "learnPreparing": "准备中…",
     "learnFollowupPlaceholder": "追问或补充问题…",
     "learnFollowupSend": "发送",

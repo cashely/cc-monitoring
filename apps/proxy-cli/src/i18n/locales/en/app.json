@@ -67,6 +67,7 @@
     "roundLabel": "Round {{n}}",
     "roundLearning": "Learning…",
     "roundDone": "Done",
+    "learnCancelled": "Cancelled",
     "learnPreparing": "Preparing…",
     "learnFollowupPlaceholder": "Ask a follow-up…",
     "learnFollowupSend": "Send",

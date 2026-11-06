@@ -15,3 +15,7 @@ outline → refine → tag 三阶段编排的一次运行，是 pi 学习一个�
 ## pi 会话
 
 pi SDK 的 AgentSession，取消（abort）的最小单位；一次流水线各阶段各自创建会话。
+
+## 会话事件
+
+pi SDK 原始事件经映射后得到的领域事件：轮次开关（round_start/round_end）、文本与思考增量（text_delta/thinking_delta）、工具起止（tool_start/tool_end）。区别于 SSE 帧（传输封装）与 pi 原始事件（SDK 协议）。

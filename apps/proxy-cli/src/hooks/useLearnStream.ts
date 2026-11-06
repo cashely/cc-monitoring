@@ -21,7 +21,7 @@ export interface LearnRound {
   done: boolean
 }
 
-export type LearnStatus = 'idle' | 'streaming' | 'done'
+export type LearnStatus = 'idle' | 'streaming' | 'done' | 'cancelled'
 
 // 3 阶段流水线进度：outline 大纲生成 / refine 逐条细化 / tag 富 tag 索引
 export interface StageState {
@@ -213,7 +213,9 @@ export function useLearnStream() {
       connectionRef.current.abort()
       connectionRef.current = null
     }
-    setStatus('done')
+    // 本地终态：abort 后后端静默（不发 error/done 帧），保留已生成 rounds
+    setStatus('cancelled')
+    setStage(null)
   }, [])
 
   // unmount 时 abort，避免流泄漏

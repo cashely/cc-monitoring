@@ -16,6 +16,7 @@ import { CrawlGuard } from './pi-crawl-tools.js'
 import { createTimeoutSignal, bindAbort } from './abort-signals.js'
 import { slugFromUrl, slugFromLabel } from './web-crawler.js'
 import { assertNoOldDirs, readAllTopics, readSidecarDetail, readTopicDetail, reconcileTopics, mergeTopics, mintSlug } from './pi-dedup.js'
+import { isAssistantMessage, extractAssistantDelta, extractToolResultText } from './pi-events.js'
 
 export interface OutlineItem {
   id: string
@@ -97,20 +98,21 @@ async function runPrompt(
   let roundOpen = false
   const unsub = session.subscribe((ev: any) => {
     try {
-      if (ev.type === 'message_start' && ev.message?.role === 'assistant') {
-        currentRound = roundCounter.index
+      if (ev.type === 'message_start' && isAssistantMessage(ev)) {
+        // 轮次 1-based：先自增后用；roundCounter 跨 session 全局单调
         roundCounter.index += 1
+        currentRound = roundCounter.index
         roundOpen = true
         events.roundStart(currentRound)
-      } else if (ev.type === 'message_end' && ev.message?.role === 'assistant') {
+      } else if (ev.type === 'message_end' && isAssistantMessage(ev)) {
         roundOpen = false
         events.roundEnd(currentRound)
       } else if (ev.type === 'message_update') {
-        const ae = ev.assistantMessageEvent
-        if (ae?.type === 'text_delta' && typeof ae.delta === 'string') {
-          events.textDelta(ae.delta)
-        } else if (ae?.type === 'thinking_delta' && typeof ae.delta === 'string') {
-          events.thinkingDelta(ae.delta)
+        const d = extractAssistantDelta(ev)
+        if (d?.kind === 'text') {
+          events.textDelta(d.delta)
+        } else if (d?.kind === 'thinking') {
+          events.thinkingDelta(d.delta)
         }
       } else if (ev.type === 'tool_execution_start') {
         events.toolStart({
@@ -123,9 +125,6 @@ async function runPrompt(
           pendingAddTopicWithTags = Array.isArray(tags) && tags.length > 0
         }
       } else if (ev.type === 'tool_execution_end') {
-        const resultText = Array.isArray(ev.result?.content)
-          ? ev.result.content.map((c: any) => (c?.type === 'text' ? c.text : '')).join('\n')
-          : ''
         if (ev.toolName === 'add_topic' && pendingAddTopicWithTags && !ev.isError) {
           result.addTopicCalled = true
         }
@@ -137,7 +136,7 @@ async function runPrompt(
           toolName: ev.toolName,
           isError: !!ev.isError,
           durationMs: ev.durationMs ?? 0,
-          result: resultText,
+          result: extractToolResultText(ev.result),
         })
       }
     } catch {

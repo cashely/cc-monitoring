@@ -24,6 +24,7 @@ import { sandboxWriteOps } from './pi-sandbox-ops.js'
 import { knowledgeStore } from './knowledge-store.js'
 import { createCrawlTools, type CrawlGuard } from './pi-crawl-tools.js'
 import { createTimeoutSignal, bindAbort } from './abort-signals.js'
+import { extractAssistantDelta } from './pi-events.js'
 
 // 知识文档目录：所有文件工具的 cwd 和沙箱白名单根
 const docsDir = path.join(dataDir, 'docs')
@@ -531,11 +532,9 @@ export async function runJsonPrompt(opts: {
   // 订阅累积 assistant 文本 chunk
   let accumulated = ''
   const unsub = session.subscribe((ev: any) => {
-    if (ev.type === 'message_update') {
-      const ae = ev.assistantMessageEvent
-      if (ae?.type === 'text_delta' && typeof ae.delta === 'string') {
-        accumulated += ae.delta
-      }
+    const d = extractAssistantDelta(ev)
+    if (d?.kind === 'text') {
+      accumulated += d.delta
     }
   })
 

@@ -733,9 +733,9 @@ describe('pi-learn-orchestrator', () => {
       }),
     ).rejects.toThrow()
 
-    // 轮次必须闭合：roundStart:0 有且仅有一次配对的 roundEnd:0
-    expect(events.calls).toContain('roundStart:0')
-    expect(events.calls.filter((c) => c === 'roundEnd:0')).toHaveLength(1)
+    // 轮次必须闭合：roundStart:1 有且仅有一次配对的 roundEnd:1
+    expect(events.calls).toContain('roundStart:1')
+    expect(events.calls.filter((c) => c === 'roundEnd:1')).toHaveLength(1)
   })
 
   // ============================================================
@@ -764,12 +764,12 @@ describe('pi-learn-orchestrator', () => {
     expect(result.slug).toBe('pi')
     expect(result.chunksWritten).toBe(1)
 
-    // round：crawl + outline + refine + tag = 4 轮，起止索引严格配对
+    // round：crawl + outline + refine + tag = 4 轮，起止索引严格配对（1-based）
     expect(events.calls.filter((c) => c.startsWith('roundStart:'))).toEqual([
-      'roundStart:0', 'roundStart:1', 'roundStart:2', 'roundStart:3',
+      'roundStart:1', 'roundStart:2', 'roundStart:3', 'roundStart:4',
     ])
     expect(events.calls.filter((c) => c.startsWith('roundEnd:'))).toEqual([
-      'roundEnd:0', 'roundEnd:1', 'roundEnd:2', 'roundEnd:3',
+      'roundEnd:1', 'roundEnd:2', 'roundEnd:3', 'roundEnd:4',
     ])
   })
 

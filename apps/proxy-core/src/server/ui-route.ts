@@ -22,6 +22,7 @@ import { setupClaudeSettingsRoutes } from './claude-settings-route.js'
 import { checkAuth } from './auth.js'
 import { encodeSSEFrame } from '../utils/sse-protocol.js'
 import { createClientAbortSignal } from '../utils/abort-signals.js'
+import { createPiEventEmitter } from '../utils/pi-events.js'
 
 // Exec API types
 interface ExecRequestBody {
@@ -474,53 +475,23 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
-      // 轮次计数器挂在 session 上：跨 SSE 连接持续递增，避免复用时 roundIndex 回退导致前端吞掉新轮次
+      // pi 原始事件 → SSE data 帧：映射（含 1-based 轮次计数）由 pi-events 统一处理。
+      // agent_end 是终态而非会话领域事件，emitter 不管，留在 route 层收尾。
+      // pi session 会被多个 SSE 连接复用（多次追问），轮次计数挂在 session 上跨连接累计，
+      // 否则新连接 roundIndex 从 1 重来，前端按 roundIndex 去重会吞掉 round_start 串轮。
       const sessionBox = session as any
+      const eventWriter = createPiEventEmitter(
+        (ev) => sendSSE('data', JSON.stringify(ev)),
+        {
+          initialIndex: sessionBox.__learnRoundIndex ?? 0,
+          onIndexChange: (n) => { sessionBox.__learnRoundIndex = n },
+        },
+      )
 
-      const unsub = session.subscribe((ev) => {
+      const unsub = session.subscribe((raw) => {
         try {
-          if (ev.type === 'message_start') {
-            // message_start 对 user / assistant / toolResult 三种消息都会触发，
-            // 只有 assistant 才对应一次 LLM 回复轮次；其余角色直接忽略，避免前端出现空 round
-            if ((ev as any).message?.role !== 'assistant') return
-            // 新 session 从 0 起；复用 session 从上次累计值继续
-            sessionBox.__learnRoundIndex = (sessionBox.__learnRoundIndex ?? 0) + 1
-            sendSSE('data', JSON.stringify({ type: 'round_start', roundIndex: sessionBox.__learnRoundIndex }))
-          } else if (ev.type === 'message_end') {
-            // 同理：只有 assistant 的 message_end 才发 round_end
-            if ((ev as any).message?.role !== 'assistant') return
-            sendSSE('data', JSON.stringify({ type: 'round_end', roundIndex: sessionBox.__learnRoundIndex }))
-          } else if (ev.type === 'message_update') {
-            // assistantMessageEvent 是底层 pi-ai 流事件；按 delta 类型结构化转发
-            const ae = (ev as any).assistantMessageEvent
-            if (ae?.type === 'text_delta' && typeof ae.delta === 'string') {
-              sendSSE('data', JSON.stringify({ type: 'text_delta', content: ae.delta }))
-            } else if (ae?.type === 'thinking_delta' && typeof ae.delta === 'string') {
-              sendSSE('data', JSON.stringify({ type: 'thinking_delta', content: ae.delta }))
-            }
-            // thinking_start / text_start / thinking_end / text_end 不发：前端按 delta 累积
-          } else if (ev.type === 'tool_execution_start') {
-            const e = ev as any
-            sendSSE('data', JSON.stringify({
-              type: 'tool_start',
-              toolCallId: e.toolCallId,
-              toolName: e.toolName,
-              args: e.args,
-            }))
-          } else if (ev.type === 'tool_execution_end') {
-            const e = ev as any
-            const resultText = Array.isArray(e.result?.content)
-              ? e.result.content.map((c: any) => (c?.type === 'text' ? c.text : '')).join('\n')
-              : ''
-            sendSSE('data', JSON.stringify({
-              type: 'tool_end',
-              toolCallId: e.toolCallId,
-              toolName: e.toolName,
-              isError: !!e.isError,
-              durationMs: e.durationMs,
-              result: resultText,
-            }))
-          } else if (ev.type === 'agent_end') {
+          eventWriter.write(raw)
+          if ((raw as any).type === 'agent_end') {
             finish(0)
           }
         } catch (e) {
