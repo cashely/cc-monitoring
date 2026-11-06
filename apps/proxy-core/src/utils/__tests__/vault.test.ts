@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
-import { createKnowledgeStore } from '../knowledge-store.js'
+import { createVault } from '../vault.js'
 
 async function makeTmpDocs(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-test-'))
@@ -27,10 +27,10 @@ async function makeTmpDocs(): Promise<string> {
   return dir
 }
 
-describe('knowledge-store', () => {
+describe('vault', () => {
   it('listTopics 解析根 index.json', async () => {
     const root = await makeTmpDocs()
-    const store = createKnowledgeStore(root)
+    const store = createVault(root)
     const topics = await store.listTopics()
     expect(topics).toEqual([
       { slug: 'react-hooks', title: 'React Hooks 参考', summary: 'React hooks 用法', tags: ['react', 'hooks'] },
@@ -39,13 +39,13 @@ describe('knowledge-store', () => {
 
   it('listTopics 根 index.json 不存在返回空数组', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-empty-'))
-    const store = createKnowledgeStore(dir)
+    const store = createVault(dir)
     expect(await store.listTopics()).toEqual([])
   })
 
   it('getTopic 返回元数据 + 片段清单', async () => {
     const root = await makeTmpDocs()
-    const store = createKnowledgeStore(root)
+    const store = createVault(root)
     const detail = await store.getTopic('react-hooks')
     expect(detail.title).toBe('React Hooks 参考')
     expect(detail.tags).toEqual(['react', 'hooks'])
@@ -54,28 +54,28 @@ describe('knowledge-store', () => {
 
   it('readChunk 返回单片正文', async () => {
     const root = await makeTmpDocs()
-    const store = createKnowledgeStore(root)
+    const store = createVault(root)
     const text = await store.readChunk('react-hooks', 'chunk-001')
     expect(text).toContain('useState 用于组件状态')
   })
 
   it('readChunk 拒绝路径穿越', async () => {
     const root = await makeTmpDocs()
-    const store = createKnowledgeStore(root)
+    const store = createVault(root)
     await expect(store.readChunk('..', 'chunk-001')).rejects.toThrow()
     await expect(store.readChunk('react-hooks', '../chunk-001')).rejects.toThrow()
   })
 
   it('searchChunks 关键词命中返回清单', async () => {
     const root = await makeTmpDocs()
-    const store = createKnowledgeStore(root)
+    const store = createVault(root)
     const hits = await store.searchChunks('useState')
     expect(hits).toEqual([{ topic: 'react-hooks', chunkId: 'chunk-001', title: '状态管理：useState' }])
   })
 
   it('upsertTopic 两次不同 slug → listTopics 返回 2 条，不覆盖', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-upsert-'))
-    const store = createKnowledgeStore(dir)
+    const store = createVault(dir)
     await store.upsertTopic({ slug: 'topic-a', title: 'A', summary: 'sa', tags: [] })
     await store.upsertTopic({ slug: 'topic-b', title: 'B', summary: 'sb', tags: ['x'] })
     const topics = await store.listTopics()
@@ -85,7 +85,7 @@ describe('knowledge-store', () => {
 
   it('upsertTopic 同 slug 再调更新 summary，chunks 数组不变，listTopics 仍 1 条', async () => {
     const root = await makeTmpDocs()
-    const store = createKnowledgeStore(root)
+    const store = createVault(root)
     // 先登记一个额外 chunk ref
     await store.upsertChunkRef({ topic: 'react-hooks', chunkId: 'chunk-002', title: 'T2', summary: 'S2', tags: [] })
 
@@ -108,7 +108,7 @@ describe('knowledge-store', () => {
 
   it('upsertChunkRef 同 topic 两次不同 chunk_id → getTopic 返回 2 chunks', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-chunk-'))
-    const store = createKnowledgeStore(dir)
+    const store = createVault(dir)
     await store.upsertTopic({ slug: 't1', title: 'T1', summary: 's', tags: [] })
     await store.upsertChunkRef({ topic: 't1', chunkId: 'chunk-001', title: 'c1', summary: 's1', tags: [] })
     await store.upsertChunkRef({ topic: 't1', chunkId: 'chunk-002', title: 'c2', summary: 's2', tags: [] })
@@ -119,7 +119,7 @@ describe('knowledge-store', () => {
 
   it('upsertChunkRef topic 不存在 → rejects', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-no-topic-'))
-    const store = createKnowledgeStore(dir)
+    const store = createVault(dir)
     await expect(
       store.upsertChunkRef({ topic: 'ghost', chunkId: 'chunk-001', title: 'c', summary: 's', tags: [] }),
     ).rejects.toThrow(/topic not found: ghost/)
@@ -127,7 +127,7 @@ describe('knowledge-store', () => {
 
   it('tags: upsertChunkRef 落盘 tags，重复调用覆写 tags', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-tags-'))
-    const store = createKnowledgeStore(dir)
+    const store = createVault(dir)
     await store.upsertTopic({ slug: 't1', title: 'T1', summary: 's', tags: [] })
     await store.upsertChunkRef({ topic: 't1', chunkId: 'chunk-001', title: 'c1', summary: 's1', tags: ['redis', '缓存'] })
 
@@ -152,7 +152,7 @@ describe('knowledge-store', () => {
       slug: 'old', title: 'Old', summary: 'so', tags: [],
       chunks: [{ id: 'chunk-001', title: 'oc', summary: 'os' }],
     }), 'utf8')
-    const store = createKnowledgeStore(dir)
+    const store = createVault(dir)
     const detail = await store.getTopic('old')
     expect(detail.chunks[0].tags).toEqual([])
   })
@@ -171,7 +171,7 @@ describe('knowledge-store', () => {
       '# 缓存详解\n\n正文讲缓存。', 'utf8')
     await fs.writeFile(path.join(dir, 'redis', 'chunks', 'chunk-002.md'),
       '# 故障转移\n\n正文讲哨兵。', 'utf8')
-    const store = createKnowledgeStore(dir)
+    const store = createVault(dir)
 
     // body
     expect(await store.searchChunks('缓存')).toEqual([
@@ -207,7 +207,7 @@ describe('knowledge-store', () => {
     }), 'utf8')
     await fs.writeFile(path.join(dir, 'redis', 'chunks', 'chunk-001.md'),
       '# 缓存详解\n\n正文讲缓存。', 'utf8')
-    const store = createKnowledgeStore(dir)
+    const store = createVault(dir)
     expect(await store.searchChunks('缓存')).toEqual([
       { topic: 'redis', chunkId: 'chunk-001', title: '缓存详解' },
     ])

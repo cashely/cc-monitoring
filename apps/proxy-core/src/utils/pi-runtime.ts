@@ -19,15 +19,14 @@ import {
   type BeforeProviderHeadersEvent,
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent'
-import { dataDir } from './paths.js'
 import { sandboxWriteOps } from './pi-sandbox-ops.js'
-import { knowledgeStore } from './knowledge-store.js'
+import { vault } from './vault.js'
 import { createCrawlTools, type CrawlGuard } from './pi-crawl-tools.js'
 import { createTimeoutSignal, bindAbort } from './abort-signals.js'
 import { extractAssistantDelta } from './pi-events.js'
 
 // 知识文档目录：所有文件工具的 cwd 和沙箱白名单根
-const docsDir = path.join(dataDir, 'docs')
+const docsDir = vault.root
 // pi agent 目录（auth / models / system.md）
 const agentDir = path.join(os.homedir(), '.cc-monitoring', 'pi')
 
@@ -234,14 +233,6 @@ const err = (e: unknown) => ({ content: [{ type: 'text' as const, text: `error: 
 
 interface OutlineItemParam { id: string; title: string; oneLine: string }
 
-// 与 knowledge-store TOPIC_RE 保持一致：防路径穿越（../、绝对路径、反斜杠等）
-const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/
-function assertSlug(slug: string, field: string): void {
-  if (!SLUG_RE.test(slug)) {
-    throw new Error(`invalid ${field}: ${slug}`)
-  }
-}
-
 /** add_outline：对已存在的 slug 目录登记大纲（写 outline.json + seed topic） */
 function buildAddOutlineTool(): ToolDefinition {
   return {
@@ -258,15 +249,8 @@ function buildAddOutlineTool(): ToolDefinition {
       })),
     }),
     async execute(_id, params: { slug: string; title: string; items: OutlineItemParam[] }) {
-      assertSlug(params.slug, 'slug')
-      const topicDir = path.join(docsDir, params.slug)
-      if (!fs.existsSync(topicDir)) throw new Error(`topic dir not prepared: ${params.slug}`)
-      if (!fs.existsSync(path.join(topicDir, 'sources'))) throw new Error(`sources missing for topic: ${params.slug}`)
-      fs.writeFileSync(
-        path.join(topicDir, 'outline.json'),
-        JSON.stringify({ slug: params.slug, source: 'sources/', items: params.items }, null, 2),
-      )
-      await knowledgeStore.upsertTopic({
+      vault.writeOutline(params.slug, params.items)
+      await vault.upsertTopic({
         slug: params.slug,
         title: params.title,
         summary: '(refining)',
@@ -285,11 +269,10 @@ function buildReadSourceTool(): ToolDefinition {
     description: '读取该主题 sources/ 目录下全部已抓取网页（按文件名排序、--- 分隔）。',
     parameters: Type.Object({ topic: Type.String({ description: '主题 slug' }) }),
     async execute(_id, params: { topic: string }) {
-      assertSlug(params.topic, 'topic')
-      const dir = path.join(docsDir, params.topic, 'sources')
-      const files = fs.readdirSync(dir).filter((f) => f.endsWith('.md')).sort()
-      if (files.length === 0) throw new Error(`no sources for topic: ${params.topic}`)
-      const merged = files.map((f) => fs.readFileSync(path.join(dir, f), 'utf8')).join('\n\n---\n\n')
+      vault.assertSlug(params.topic, 'topic')
+      const bodies = vault.readSourceBodies(params.topic)
+      if (bodies.length === 0) throw new Error(`no sources for topic: ${params.topic}`)
+      const merged = bodies.join('\n\n---\n\n')
       return ok(merged)
     },
   }
@@ -304,7 +287,7 @@ function buildKnowledgeTools(): ToolDefinition[] {
       description: '列出所有知识主题及一句话摘要。检索知识时第一步调用，发现有哪些主题可用。',
       parameters: Type.Object({}),
       async execute() {
-        try { return ok(JSON.stringify(await knowledgeStore.listTopics(), null, 2)) }
+        try { return ok(JSON.stringify(await vault.listTopics(), null, 2)) }
         catch (e) { return err(e) }
       },
     },
@@ -314,7 +297,7 @@ function buildKnowledgeTools(): ToolDefinition[] {
       description: '获取某主题的元数据与片段清单（描述级，不含正文）。读正文前先调用，看有哪些 chunk。',
       parameters: Type.Object({ topic: Type.String({ description: '主题 slug，如 react-hooks' }) }),
       async execute(_id, params: { topic: string }) {
-        try { return ok(JSON.stringify(await knowledgeStore.getTopic(params.topic), null, 2)) }
+        try { return ok(JSON.stringify(await vault.getTopic(params.topic), null, 2)) }
         catch (e) { return err(e) }
       },
     },
@@ -324,7 +307,7 @@ function buildKnowledgeTools(): ToolDefinition[] {
       description: '跨主题关键词检索片段，返回命中清单（不含正文）。主题不明时用。',
       parameters: Type.Object({ query: Type.String({ description: '搜索关键词' }) }),
       async execute(_id, params: { query: string }) {
-        try { return ok(JSON.stringify(await knowledgeStore.searchChunks(params.query), null, 2)) }
+        try { return ok(JSON.stringify(await vault.searchChunks(params.query), null, 2)) }
         catch (e) { return err(e) }
       },
     },
@@ -337,7 +320,7 @@ function buildKnowledgeTools(): ToolDefinition[] {
         chunk_id: Type.String({ description: 'chunk id，如 chunk-001' }),
       }),
       async execute(_id, params: { topic: string; chunk_id: string }) {
-        try { return ok(await knowledgeStore.readChunk(params.topic, params.chunk_id)) }
+        try { return ok(await vault.readChunk(params.topic, params.chunk_id)) }
         catch (e) { return err(e) }
       },
     },
@@ -353,7 +336,7 @@ function buildKnowledgeTools(): ToolDefinition[] {
       }),
       async execute(_id, params: { slug: string; title: string; summary: string; tags: string[] }) {
         try {
-          await knowledgeStore.upsertTopic(params)
+          await vault.upsertTopic(params)
           return ok('topic added')
         } catch (e) { return err(e) }
       },
@@ -371,7 +354,7 @@ function buildKnowledgeTools(): ToolDefinition[] {
       }),
       async execute(_id, params: { topic: string; chunk_id: string; title: string; summary: string; tags: string[] }) {
         try {
-          await knowledgeStore.upsertChunkRef({
+          await vault.upsertChunkRef({
             topic: params.topic,
             chunkId: params.chunk_id,
             title: params.title,

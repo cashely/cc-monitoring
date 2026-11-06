@@ -8,7 +8,6 @@
 // "轮次" = 一次 assistant 交互（assistant message_start → message_end）；
 // slug 由入口 URL / 文件名确定性生成。
 
-import fs from 'node:fs'
 import path from 'node:path'
 import { dataDir } from './paths.js'
 import { createPiSession } from './pi-runtime.js'
@@ -17,12 +16,11 @@ import { createTimeoutSignal, bindAbort } from './abort-signals.js'
 import { slugFromUrl, slugFromLabel } from './web-crawler.js'
 import { assertNoOldDirs, readAllTopics, readSidecarDetail, readTopicDetail, reconcileTopics, mergeTopics, mintSlug } from './pi-dedup.js'
 import { isAssistantMessage, extractAssistantDelta, extractToolResultText } from './pi-events.js'
+import { createVault, type Vault } from './vault.js'
+import type { OutlineItem } from './vault.js'
 
-export interface OutlineItem {
-  id: string
-  title: string
-  oneLine: string
-}
+// 类型经 vault 唯一出口再导出
+export type { OutlineItem }
 
 export interface LearnPipelineEvents {
   stageStart(stage: 'outline' | 'refine' | 'tag', totalItems?: number): void
@@ -169,49 +167,27 @@ async function runPrompt(
 // 原料准备 + outline 阶段
 // ============================================================
 
-/** 重建 topic 目录：sources/（抓取/上传原料）+ chunks/（后续产物） */
-function prepareTopicDir(docsDir: string, slug: string): void {
-  const dir = path.join(docsDir, slug)
-  fs.rmSync(dir, { recursive: true, force: true })
-  fs.mkdirSync(path.join(dir, 'sources'), { recursive: true })
-  fs.mkdirSync(path.join(dir, 'chunks'), { recursive: true })
-}
-
-/** 写一份原料到 <slug>/sources/source-NNN.md */
-function writeSourceFile(docsDir: string, slug: string, index: number, url: string, text: string): void {
-  const name = `source-${String(index + 1).padStart(3, '0')}.md`
-  fs.writeFileSync(path.join(docsDir, slug, 'sources', name), `Source: ${url}\n\n${text}`, 'utf8')
-}
-
-/** 数 <slug>/sources 下 .md 文件数量；目录不存在按 0 */
-function countSourceFiles(docsDir: string, slug: string): number {
-  try {
-    return fs.readdirSync(path.join(docsDir, slug, 'sources')).filter((f) => f.endsWith('.md')).length
-  } catch {
-    return 0
-  }
-}
-
 async function runOutlineStage(
   opts: {
     sourceType: 'url' | 'file'
     input: string
     label?: string
     port: number
-    docsDir: string
+    vault: Vault
     slug: string
     signal: AbortSignal
   },
   events: LearnPipelineEvents,
   roundCounter: RoundCounter,
 ): Promise<{ slug: string; items: OutlineItem[]; title: string }> {
+  const { vault } = opts
   // 抓取必须在 stageStart 之后：crawl 的 round/tool 事件才能落进前端已建好的 outline 阶段
   events.stageStart('outline')
   let guard: CrawlGuard | null = null
   try {
     if (opts.sourceType === 'url') {
       // crawl agent 在阶段内自己驱动渐进抓取；0 页则全新 guard+session 重试 1 次
-      guard = new CrawlGuard({ entryUrl: opts.input, docsDir: opts.docsDir, slug: opts.slug })
+      guard = new CrawlGuard({ entryUrl: opts.input, docsDir: vault.root, slug: opts.slug })
       let crawlSession = (await createPiSession({
         port: opts.port,
         mode: 'crawl',
@@ -224,10 +200,10 @@ async function runOutlineStage(
         `Call crawl_open to start, save every useful page with save_source, then call crawl_finish.`
       await runPrompt(crawlSession, crawlPrompt, events, roundCounter, opts.signal)
 
-      if (countSourceFiles(opts.docsDir, opts.slug) === 0) {
+      if (vault.countSourceFiles(opts.slug) === 0) {
         // 替换前关闭旧 guard（close 容错），再全新 guard + session 重试一次
         await guard.close()
-        guard = new CrawlGuard({ entryUrl: opts.input, docsDir: opts.docsDir, slug: opts.slug })
+        guard = new CrawlGuard({ entryUrl: opts.input, docsDir: vault.root, slug: opts.slug })
         crawlSession = (await createPiSession({
           port: opts.port,
           mode: 'crawl',
@@ -235,12 +211,12 @@ async function runOutlineStage(
           signal: opts.signal,
         })) as unknown as SessionLike
         await runPrompt(crawlSession, crawlPrompt, events, roundCounter, opts.signal)
-        if (countSourceFiles(opts.docsDir, opts.slug) === 0) {
+        if (vault.countSourceFiles(opts.slug) === 0) {
           throw new Error('crawl 未收集到页面')
         }
       }
     } else {
-      writeSourceFile(opts.docsDir, opts.slug, 0, opts.label ?? 'uploaded-file', opts.input)
+      vault.writeSourceFile(opts.slug, 0, opts.label ?? 'uploaded-file', opts.input)
     }
 
     // crawl 完成后的 outline session（流程不变）
@@ -251,14 +227,10 @@ async function runOutlineStage(
       `Provide an appropriate title and the outline items.`
     await runPrompt(session, prompt, events, roundCounter, opts.signal)
 
-    const outlinePath = path.join(opts.docsDir, opts.slug, 'outline.json')
-    if (!fs.existsSync(outlinePath)) throw new Error('outline 未生成')
-    const outline = JSON.parse(fs.readFileSync(outlinePath, 'utf8')) as { items: OutlineItem[] }
+    const items = vault.readOutlineItems(opts.slug)
     // title 取 S1 seed 的 index.json（查重门需要候选标题）
-    const seedIdx = JSON.parse(
-      fs.readFileSync(path.join(opts.docsDir, opts.slug, 'index.json'), 'utf8'),
-    ) as { title: string }
-    return { slug: opts.slug, items: outline.items, title: seedIdx.title }
+    const title = vault.readEntryIndexSync(opts.slug).title
+    return { slug: opts.slug, items, title }
   } finally {
     // 兜底关闭当前 guard（crawl_finish 已关时 close 也安全）
     await guard?.close()
@@ -270,7 +242,7 @@ async function runOutlineStage(
 // refine 阶段
 // ============================================================
 async function runRefineStage(
-  opts: { port: number; docsDir: string; signal: AbortSignal },
+  opts: { port: number; vault: Vault; signal: AbortSignal },
   slug: string,
   items: OutlineItem[],
   events: LearnPipelineEvents,
@@ -278,6 +250,7 @@ async function runRefineStage(
   /** chunk id 起始偏移：合并进已有主题时从目标现有 chunk 数后续号 */
   startOffset = 0,
 ): Promise<{ chunksWritten: number; itemsFailed: number }> {
+  const { vault } = opts
   events.stageStart('refine', items.length)
   let chunksWritten = 0
   let itemsFailed = 0
@@ -304,10 +277,9 @@ async function runRefineStage(
             failReason = 'read_source 未成功读取'
             continue
           }
-          const chunkPath = path.join(opts.docsDir, slug, 'chunks', `${chunkId}.md`)
           try {
-            const stat = fs.statSync(chunkPath)
-            if (stat.size > 0) ok = true
+            const body = vault.readEntryFile(slug, 'chunks', `${chunkId}.md`)
+            if (body.length > 0) ok = true
           } catch {
             // 不存在 → 重试
           }
@@ -318,11 +290,7 @@ async function runRefineStage(
         if (ok) {
           let chunkRegistered = false
           try {
-            const idxPath = path.join(opts.docsDir, slug, 'index.json')
-            const idx = JSON.parse(fs.readFileSync(idxPath, 'utf8')) as {
-              chunks?: Array<{ id: string }>
-            }
-            chunkRegistered = (idx.chunks ?? []).some((c) => c.id === chunkId)
+            chunkRegistered = vault.readEntryIndexSync(slug).chunks.some((c) => c.id === chunkId)
           } catch {
             // index.json 读失败/JSON 坏 → 当作未注册
             chunkRegistered = false
@@ -356,21 +324,17 @@ async function runRefineStage(
 // tag 阶段
 // ============================================================
 async function runTagStage(
-  opts: { port: number; docsDir: string; signal: AbortSignal },
+  opts: { port: number; vault: Vault; signal: AbortSignal },
   slug: string,
   events: LearnPipelineEvents,
   roundCounter: RoundCounter,
   /** 合并场景：查重门裁定的合并后 title/summary，要求 add_topic 设置为该精确值 */
   override?: { title: string; summary: string },
 ): Promise<void> {
+  const { vault } = opts
   events.stageStart('tag')
   try {
-    const topicIdxPath = path.join(opts.docsDir, slug, 'index.json')
-    const topicIdx = JSON.parse(fs.readFileSync(topicIdxPath, 'utf8')) as {
-      title: string
-      summary: string
-      chunks: Array<{ id: string; title: string; summary: string }>
-    }
+    const topicIdx = vault.readEntryIndexSync(slug)
     // 合并后重跑 tag：title/summary 取 override 精确值；否则沿用现有值
     const title = override?.title ?? topicIdx.title
     const summary = override?.summary ?? topicIdx.summary
@@ -413,6 +377,7 @@ export async function runLearnPipeline(
   opts: RunLearnPipelineOptions,
 ): Promise<{ slug: string; chunksWritten: number; itemsFailed: number }> {
   const docsDir = opts.docsDir ?? path.join(dataDir, 'docs')
+  const vault = createVault(docsDir)
   const slug = opts.sourceType === 'url' ? slugFromUrl(opts.input) : slugFromLabel(opts.label ?? 'topic')
 
   // 状态机落库钩子：任何文件/目录改动之前调用，抛错直接传播（此时无任何改动）
@@ -430,9 +395,12 @@ export async function runLearnPipeline(
   // 门0：slug 精确命中——已有同 slug 主题时先旁挂旧 topic（含点号不被识别为 topic），再全新建并跑 S1
   const collision = (await readAllTopics(docsDir)).some((t) => t.slug === slug)
   if (collision) {
-    fs.renameSync(path.join(docsDir, slug), path.join(docsDir, `${slug}.old`))
-    prepareTopicDir(docsDir, slug)
-    outline = await runOutlineStage({ ...opts, docsDir, slug }, opts.events, roundCounter)
+    vault.parkTopic(slug)
+    vault.prepareTopic(slug)
+    outline = await runOutlineStage(
+      { sourceType: opts.sourceType, input: opts.input, label: opts.label, port: opts.port, vault, slug, signal: opts.signal },
+      opts.events, roundCounter,
+    )
 
     const sidecar = await readSidecarDetail(docsDir, slug)
     const r0 = await reconcileTopics({
@@ -447,10 +415,10 @@ export async function runLearnPipeline(
       // dst=canonical：旧 chunks 续号并入，再补新增条目，最后带 merged 打 tag
       const off = mergeTopics(docsDir, `${slug}.old`, slug)
       const refine = await runRefineStage(
-        { port: opts.port, docsDir, signal: opts.signal }, slug, r0.itemsToAdd!, opts.events, roundCounter, off,
+        { port: opts.port, vault, signal: opts.signal }, slug, r0.itemsToAdd!, opts.events, roundCounter, off,
       )
       await runTagStage(
-        { port: opts.port, docsDir, signal: opts.signal }, slug, opts.events, roundCounter,
+        { port: opts.port, vault, signal: opts.signal }, slug, opts.events, roundCounter,
         { title: r0.mergedTitle!, summary: r0.mergedSummary! },
       )
       return { slug, chunksWritten: refine.chunksWritten, itemsFailed: refine.itemsFailed }
@@ -464,21 +432,17 @@ export async function runLearnPipeline(
       signal: opts.signal,
     })
     // 新 canonical → ns，更正其 index.slug
-    fs.renameSync(path.join(docsDir, slug), path.join(docsDir, ns))
-    const nsIdxPath = path.join(docsDir, ns, 'index.json')
-    const nsIdx = JSON.parse(fs.readFileSync(nsIdxPath, 'utf8'))
+    vault.renameTopic(slug, ns)
+    const nsIdx = vault.readEntryIndexSync(ns)
     nsIdx.slug = ns
-    fs.writeFileSync(nsIdxPath, JSON.stringify(nsIdx, null, 2), 'utf8')
+    vault.writeEntryIndexSync(ns, nsIdx)
     // 根 index：把 S1 为新内容登记的 slug 条目改挂 ns
-    const rootPath = path.join(docsDir, 'index.json')
-    const rootIdx = JSON.parse(fs.readFileSync(rootPath, 'utf8')) as {
-      topics: Array<{ slug: string; title: string; summary: string; tags: string[] }>
-    }
+    const rootIdx = vault.readRootIndexSync()
     const newEntry = rootIdx.topics.find((t) => t.slug === slug)
     if (newEntry) newEntry.slug = ns
     // 旧 topic 还原：.old → slug
-    fs.renameSync(path.join(docsDir, `${slug}.old`), path.join(docsDir, slug))
-    const oldIdx = JSON.parse(fs.readFileSync(path.join(docsDir, slug, 'index.json'), 'utf8'))
+    vault.restoreTopic(slug)
+    const oldIdx = vault.readEntryIndexSync(slug)
     const oldRoot = rootIdx.topics.find((t) => t.slug === slug)
     if (oldRoot) {
       oldRoot.title = oldIdx.title
@@ -487,11 +451,14 @@ export async function runLearnPipeline(
     } else {
       rootIdx.topics.push({ slug, title: oldIdx.title, summary: oldIdx.summary, tags: oldIdx.tags })
     }
-    fs.writeFileSync(rootPath, JSON.stringify(rootIdx, null, 2), 'utf8')
+    vault.writeRootIndexSync(rootIdx)
     activeSlug = ns
   } else {
-    prepareTopicDir(docsDir, slug)
-    outline = await runOutlineStage({ ...opts, docsDir, slug }, opts.events, roundCounter)
+    vault.prepareTopic(slug)
+    outline = await runOutlineStage(
+      { sourceType: opts.sourceType, input: opts.input, label: opts.label, port: opts.port, vault, slug, signal: opts.signal },
+      opts.events, roundCounter,
+    )
   }
 
   // 门1：outline 后、refine 前，基于大纲条目查重（命中则只要需新增的条目）
@@ -507,10 +474,10 @@ export async function runLearnPipeline(
     // 先物理并入（返回目标现有 chunk 总数作为续号偏移），再只写新增条目，最后带 override 打 tag
     const off = mergeTopics(docsDir, activeSlug, targetSlug)
     const refine = await runRefineStage(
-      { port: opts.port, docsDir, signal: opts.signal }, targetSlug, r1.itemsToAdd!, opts.events, roundCounter, off,
+      { port: opts.port, vault, signal: opts.signal }, targetSlug, r1.itemsToAdd!, opts.events, roundCounter, off,
     )
     await runTagStage(
-      { port: opts.port, docsDir, signal: opts.signal }, targetSlug, opts.events, roundCounter,
+      { port: opts.port, vault, signal: opts.signal }, targetSlug, opts.events, roundCounter,
       { title: r1.mergedTitle!, summary: r1.mergedSummary! },
     )
     return { slug: targetSlug, chunksWritten: refine.chunksWritten, itemsFailed: refine.itemsFailed }
@@ -518,9 +485,9 @@ export async function runLearnPipeline(
 
   // 门1 未命中：常规 refine（从头编号）+ 常规 tag
   const refine = await runRefineStage(
-    { port: opts.port, docsDir, signal: opts.signal }, activeSlug, outline.items, opts.events, roundCounter, 0,
+    { port: opts.port, vault, signal: opts.signal }, activeSlug, outline.items, opts.events, roundCounter, 0,
   )
-  await runTagStage({ port: opts.port, docsDir, signal: opts.signal }, activeSlug, opts.events, roundCounter)
+  await runTagStage({ port: opts.port, vault, signal: opts.signal }, activeSlug, opts.events, roundCounter)
 
   // 门2：tag 后基于富 tags 再查一次（不需要新增条目）
   const detail = await readTopicDetail(docsDir, activeSlug)
@@ -535,7 +502,7 @@ export async function runLearnPipeline(
     const targetSlug = r2.targetSlug!
     mergeTopics(docsDir, activeSlug, targetSlug)
     await runTagStage(
-      { port: opts.port, docsDir, signal: opts.signal }, targetSlug, opts.events, roundCounter,
+      { port: opts.port, vault, signal: opts.signal }, targetSlug, opts.events, roundCounter,
       { title: r2.mergedTitle!, summary: r2.mergedSummary! },
     )
     return { slug: targetSlug, chunksWritten: refine.chunksWritten, itemsFailed: refine.itemsFailed }

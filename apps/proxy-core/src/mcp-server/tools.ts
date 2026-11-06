@@ -5,7 +5,7 @@ import type { AppConfig } from '../config/schema.js'
 import { getDatabase } from '../utils/db.js'
 import { listRequestDB } from '../utils/request-writer.js'
 import { getActiveProvider } from '../utils/providers-db.js'
-import { knowledgeStore } from '../utils/knowledge-store.js'
+import { vault } from '../utils/vault.js'
 
 export interface McpToolContext {
   config: AppConfig
@@ -221,10 +221,10 @@ const HANDLERS: Record<string, ToolHandler> = {
   list_requests: handleListRequests,
   get_token_stats: handleGetTokenStats,
   get_logs: handleGetLogs,
-  list_topics: async () => ok(JSON.stringify(await knowledgeStore.listTopics(), null, 2)),
+  list_topics: async () => ok(JSON.stringify(await vault.listTopics(), null, 2)),
   get_topic: async (args) => {
     try {
-      return ok(JSON.stringify(await knowledgeStore.getTopic(args.topic), null, 2))
+      return ok(JSON.stringify(await vault.getTopic(args.topic), null, 2))
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       if (msg.includes('ENOENT')) {
@@ -234,7 +234,7 @@ const HANDLERS: Record<string, ToolHandler> = {
     }
   },
   query_knowledge: async (args) => {
-    const hits = await knowledgeStore.queryKnowledge(args.query ?? '', args.limit)
+    const hits = await vault.queryKnowledge(args.query ?? '', args.limit)
     if (hits.length === 0) {
       return ok('No knowledge chunks matched. Call list_topics to browse available topics, or refine your query.')
     }
@@ -242,10 +242,10 @@ const HANDLERS: Record<string, ToolHandler> = {
       hits: hits.map(h => ({ topic: h.topic, chunkId: h.chunkId, title: h.title, body: h.body })),
     }, null, 2))
   },
-  search_chunks: async (args) => ok(JSON.stringify(await knowledgeStore.searchChunks(args.query ?? ''), null, 2)),
+  search_chunks: async (args) => ok(JSON.stringify(await vault.searchChunks(args.query ?? ''), null, 2)),
   read_chunk: async (args) => {
     try {
-      const body = await knowledgeStore.readChunk(args.topic, args.chunk_id)
+      const body = await vault.readChunk(args.topic, args.chunk_id)
       return ok(body)
     } catch (e) {
       return err(e)

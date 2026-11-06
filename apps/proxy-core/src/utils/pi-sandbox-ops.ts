@@ -1,24 +1,16 @@
 // 为 pi-coding-agent 的文件工具提供沙箱白名单 operations，
 // 把所有 fs 访问限定在 ~/.cc-monitoring/docs/ 目录内。
+// 边界判定（docsDir 内 / 受管 index.json）委托 vault。
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import { dataDir } from './paths.js'
-
-// 知识文档目录：所有读写都必须落在它下面
-const docsDir = path.join(dataDir, 'docs')
+import { vault } from './vault.js'
 
 /**
  * 校验传入路径必须在 docsDir 内，并返回归一化后的绝对路径。
  * 越界则抛错，阻断 fs 调用。
  */
 export function assertInside(absPath: string): string {
-  const resolved = path.resolve(absPath)
-  if (resolved !== docsDir && !resolved.startsWith(docsDir + path.sep)) {
-    throw new Error(
-      `Access denied: ${absPath} is outside the knowledge directory ${docsDir}`,
-    )
-  }
-  return resolved
+  return vault.assertInside(absPath)
 }
 
 /**
@@ -26,9 +18,7 @@ export function assertInside(absPath: string): string {
  * 禁止 LLM 通过 write/edit 直接改写。
  */
 function assertNotManagedIndexJson(absPath: string): void {
-  if (path.basename(absPath) === 'index.json') {
-    throw new Error('index.json is managed by add_topic/add_chunk tools, do not write directly')
-  }
+  vault.assertNotManagedIndexJson(absPath)
 }
 
 // 统一 access：校验可读性

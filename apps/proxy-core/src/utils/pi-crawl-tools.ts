@@ -4,12 +4,11 @@
 // - createCrawlTools：挂给 pi session 的 4 个工具（crawl_open/crawl_visit/
 //   save_source/crawl_finish），错误以文本返回，LLM 可读可恢复
 
-import fs from 'node:fs'
-import path from 'node:path'
 import { Type } from 'typebox'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { runEgoBrowser } from './pi-browser-tools.js'
 import { CRAWL_MAX_PAGES, CRAWL_MAX_DEPTH, isSameSite, normalizeCandidate } from './web-crawler.js'
+import { createVault, type Vault } from './vault.js'
 
 export interface NavigatedPage {
   title: string
@@ -73,6 +72,8 @@ export class CrawlGuard {
   private readonly maxDepth: number
   private readonly navigate: (url: string, signal?: AbortSignal) => Promise<NavigatedPage>
 
+  private readonly vault: Vault
+
   private entry!: URL
   private readonly seen = new Set<string>()
   private readonly depthByUrl = new Map<string, number>()
@@ -83,6 +84,7 @@ export class CrawlGuard {
   private currentDepth = 0
 
   constructor(private readonly opts: CrawlGuardOptions) {
+    this.vault = createVault(opts.docsDir)
     this.maxPages = opts.maxPages ?? CRAWL_MAX_PAGES
     this.maxDepth = opts.maxDepth ?? CRAWL_MAX_DEPTH
     this.navigate = opts.navigate ?? ((url, signal) => this.defaultNavigate(url, signal))
@@ -185,10 +187,7 @@ export class CrawlGuard {
     // 对齐旧 crawlSite：trim 后为空的页面判失败，不产生空原料
     if (page.text.trim() === '') throw new Error(`save_source reject empty page: ${key}`)
 
-    const sourcesDir = path.join(this.opts.docsDir, this.opts.slug, 'sources')
-    fs.mkdirSync(sourcesDir, { recursive: true })
-    const name = `source-${String(this._savedCount + 1).padStart(3, '0')}.md`
-    fs.writeFileSync(path.join(sourcesDir, name), `Source: ${key}\n\n${page.text}`, 'utf8')
+    this.vault.writeSourceFile(this.opts.slug, this._savedCount, key, page.text)
     this.savedUrls.add(key)
     this._savedCount += 1
     return { savedCount: this._savedCount, reused: false }

@@ -1,15 +1,11 @@
-// learn 主题去重：纯字符串确定性预筛（不调 LLM、无 IO）
-import { readFile } from 'fs/promises'
-import fs from 'node:fs'
-import path from 'path'
+// learn 主题去重：纯字符串确定性预筛（不调 LLM）+ LLM 兜底裁定 + 物理迁移。
+// 文件读写、路径、类型统一经 vault（接收 docsDir，按需 createVault，刻意不导入单例）。
 import { runJsonPrompt } from './pi-runtime.js'
 import { slugFromLabel } from './web-crawler.js'
+import { createVault, isValidSlug, type TopicSummary, type TopicIndex, type OutlineItem, type ChunkRef } from './vault.js'
 
-// 合法 slug：小写字母数字开头，仅含小写字母数字与连字符
-const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/
-
-// 与 knowledge-store 的 TopicSummary 结构一致；此处复制最小类型，避免导入单例
-export interface TopicSummary { slug: string; title: string; summary: string; tags: string[] }
+// 类型再导出：保持本文件既有出口
+export type { TopicSummary, TopicIndex, OutlineItem, ChunkRef }
 
 // 归一化：小写；非字母数字字符（含 -、_、! 等标点）统一替换为空格；trim 并压缩连续空白
 // 标点替换为空格而非删除，使 state-management 与 State Management 归一后一致
@@ -48,10 +44,6 @@ export function findCandidates(
 
 // ---- LLM 兜底裁定 ----
 
-// 大纲条目（与 knowledge-store 结构一致，本地复制避免循环依赖）
-export interface OutlineItem { id: string; title: string; oneLine: string }
-export interface ChunkRefLike { id: string; title: string; summary: string; tags: string[] }
-export interface TopicIndexLike { slug: string; title: string; summary: string; tags: string[]; chunks: ChunkRefLike[] }
 export interface ReconcileResult {
   match: boolean
   targetSlug?: string
@@ -66,23 +58,12 @@ export const LLM_FULL_SCAN_MAX = 20
 
 // 读全部 topic 摘要；index.json 缺失/损坏等任何异常一律返回 []
 export async function readAllTopics(docsDir: string): Promise<TopicSummary[]> {
-  try {
-    const raw = await readFile(path.join(docsDir, 'index.json'), 'utf8')
-    const data = JSON.parse(raw)
-    return Array.isArray(data.topics) ? data.topics : []
-  } catch {
-    return []
-  }
+  return createVault(docsDir).listTopics()
 }
 
 // 读单个 topic 详情；缺失/异常返回 null
-export async function readTopicDetail(docsDir: string, slug: string): Promise<TopicIndexLike | null> {
-  try {
-    const raw = await readFile(path.join(docsDir, slug, 'index.json'), 'utf8')
-    return JSON.parse(raw) as TopicIndexLike
-  } catch {
-    return null
-  }
+export async function readTopicDetail(docsDir: string, slug: string): Promise<TopicIndex | null> {
+  return createVault(docsDir).readTopicIndex(slug)
 }
 
 // LLM 兜底：在确定性预筛无法排除重复时，请模型裁定候选是否应并入某已有 topic。
@@ -91,12 +72,12 @@ export async function reconcileTopics(opts: {
   port: number
   docsDir: string
   candidate: { slug: string; title: string; tags: string[]; items?: OutlineItem[] }
-  targets?: Array<TopicSummary & { chunks?: ChunkRefLike[] }>
+  targets?: Array<TopicSummary & { chunks?: ChunkRef[] }>
   wantItems: boolean
   signal: AbortSignal
 }): Promise<ReconcileResult> {
-  const targets = opts.targets
-    ?? (await readAllTopics(opts.docsDir)).filter(t => t.slug !== opts.candidate.slug)
+  const vault = createVault(opts.docsDir)
+  const targets = opts.targets ?? (await vault.listTopics()).filter(t => t.slug !== opts.candidate.slug)
 
   // 先走确定性预筛；无命中且目标数在上限内才全量送 LLM，超限直接放弃
   const hits = findCandidates({ title: opts.candidate.title, tags: opts.candidate.tags }, targets)
@@ -152,76 +133,60 @@ function pad3(n: number): string {
   return String(n).padStart(3, '0')
 }
 
-// 列出 dir 下的 .md 文件名（排序）；目录缺失视为空
-function listMd(dir: string): string[] {
-  try {
-    return fs.readdirSync(dir).filter(f => f.endsWith('.md')).sort()
-  } catch {
-    return []
-  }
-}
-
 // 将 src 主题物理并入 dst：sources 续号拷贝、chunks 按 dst 现有数偏移重编号，
 // 同步更新 dst index 与根 index，最后删除整个 src 目录。返回迁移后 dst 的 chunk 总数。
 // srcSlug 可能是 x.old 旁挂目录（含点，路径直接拼接）。
 export function mergeTopics(docsDir: string, srcSlug: string, dstSlug: string): number {
   // 防护自合并：LLM 可能回显候选自身 slug；自合并会重复 refs、移除自身根注册并删目录（数据丢失）
   if (srcSlug === dstSlug) throw new Error('mergeTopics: src 与 dst 相同')
-  const srcDir = path.join(docsDir, srcSlug)
-  const dstDir = path.join(docsDir, dstSlug)
+  const vault = createVault(docsDir)
 
-  // dst index 必须存在，缺失直接抛错；src index 同样读取（路径直接拼，支持 x.old）
-  const dstIndex = JSON.parse(fs.readFileSync(path.join(dstDir, 'index.json'), 'utf8')) as TopicIndexLike
-  const srcIndex = JSON.parse(fs.readFileSync(path.join(srcDir, 'index.json'), 'utf8')) as TopicIndexLike
+  // dst index 必须存在，缺失直接抛错；src index 同样读取（entry 直接拼，支持 x.old）
+  const dstIndex = vault.readEntryIndexSync(dstSlug)
+  const srcIndex = vault.readEntryIndexSync(srcSlug)
 
   // sources：按 dst 现有数量续号，逐个读→写 dst→删 src 原件（copy→unlink，避免跨设备 rename 失败）
-  const srcSources = listMd(path.join(srcDir, 'sources'))
-  const s0 = listMd(path.join(dstDir, 'sources')).length
-  fs.mkdirSync(path.join(dstDir, 'sources'), { recursive: true })
+  const srcSources = vault.listEntryMd(srcSlug, 'sources')
+  const s0 = vault.listEntryMd(dstSlug, 'sources').length
+  vault.mkdirEntrySubdir(dstSlug, 'sources')
   srcSources.forEach((file, i) => {
-    const body = fs.readFileSync(path.join(srcDir, 'sources', file))
-    fs.writeFileSync(path.join(dstDir, 'sources', `source-${pad3(s0 + i + 1)}.md`), body)
-    fs.unlinkSync(path.join(srcDir, 'sources', file))
+    const body = vault.readEntryFile(srcSlug, 'sources', file)
+    vault.writeEntryFile(dstSlug, 'sources', `source-${pad3(s0 + i + 1)}.md`, body)
+    vault.unlinkEntryFile(srcSlug, 'sources', file)
   })
 
   // chunks：src refs 按 id 排序，按 dst 现有 chunk 数偏移重编号；正文逐字拷贝不改
   const srcRefs = [...srcIndex.chunks].sort((a, b) => a.id.localeCompare(b.id))
   const k = dstIndex.chunks.length
-  fs.mkdirSync(path.join(dstDir, 'chunks'), { recursive: true })
+  vault.mkdirEntrySubdir(dstSlug, 'chunks')
   srcRefs.forEach((ref, i) => {
     const newId = `chunk-${pad3(k + i + 1)}`
-    const body = fs.readFileSync(path.join(srcDir, 'chunks', `${ref.id}.md`))
-    fs.writeFileSync(path.join(dstDir, 'chunks', `${newId}.md`), body)
-    fs.unlinkSync(path.join(srcDir, 'chunks', `${ref.id}.md`))
+    const body = vault.readEntryFile(srcSlug, 'chunks', `${ref.id}.md`)
+    vault.writeEntryFile(dstSlug, 'chunks', `${newId}.md`, body)
+    vault.unlinkEntryFile(srcSlug, 'chunks', `${ref.id}.md`)
     dstIndex.chunks.push({ ...ref, id: newId })
   })
 
   // 根 index：移除 slug===srcSlug 的条目（srcSlug 为 x.old 时不命中即 no-op）
   try {
-    const rootPath = path.join(docsDir, 'index.json')
-    const root = JSON.parse(fs.readFileSync(rootPath, 'utf8')) as { topics: TopicSummary[] }
+    const root = vault.readRootIndexSync()
     if (Array.isArray(root.topics)) {
       root.topics = root.topics.filter(t => t.slug !== srcSlug)
-      fs.writeFileSync(rootPath, JSON.stringify(root, null, 2))
+      vault.writeRootIndexSync(root)
     }
   } catch {
     // 根 index 缺失/损坏：无条目可移除，跳过
   }
 
   // 删除整个 src 目录，写回 dst index
-  fs.rmSync(srcDir, { recursive: true, force: true })
-  fs.writeFileSync(path.join(dstDir, 'index.json'), JSON.stringify(dstIndex, null, 2))
+  vault.removeEntry(srcSlug)
+  vault.writeEntryIndexSync(dstSlug, dstIndex)
   return dstIndex.chunks.length
 }
 
 // 读旁挂目录 <slug>.old 的 index.json；缺失/坏 → null
-export async function readSidecarDetail(docsDir: string, slug: string): Promise<TopicIndexLike | null> {
-  try {
-    const raw = await readFile(path.join(docsDir, `${slug}.old`, 'index.json'), 'utf8')
-    return JSON.parse(raw) as TopicIndexLike
-  } catch {
-    return null
-  }
+export async function readSidecarDetail(docsDir: string, slug: string): Promise<TopicIndex | null> {
+  return createVault(docsDir).readSidecarIndex(slug)
 }
 
 // 据 title 让 LLM 铸一个小写连字符 slug。失败/非法/已占 → 降级 slugFromLabel(title)，
@@ -234,7 +199,7 @@ export async function mintSlug(opts: { port: number; title: string; existing: st
       prompt: `Title: ${opts.title}`,
       signal: opts.signal,
     }) as { slug?: unknown }
-    if (typeof result.slug === 'string' && SLUG_RE.test(result.slug) && !opts.existing.includes(result.slug)) {
+    if (typeof result.slug === 'string' && isValidSlug(result.slug) && !opts.existing.includes(result.slug)) {
       return result.slug
     }
   } catch {
@@ -252,8 +217,5 @@ export async function mintSlug(opts: { port: number; title: string; existing: st
 // 阻断：docsDir 下存在任何 .old 旁挂目录时抛错，要求人工先处理。
 // docsDir 本身缺失时直接让 readdirSync 抛错（调用方本就应在已初始化的库上学习）。
 export function assertNoOldDirs(docsDir: string): void {
-  const oldDir = fs.readdirSync(docsDir).find(name => name.endsWith('.old'))
-  if (oldDir) {
-    throw new Error(`检测到未清理的旁挂目录 ${oldDir}，请手工处理后再学习`)
-  }
+  createVault(docsDir).assertNoOldSidecars()
 }
