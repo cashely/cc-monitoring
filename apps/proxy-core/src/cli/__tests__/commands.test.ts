@@ -296,7 +296,7 @@ describe('testCommand', () => {
 describe('uiCommand', () => {
   it('reports error when server not running', async () => {
     await uiCommand({})
-    expect(console.error).toHaveBeenCalledWith('Server not running. Use "proxy start" first.')
+    expect(console.error).toHaveBeenCalledWith('Server not running. Use "ccm start" first.')
   })
 
   it('opens UI when server is running', async () => {

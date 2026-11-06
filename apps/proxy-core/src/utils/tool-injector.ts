@@ -12,6 +12,16 @@ import { mcpManager } from './mcp-manager.js'
  * 无 tools 数组时自动创建，让裸请求也能使用 MCP tool。
  */
 export function injectMcpTools(body: any): string[] {
+  // 守卫：malformed body 直接返回，避免给原始值赋值抛 TypeError。
+  // 判定依据：有效 chat body 至少要有 messages 数组；null/非对象，或既无 tools 也无 messages（如 {}、{tools:'nope'}）均不注入。
+  if (
+    body === null ||
+    typeof body !== 'object' ||
+    (!Array.isArray(body?.tools) && !Array.isArray(body?.messages))
+  ) {
+    return []
+  }
+
   if (!Array.isArray(body?.tools)) {
     body.tools = []
   }
