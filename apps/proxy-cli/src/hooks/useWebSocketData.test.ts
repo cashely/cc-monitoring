@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { MockWebSocket } from '../test/setup'
 import { useWebSocketData } from './useWebSocketData'
-import type { StatusApiResponse, StatsData, TodayStats } from '../types'
+import type { StatusApiResponse, StatsData, TodayStats, RequestSummary } from '../types'
 
 // Mock the API module
 vi.mock('../api', () => ({
@@ -341,5 +341,99 @@ describe('useWebSocketData', () => {
     act(() => { unmount!() })
 
     expect(closeSpy).toHaveBeenCalled()
+  })
+
+  it('首次 onopen 不补偿拉取，断线重连的 onopen 触发一次 fetchRequests', async () => {
+    vi.useFakeTimers()
+
+    let result: any
+    await act(async () => {
+      const hook = renderHook(() => useWebSocketData())
+      result = hook.result
+    })
+
+    // mount 时 refreshAll 已调用一次 fetchRequests
+    expect(fetchRequests).toHaveBeenCalledTimes(1)
+
+    wsOpen()
+    // 首次连接不补拉
+    expect(fetchRequests).toHaveBeenCalledTimes(1)
+
+    wsClose()
+    act(() => { vi.advanceTimersByTime(1000) })
+
+    // 重连 onopen 触发补偿拉取
+    wsOpen()
+    expect(fetchRequests).toHaveBeenCalledTimes(2)
+
+    // flush 补偿合并的 state 更新
+    await act(async () => {})
+  })
+
+  it('重连补拉：带 closedAt 的行替换本地行，REST 无 closedAt 时本地 pending 行保留', async () => {
+    vi.useFakeTimers()
+
+    const pendingRow: RequestSummary = {
+      requestId: 'rp',
+      sessionId: 's',
+      compositeId: 'cp',
+      timestamp: '2025-01-01T00:00:00Z',
+      method: 'POST',
+      path: '/v1/chat',
+      statusCode: 0,
+      responseTime: 0,
+      status: 'pending',
+    }
+    const completedRow: RequestSummary = {
+      requestId: 'rc',
+      sessionId: 's',
+      compositeId: 'cc',
+      timestamp: '2025-01-01T00:01:00Z',
+      method: 'POST',
+      path: '/v1/chat',
+      statusCode: 200,
+      responseTime: 100,
+      status: 'completed',
+    }
+    // REST 补拉：cc 带 closedAt（应替换）；cp 无 closedAt（本地 pending 保留）；cn 为新行（追加）
+    const restRows: RequestSummary[] = [
+      { ...completedRow, closedAt: '2025-01-01T00:02:00Z' },
+      { ...pendingRow, statusCode: 200, responseTime: 50 },
+      {
+        requestId: 'rn',
+        sessionId: 's',
+        compositeId: 'cn',
+        timestamp: '2025-01-01T00:03:00Z',
+        method: 'POST',
+        path: '/v1/chat',
+        statusCode: 200,
+        responseTime: 50,
+      },
+    ]
+    vi.mocked(fetchRequests)
+      .mockResolvedValueOnce({ requests: [pendingRow, completedRow] })
+      .mockResolvedValueOnce({ requests: restRows })
+
+    let result: any
+    await act(async () => {
+      const hook = renderHook(() => useWebSocketData())
+      result = hook.result
+    })
+
+    wsOpen()
+    wsClose()
+    act(() => { vi.advanceTimersByTime(1000) })
+    wsOpen()
+    await act(async () => {})
+
+    const reqs: RequestSummary[] = result.current.requests
+    // 带 closedAt 的 REST 行替换本地行
+    expect(reqs.find(r => r.compositeId === 'cc')?.closedAt).toBe('2025-01-01T00:02:00Z')
+    // REST 无 closedAt：本地 pending 行保留（status/statusCode 不变，保住 spinner）
+    const keptPending = reqs.find(r => r.compositeId === 'cp')
+    expect(keptPending?.status).toBe('pending')
+    expect(keptPending?.statusCode).toBe(0)
+    // REST 中本地不存在的行追加
+    expect(reqs.find(r => r.compositeId === 'cn')).toBeDefined()
   })
 })

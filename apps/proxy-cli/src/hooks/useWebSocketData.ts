@@ -58,6 +58,7 @@ export function useWebSocketData(): {
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const reconnectAttemptRef = useRef(0)
   const mountedRef = useRef(false)
+  const hasConnectedBeforeRef = useRef(false)
 
   const clearHeartbeatTimer = useCallback(() => {
     if (heartbeatTimerRef.current) {
@@ -105,6 +106,31 @@ export function useWebSocketData(): {
       setConnectionState('connected')
       reconnectAttemptRef.current = 0
       lastActivity = Date.now()
+
+      // 断线重连：补拉列表，修复断线窗口内丢失的 update
+      if (hasConnectedBeforeRef.current) {
+        fetchRequests(100).then(result => {
+          const restRows = result.requests || []
+          setRequests(prev => {
+            const restMap = new Map(restRows.map(r => [r.compositeId, r]))
+            // 同 compositeId：REST 替换本地行；本地 pending 且 REST 无 closedAt 则保留（保住 spinner）
+            const merged = prev.map(local => {
+              const rest = restMap.get(local.compositeId)
+              if (!rest) return local
+              restMap.delete(local.compositeId)
+              if (local.status === 'pending' && !rest.closedAt) return local
+              return rest
+            })
+            // REST 中本地不存在的行追加
+            restMap.forEach(rest => merged.push(rest))
+            // timestamp 倒序 + 1000 条上限
+            return merged
+              .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+              .slice(0, 1000)
+          })
+        }).catch(() => {})
+      }
+      hasConnectedBeforeRef.current = true
 
       // Start heartbeat timeout checker (5s interval)
       heartbeatTimerRef.current = setInterval(() => {
