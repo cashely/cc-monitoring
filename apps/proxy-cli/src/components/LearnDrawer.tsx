@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Drawer, Empty, Spin, Input, Button } from 'antd'
-import { LoadingOutlined, CheckCircleOutlined } from '@ant-design/icons'
+import { LoadingOutlined, CheckCircleOutlined, StopOutlined, PlusOutlined } from '@ant-design/icons'
 import XMarkdown from '@ant-design/x-markdown'
 import { useTranslation } from 'react-i18next'
 import { useLearnStream } from '../hooks/useLearnStream'
@@ -13,6 +13,7 @@ interface LearnDrawerProps {
   open: boolean
   task: LearnTask | null
   onClose: () => void
+  onStartNew: () => void
 }
 
 // 单轮卡片：标题 + thinking 折叠块 + 文本 + 工具块；当前轮高亮
@@ -74,21 +75,20 @@ function RoundCard({
 }
 
 // 学习任务抽屉：顶部来源 + 按 round 分组渲染流式过程
-export function LearnDrawer({ open, task, onClose }: LearnDrawerProps): JSX.Element {
+export function LearnDrawer({ open, task, onClose, onStartNew }: LearnDrawerProps): JSX.Element {
   const { t } = useTranslation('app')
   const { rounds, status, error, stage, start, followup, cancel } = useLearnStream()
   const [followupInput, setFollowupInput] = useState('')
 
   // task 就绪即启动流式（每次任务都是新对象），顺带清空追问输入
   useEffect(() => {
-    if (open && task) {
+    if (task) {
       setFollowupInput('')
       start(task)
     }
-  }, [open, task, start])
+  }, [task, start])
 
   const handleClose = () => {
-    cancel()
     onClose()
   }
 
@@ -135,6 +135,27 @@ export function LearnDrawer({ open, task, onClose }: LearnDrawerProps): JSX.Elem
                 </>
               )}
               {stage.name === 'tag' && t('chat.stageTag')}
+            </div>
+          )}
+          {status === 'streaming' && (
+            <div className="flex justify-end mt-1">
+              <Button
+                size="small"
+                type="text"
+                icon={<StopOutlined />}
+                onClick={cancel}
+                className="text-xs"
+                style={{ color: 'var(--color-error)' }}
+              >
+                {t('chat.learnCancelTask')}
+              </Button>
+            </div>
+          )}
+          {(status === 'done' || status === 'cancelled') && (
+            <div className="flex justify-end mt-1">
+              <Button size="small" type="text" icon={<PlusOutlined />} onClick={onStartNew} className="text-xs" style={{ color: 'var(--color-secondary)' }}>
+                {t('chat.learnNewTask')}
+              </Button>
             </div>
           )}
         </div>

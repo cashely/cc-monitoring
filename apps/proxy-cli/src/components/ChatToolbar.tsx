@@ -35,6 +35,7 @@ export function ChatToolbar({
   const { t } = useTranslation('app')
   const [learnModalOpen, setLearnModalOpen] = useState(false)
   const [learnTask, setLearnTask] = useState<LearnTask | null>(null)
+  const [drawerVisible, setDrawerVisible] = useState(false)
 
   const currentLabel =
     THINKING_OPTIONS.find(o => o.value === thinkingLevel)?.label ?? '关闭'
@@ -42,6 +43,7 @@ export function ChatToolbar({
   const handleLearnStart = (task: LearnTask) => {
     setLearnTask(task)
     setLearnModalOpen(false)
+    setDrawerVisible(true)
   }
 
   return (
@@ -55,7 +57,9 @@ export function ChatToolbar({
         <Button
           type="text"
           icon={<ReadOutlined />}
-          onClick={() => setLearnModalOpen(true)}
+          onClick={() =>
+            learnTask ? setDrawerVisible(true) : setLearnModalOpen(true)
+          }
           size="small"
           className="chat-toolbar-btn"
         >
@@ -89,9 +93,13 @@ export function ChatToolbar({
         onStart={handleLearnStart}
       />
       <LearnDrawer
-        open={learnTask !== null}
+        open={drawerVisible}
         task={learnTask}
-        onClose={() => setLearnTask(null)}
+        onClose={() => setDrawerVisible(false)}
+        onStartNew={() => {
+          setDrawerVisible(false)
+          setLearnModalOpen(true)
+        }}
       />
     </div>
   )

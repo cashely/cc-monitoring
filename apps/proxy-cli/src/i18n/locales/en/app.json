@@ -68,6 +68,8 @@
     "roundLearning": "Learning…",
     "roundDone": "Done",
     "learnCancelled": "Cancelled",
+    "learnCancelTask": "Cancel task",
+    "learnNewTask": "Learn something new",
     "learnPreparing": "Preparing…",
     "learnFollowupPlaceholder": "Ask a follow-up…",
     "learnFollowupSend": "Send",

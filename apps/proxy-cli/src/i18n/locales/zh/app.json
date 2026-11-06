@@ -70,6 +70,8 @@
     "roundLearning": "学习中…",
     "roundDone": "已完成",
     "learnCancelled": "已取消",
+    "learnCancelTask": "取消任务",
+    "learnNewTask": "学习新内容",
     "learnPreparing": "准备中…",
     "learnFollowupPlaceholder": "追问或补充问题…",
     "learnFollowupSend": "发送",
