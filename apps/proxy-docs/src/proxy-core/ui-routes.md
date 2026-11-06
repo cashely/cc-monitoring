@@ -202,7 +202,6 @@ stateDiagram-v2
 
 - `addDataClient / removeDataClient`：`handleDataStream` 生命周期管理
 - `pushNewRequest(summary)`：广播 `{ type: 'request', action: 'new', data: summary }`（`setupProxy` 的所有分支尾部都会调）
-- `pushStatsNotify()`：广播 `{ type: 'stats', action: 'notify', data: { reason: 'file_updated' } }`（**目前无调用点**——为未来 stats 事件驱动预留）
 
 `broadcast(msg)` 循环所有连接，只对 `readyState === WebSocket.OPEN` 的 socket `send`。
 

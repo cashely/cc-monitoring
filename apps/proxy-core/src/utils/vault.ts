@@ -22,9 +22,9 @@ export function isValidSlug(slug: string): boolean {
 export interface TopicSummary { slug: string; title: string; summary: string; tags: string[] }
 export interface ChunkRef { id: string; title: string; summary: string; tags: string[] }
 export interface TopicIndex { slug: string; title: string; summary: string; tags: string[]; chunks: ChunkRef[] }
-export interface TopicDetail { title: string; tags: string[]; sources: unknown[]; chunks: ChunkRef[] }
-export interface ChunkHit { topic: string; chunkId: string; title: string }
-export interface QueryHit { topic: string; chunkId: string; title: string; body: string }
+interface TopicDetail { title: string; tags: string[]; sources: unknown[]; chunks: ChunkRef[] }
+interface ChunkHit { topic: string; chunkId: string; title: string }
+interface QueryHit { topic: string; chunkId: string; title: string; body: string }
 export interface OutlineItem { id: string; title: string; oneLine: string }
 
 interface RootIndex { topics: TopicSummary[] }

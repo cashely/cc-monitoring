@@ -4,12 +4,9 @@ import { runJsonPrompt } from './pi-runtime.js'
 import { slugFromLabel } from './web-crawler.js'
 import { createVault, isValidSlug, type TopicSummary, type TopicIndex, type OutlineItem, type ChunkRef } from './vault.js'
 
-// 类型再导出：保持本文件既有出口
-export type { TopicSummary, TopicIndex, OutlineItem, ChunkRef }
-
 // 归一化：小写；非字母数字字符（含 -、_、! 等标点）统一替换为空格；trim 并压缩连续空白
 // 标点替换为空格而非删除，使 state-management 与 State Management 归一后一致
-export function normalizeText(s: string): string {
+function normalizeText(s: string): string {
   return s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 }
 
@@ -44,7 +41,7 @@ export function findCandidates(
 
 // ---- LLM 兜底裁定 ----
 
-export interface ReconcileResult {
+interface ReconcileResult {
   match: boolean
   targetSlug?: string
   confidence?: number
@@ -54,7 +51,7 @@ export interface ReconcileResult {
 }
 
 // 预筛无命中时允许全量送 LLM 的目标上限；超过则安全放弃
-export const LLM_FULL_SCAN_MAX = 20
+const LLM_FULL_SCAN_MAX = 20
 
 // 读全部 topic 摘要；index.json 缺失/损坏等任何异常一律返回 []
 export async function readAllTopics(docsDir: string): Promise<TopicSummary[]> {

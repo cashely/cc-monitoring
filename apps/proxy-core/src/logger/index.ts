@@ -131,5 +131,3 @@ export async function readLogs(
 
   return filtered
 }
-
-export { LEVEL_MAP, NUM_TO_LEVEL }

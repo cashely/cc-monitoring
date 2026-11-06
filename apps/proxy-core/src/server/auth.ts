@@ -1,4 +1,4 @@
-export const AUTH_TOKEN_ENV = 'UI_AUTH_TOKEN'
+const AUTH_TOKEN_ENV = 'UI_AUTH_TOKEN'
 
 export function checkAuth(request: any, config: any): boolean {
   // If no auth token configured, allow all (dev mode)

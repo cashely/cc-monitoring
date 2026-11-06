@@ -24,14 +24,6 @@ export function pushNewRequest(summary: any, status: 'pending' | 'completed' = '
   })
 }
 
-export function pushStatsNotify(): void {
-  broadcast({
-    type: 'stats',
-    action: 'notify',
-    data: { reason: 'file_updated' }
-  })
-}
-
 function broadcast(msg: any): void {
   const payload = JSON.stringify(msg)
   for (const ws of dataClients) {

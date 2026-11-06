@@ -19,16 +19,6 @@ function allKnownTools(): InjectableTool[] {
   return [...ALL_TOOLS, ...mcpManager.getMcpTools()]
 }
 
-/** 已启用的 tool 列表（注入用） */
-export function enabledTools(): InjectableTool[] {
-  return allKnownTools().filter((t) => t.enabled)
-}
-
-/** 是否存在任何启用 tool（决定 proxy 是否进入缓冲检测路径） */
-export function hasEnabledTools(): boolean {
-  return allKnownTools().some((t) => t.enabled)
-}
-
 /** 按名查找已启用 tool（命中检测 + 执行用） */
 export function findEnabledTool(name: string): InjectableTool | undefined {
   return allKnownTools().find((t) => t.enabled && t.name === name)

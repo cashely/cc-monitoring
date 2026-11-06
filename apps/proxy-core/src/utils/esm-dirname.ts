@@ -37,11 +37,6 @@ export function getCallerDirname(relativePath: string): string {
 }
 
 /**
- * Direct export of this module's __dirname for simple relative path derivation.
- */
-export { thisDirname as utilsDirname }
-
-/**
  * ESM-compatible accessor for the entry module's URL.
  *
  * Wraps import.meta.url so callers don't reference import.meta syntax directly

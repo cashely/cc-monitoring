@@ -82,7 +82,7 @@ async function getRuntime(port: number): Promise<ModelRuntime> {
 
 export type PiSessionMode = 'chat' | 'outline' | 'refine' | 'tag' | 'crawl' | 'reconcile'
 
-export interface CreatePiSessionOptions {
+interface CreatePiSessionOptions {
   cwd?: string
   port: number
   mode: PiSessionMode
@@ -101,7 +101,7 @@ STRUCTURE (all paths below are RELATIVE TO the knowledge root ~/.cc-monitoring/d
 - Root index.json lists all topics as JSON
 - Fetched source pages for a topic are already prepared in <slug>/sources/ — you only READ them, never write or modify them`
 
-export const CHAT_SYSTEM_PROMPT = `You are a knowledge management AI operating inside a sandbox.
+const CHAT_SYSTEM_PROMPT = `You are a knowledge management AI operating inside a sandbox.
 ${KB_STRUCTURE}
 
 ANSWERING QUESTIONS:
@@ -112,7 +112,7 @@ ANSWERING QUESTIONS:
 5. Prefer answering from knowledge base chunks when relevant content exists; cite which chunks you used
 6. If no relevant chunk exists, answer from your general knowledge; if you truly don't know, say so`
 
-export const OUTLINE_SYSTEM_PROMPT = `You are an outline-phase worker. The relevant web pages have ALREADY been fetched and saved to sources/ for your assigned topic. Your job: read them and propose an outline of dictionary entries. Do NOT write chunks.
+const OUTLINE_SYSTEM_PROMPT = `You are an outline-phase worker. The relevant web pages have ALREADY been fetched and saved to sources/ for your assigned topic. Your job: read them and propose an outline of dictionary entries. Do NOT write chunks.
 
 ${KB_STRUCTURE}
 
@@ -131,7 +131,7 @@ HARD RULES:
 - Do NOT summarize prematurely — outline only; distillation happens later.
 - After add_outline succeeds, print the returned slug and item count. Stop.`
 
-export const CRAWL_SYSTEM_PROMPT = `You are a crawl-phase worker. You drive the browser YOURSELF to incrementally fetch web pages for your assigned topic and save every useful page into sources/. Do NOT outline or write chunks.
+const CRAWL_SYSTEM_PROMPT = `You are a crawl-phase worker. You drive the browser YOURSELF to incrementally fetch web pages for your assigned topic and save every useful page into sources/. Do NOT outline or write chunks.
 
 WORKFLOW:
 1. Call crawl_open to open the entry URL given in your task.
@@ -146,7 +146,7 @@ HARD RULES:
 - At most ~20 pages. Prefer a few dense pages over many thin ones.
 - After crawl_finish succeeds, stop.`
 
-export const REFINE_SYSTEM_PROMPT = `You are a refine-phase worker. For ONE item from the topic's outline, produce a single dictionary chunk.
+const REFINE_SYSTEM_PROMPT = `You are a refine-phase worker. For ONE item from the topic's outline, produce a single dictionary chunk.
 
 ${KB_STRUCTURE}
 
@@ -179,7 +179,7 @@ HARD RULES:
 - If the material is thin on a concept, write what exists; do NOT invent content. Omit empty sections.
 - Do NOT call add_topic. Do NOT write index.json.`
 
-export const TAG_SYSTEM_PROMPT = `You are a tag-phase worker. Enrich an existing topic with rich, retrieval-friendly tags.
+const TAG_SYSTEM_PROMPT = `You are a tag-phase worker. Enrich an existing topic with rich, retrieval-friendly tags.
 
 ${KB_STRUCTURE}
 

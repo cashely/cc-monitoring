@@ -136,7 +136,6 @@ switch (msg.type) {
 ```
 
 - **request 消息处理三步走**：去重 → 排序 → 截尾。虽然后端一般按顺序推送，但 pending 请求过期覆盖等场景可能重复，前端兜底
-- **stats notify → 主动 GET**：后端目前**没有**发这条消息（`pushStatsNotify` 未调用），预留
 - **ping/pong**：客户端主动回，服务端根据 `lastPing` 判活
 
 ### 心跳超时
