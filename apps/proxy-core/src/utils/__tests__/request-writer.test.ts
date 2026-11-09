@@ -7,6 +7,9 @@ import {
   recordIteration,
   listRequestDB,
   interruptStaleRequestsOnStartup,
+  repairClosedRequests,
+  isStreamCompleteEvents,
+  reconstructUsageFromEvents,
   type RecordedRequest
 } from '../request-writer.js'
 import { pushNewRequest } from '../../server/data-push.js'
@@ -299,8 +302,10 @@ describe('request-writer', () => {
     const open = requests.find(r => r.requestId === openMeta.localRequestId)
     expect(closed).toBeTruthy()
     expect(closed!.closedAt).toEqual(expect.any(String))
+    expect(closed!.error).toBe('boom')
     expect(open).toBeTruthy()
     expect(open!.closedAt).toBeUndefined()
+    expect(open!.error).toBeUndefined()
   })
 
   it('interruptStaleRequestsOnStartup() marks aged orphan rows and leaves fresh/completed rows untouched', async () => {
@@ -327,9 +332,10 @@ describe('request-writer', () => {
       .prepare('UPDATE requests SET timestamp = ? WHERE request_id = ? AND session_id = ?')
       .run(new Date(Date.now() - 6 * 60000).toISOString(), doneMeta.localRequestId, doneMeta.sessionId)
 
-    const count = interruptStaleRequestsOnStartup()
+    const { completed, interrupted } = interruptStaleRequestsOnStartup()
 
-    expect(count).toBe(1)
+    expect(completed).toBe(0)
+    expect(interrupted).toBe(1)
 
     const oldRow = getRequestRow(oldMeta.localRequestId, oldMeta.sessionId)
     expect(oldRow.closed_at).toBeTruthy()
@@ -343,5 +349,236 @@ describe('request-writer', () => {
 
     const doneRow = getRequestRow(doneMeta.localRequestId, doneMeta.sessionId)
     expect(doneRow.closed_at).toBeNull()
+  })
+
+  it('harvests an aged pending row ending with message_stop as completed: completed_at set, closed_at/error empty, tokens backfilled', async () => {
+    const meta = makeMeta('stopcomplete')
+    const rec = createRequestRecorder(meta)
+    await rec.pending()
+    rec.headers({ statusCode: 200 })
+    rec.appendEvent({
+      type: 'message_start',
+      usage: { input_tokens: 100, cache_read_input_tokens: 10, cache_creation_input_tokens: 2, output_tokens: 1 }
+    })
+    // 17 内容事件：总事件数 20（整批落库），message_start 在尾部 10 条窗口之外，
+    // 依赖定向 SQL 取锚点事件
+    for (let i = 0; i < 17; i++) {
+      rec.appendEvent({ type: 'content_block_delta', seq: i })
+    }
+    rec.appendEvent({ type: 'message_delta', usage: { output_tokens: 50 } })
+    rec.appendEvent({ type: 'message_stop' })
+
+    getDatabase()
+      .prepare('UPDATE requests SET timestamp = ? WHERE request_id = ? AND session_id = ?')
+      .run(new Date(Date.now() - 6 * 60000).toISOString(), meta.localRequestId, meta.sessionId)
+
+    const { completed, interrupted } = interruptStaleRequestsOnStartup()
+    expect(completed).toBe(1)
+    expect(interrupted).toBe(0)
+
+    const row = getRequestRow(meta.localRequestId, meta.sessionId)
+    expect(row.completed_at).toBeTruthy()
+    expect(row.closed_at).toBeNull()
+    expect(row.error).toBeNull()
+    expect(row.status_code).toBe(200)
+    expect(row.response_time).toBeGreaterThan(0)
+    expect(row.input_tokens).toBe(100)
+    expect(row.output_tokens).toBe(50)
+    expect(row.cache_read_tokens).toBe(10)
+    expect(row.cache_creation_tokens).toBe(2)
+  })
+
+  it('aged row without message_stop stays interrupted but tokens are backfilled when usage is recoverable', async () => {
+    const meta = makeMeta('stopmissing')
+    const rec = createRequestRecorder(meta)
+    await rec.pending()
+    rec.headers({ statusCode: 200 })
+    rec.appendEvent({
+      type: 'message_start',
+      usage: { input_tokens: 30, cache_read_input_tokens: 3, cache_creation_input_tokens: 1 }
+    })
+    for (let i = 0; i < 18; i++) {
+      rec.appendEvent({ type: 'content_block_delta', seq: i })
+    }
+    rec.appendEvent({ type: 'message_delta', usage: { output_tokens: 12 } })
+
+    getDatabase()
+      .prepare('UPDATE requests SET timestamp = ? WHERE request_id = ? AND session_id = ?')
+      .run(new Date(Date.now() - 6 * 60000).toISOString(), meta.localRequestId, meta.sessionId)
+
+    const { completed, interrupted } = interruptStaleRequestsOnStartup()
+    expect(completed).toBe(0)
+    expect(interrupted).toBe(1)
+
+    const row = getRequestRow(meta.localRequestId, meta.sessionId)
+    expect(row.closed_at).toBeTruthy()
+    expect(row.error).toBe('interrupted: proxy restarted')
+    expect(row.completed_at).toBeNull()
+    expect(row.input_tokens).toBe(30)
+    expect(row.output_tokens).toBe(12)
+    expect(row.cache_read_tokens).toBe(3)
+    expect(row.cache_creation_tokens).toBe(1)
+  })
+
+  it('reconstructUsageFromEvents merges message_start base with message_delta into all four fields (field-level, not overwrite)', () => {
+    const usage = reconstructUsageFromEvents([
+      { type: 'message_start', usage: { input_tokens: 100, output_tokens: 1, cache_read_input_tokens: 80, cache_creation_input_tokens: 5 } },
+      { type: 'content_block_delta' },
+      { type: 'message_delta', usage: { output_tokens: 42 } }
+    ])
+
+    expect(usage).toEqual({
+      input_tokens: 100,
+      output_tokens: 42,
+      cache_read_input_tokens: 80,
+      cache_creation_input_tokens: 5
+    })
+  })
+
+  it('message_delta cache fields are merged too, and undefined is returned when no usage exists', () => {
+    const usage = reconstructUsageFromEvents([
+      { type: 'message_start', usage: { input_tokens: 10 } },
+      { type: 'message_delta', usage: { output_tokens: 4, cache_read_input_tokens: 2 } }
+    ])
+    expect(usage).toEqual({ input_tokens: 10, output_tokens: 4, cache_read_input_tokens: 2 })
+
+    expect(reconstructUsageFromEvents([{ type: 'content_block_delta' }])).toBeUndefined()
+  })
+
+  it('OpenAI-style: choices[0].finish_reason non-empty marks complete, and a chunk with usage backfills tokens', async () => {
+    expect(isStreamCompleteEvents([
+      { choices: [{ delta: { role: 'assistant' }, finish_reason: null }] }
+    ])).toBe(false)
+    expect(isStreamCompleteEvents([
+      { choices: [{ delta: {}, finish_reason: 'stop' }] }
+    ])).toBe(true)
+
+    const usage = reconstructUsageFromEvents([
+      { choices: [{ delta: { content: 'hi' }, finish_reason: null }] },
+      { choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 9, completion_tokens: 17 } }
+    ])
+    expect(usage).toEqual({ input_tokens: 9, output_tokens: 17 })
+
+    // 端到端：OpenAI 超龄行（事件 event_type 为 NULL）走完成语义并回填
+    const meta = makeMeta('openaistop')
+    const rec = createRequestRecorder(meta)
+    await rec.pending()
+    rec.headers({ statusCode: 200 })
+    for (let i = 0; i < 19; i++) {
+      rec.appendEvent({ choices: [{ delta: { content: 'x' }, finish_reason: null }] })
+    }
+    rec.appendEvent({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 9, completion_tokens: 17 } })
+
+    getDatabase()
+      .prepare('UPDATE requests SET timestamp = ? WHERE request_id = ? AND session_id = ?')
+      .run(new Date(Date.now() - 6 * 60000).toISOString(), meta.localRequestId, meta.sessionId)
+
+    const { completed, interrupted } = interruptStaleRequestsOnStartup()
+    expect(completed).toBe(1)
+    expect(interrupted).toBe(0)
+
+    const row = getRequestRow(meta.localRequestId, meta.sessionId)
+    expect(row.completed_at).toBeTruthy()
+    expect(row.closed_at).toBeNull()
+    expect(row.input_tokens).toBe(9)
+    expect(row.output_tokens).toBe(17)
+  })
+
+  it('interrupt() also backfills recoverable token columns', async () => {
+    const meta = makeMeta('interrupttokens')
+    const rec = createRequestRecorder(meta)
+    await rec.pending()
+    rec.appendEvent({
+      type: 'message_start',
+      usage: { input_tokens: 20, cache_read_input_tokens: 4, cache_creation_input_tokens: 1 }
+    })
+    for (let i = 0; i < 20; i++) {
+      rec.appendEvent({ type: 'content_block_delta', seq: i })
+    }
+    rec.appendEvent({ type: 'message_delta', usage: { output_tokens: 7 } })
+    pushMock.mockClear()
+
+    rec.interrupt({ statusCode: 200, error: 'stream interrupted: socket hang up' })
+
+    const row = getRequestRow(meta.localRequestId, meta.sessionId)
+    expect(row.closed_at).toBeTruthy()
+    expect(row.error).toBe('stream interrupted: socket hang up')
+    expect(row.input_tokens).toBe(20)
+    expect(row.output_tokens).toBe(7)
+    expect(row.cache_read_tokens).toBe(4)
+    expect(row.cache_creation_tokens).toBe(1)
+
+    const completedCalls = pushMock.mock.calls.filter(c => c[1] === 'completed')
+    expect(completedCalls[0][0].usage).toEqual(expect.objectContaining({ output_tokens: 7 }))
+  })
+
+  it('repairClosedRequests recovers closed complete rows, fills tokens, and is idempotent', async () => {
+    // 完整但被旧逻辑误标中断的行：message_stop 已入库，token 全 NULL
+    const completeMeta = makeMeta('repaircomplete')
+    const completeRec = createRequestRecorder(completeMeta)
+    await completeRec.pending()
+    completeRec.appendEvent({
+      type: 'message_start',
+      usage: { input_tokens: 15, cache_read_input_tokens: 2, cache_creation_input_tokens: 1 }
+    })
+    for (let i = 0; i < 20; i++) {
+      completeRec.appendEvent({ type: 'content_block_delta', seq: i })
+    }
+    completeRec.appendEvent({ type: 'message_delta', usage: { output_tokens: 6 } })
+    completeRec.appendEvent({ type: 'message_stop' })
+    completeRec.interrupt({ statusCode: 200, error: 'interrupted: proxy restarted' })
+    // 模拟旧版本中断行：清空 token 列（旧 interrupt 不回填 usage）
+    getDatabase()
+      .prepare(`UPDATE requests SET
+        input_tokens = NULL, output_tokens = NULL,
+        cache_read_tokens = NULL, cache_creation_tokens = NULL
+        WHERE request_id = ? AND session_id = ?`)
+      .run(completeMeta.localRequestId, completeMeta.sessionId)
+
+    // 真正中断的行：无 message_stop，但 usage 可恢复
+    const brokenMeta = makeMeta('repairbroken')
+    const brokenRec = createRequestRecorder(brokenMeta)
+    await brokenRec.pending()
+    brokenRec.appendEvent({
+      type: 'message_start',
+      usage: { input_tokens: 8, cache_read_input_tokens: 1 }
+    })
+    for (let i = 0; i < 20; i++) {
+      brokenRec.appendEvent({ type: 'content_block_delta', seq: i })
+    }
+    brokenRec.appendEvent({ type: 'message_delta', usage: { output_tokens: 3 } })
+    brokenRec.interrupt({ statusCode: 200, error: 'interrupted: proxy restarted' })
+    // 模拟旧版本中断行：清空 token 列
+    getDatabase()
+      .prepare(`UPDATE requests SET
+        input_tokens = NULL, output_tokens = NULL,
+        cache_read_tokens = NULL, cache_creation_tokens = NULL
+        WHERE request_id = ? AND session_id = ?`)
+      .run(brokenMeta.localRequestId, brokenMeta.sessionId)
+
+    const first = repairClosedRequests()
+    expect(first.recovered).toBe(1)
+    expect(first.tokensFilled).toBe(2)
+
+    const recoveredRow = getRequestRow(completeMeta.localRequestId, completeMeta.sessionId)
+    expect(recoveredRow.closed_at).toBeNull()
+    expect(recoveredRow.error).toBeNull()
+    expect(recoveredRow.completed_at).toBeTruthy()
+    expect(recoveredRow.input_tokens).toBe(15)
+    expect(recoveredRow.output_tokens).toBe(6)
+
+    const brokenRow = getRequestRow(brokenMeta.localRequestId, brokenMeta.sessionId)
+    expect(brokenRow.closed_at).toBeTruthy()
+    expect(brokenRow.input_tokens).toBe(8)
+    expect(brokenRow.output_tokens).toBe(3)
+
+    // 幂等：第二次不产生任何变更，行状态保持
+    const second = repairClosedRequests()
+    expect(second).toEqual({ recovered: 0, tokensFilled: 0 })
+
+    const rerunRecovered = getRequestRow(completeMeta.localRequestId, completeMeta.sessionId)
+    expect(rerunRecovered.completed_at).toBe(recoveredRow.completed_at)
+    const rerunBroken = getRequestRow(brokenMeta.localRequestId, brokenMeta.sessionId)
+    expect(rerunBroken.closed_at).toBe(brokenRow.closed_at)
   })
 })

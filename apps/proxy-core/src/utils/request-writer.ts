@@ -43,6 +43,7 @@ export interface RequestSummary {
   userAgent?: string
   usage?: TokenUsage
   closedAt?: string
+  error?: string
 }
 
 export interface RequestRecorder {
@@ -133,6 +134,135 @@ function extractUsage(events: any[] | undefined): TokenUsage | undefined {
   if (!events) return undefined
   const messageDelta = events.find((e: any) => e?.type === 'message_delta')
   return messageDelta?.usage
+}
+
+// --- 流完整性判定与 usage 重建（纯函数，事件数组入参）---
+
+/**
+ * 判断事件集合是否构成一条完整返回的流。
+ * Claude：出现 type === 'message_stop'。
+ * OpenAI 兼容：chunk 内 choices[0].finish_reason 非空
+ * （[DONE] 不入库，不能作为 DB 判定依据）。
+ */
+export function isStreamCompleteEvents(events: any[] | undefined): boolean {
+  if (!Array.isArray(events)) return false
+  return events.some(e => {
+    if (!e || typeof e !== 'object') return false
+    if (e.type === 'message_stop') return true
+    const finishReason = e.choices?.[0]?.finish_reason
+    return finishReason !== undefined && finishReason !== null && finishReason !== ''
+  })
+}
+
+/**
+ * 从事件集合按字段合并重建 usage，不做整体覆盖。
+ * Claude：message_start.usage（input_tokens / cache_*）为底；
+ * message_delta.usage 的字段优先（output_tokens 为主，cache 字段也合入）。
+ * OpenAI：取带 .usage 的 chunk（prompt_tokens/completion_tokens）。
+ */
+export function reconstructUsageFromEvents(events: any[] | undefined): TokenUsage | undefined {
+  if (!Array.isArray(events)) return undefined
+  const usage: TokenUsage = {}
+  let found = false
+
+  const merge = (field: keyof TokenUsage, value: unknown, precedence: boolean): void => {
+    if (typeof value !== 'number') return
+    if (precedence || usage[field] === undefined) {
+      usage[field] = value
+      found = true
+    }
+  }
+
+  for (const e of events) {
+    if (!e || typeof e !== 'object') continue
+
+    if (e.type === 'message_start' || e.type === 'message_delta') {
+      const u = e.usage
+      if (u && typeof u === 'object') {
+        const isDelta = e.type === 'message_delta'
+        merge('input_tokens', u.input_tokens, isDelta)
+        merge('output_tokens', u.output_tokens, isDelta)
+        merge('cache_read_input_tokens', u.cache_read_input_tokens, isDelta)
+        merge('cache_creation_input_tokens', u.cache_creation_input_tokens, isDelta)
+      }
+    }
+
+    // OpenAI 兼容：带 usage 的 chunk（event_type 通常为 NULL）
+    if (e.usage && typeof e.usage === 'object' && e.type !== 'message_start' && e.type !== 'message_delta') {
+      const u = e.usage
+      merge('input_tokens', u.input_tokens ?? u.prompt_tokens, false)
+      merge('output_tokens', u.output_tokens ?? u.completion_tokens, false)
+    }
+  }
+
+  return found ? usage : undefined
+}
+
+// 定向加载重建所需事件，禁止全量加载事件流（实测有 8000+ 行）：
+// 1) Claude 锚点事件（message_start/message_delta/message_stop，通常仅数行）
+// 2) 尾部 10 条事件（覆盖 OpenAI 的 finish_reason / usage，其 event_type 可能为 NULL）
+function loadTargetedEvents(
+  db: import('better-sqlite3').Database,
+  requestId: string,
+  sessionId: string
+): any[] {
+  const anchorRows = db.prepare(`
+    SELECT event_data FROM response_events
+    WHERE request_id = ? AND session_id = ?
+      AND event_type IN ('message_start', 'message_delta', 'message_stop')
+    ORDER BY event_index ASC
+  `).all(requestId, sessionId) as { event_data: string }[]
+
+  const tailRows = db.prepare(`
+    SELECT event_data FROM response_events
+    WHERE request_id = ? AND session_id = ?
+    ORDER BY event_index DESC
+    LIMIT 10
+  `).all(requestId, sessionId) as { event_data: string }[]
+
+  const seen = new Set<string>()
+  const events: any[] = []
+  for (const row of [...anchorRows, ...tailRows]) {
+    if (seen.has(row.event_data)) continue
+    seen.add(row.event_data)
+    try {
+      events.push(JSON.parse(row.event_data))
+    } catch {
+      // 忽略损坏行
+    }
+  }
+  return events
+}
+
+type TokenColumn = 'input_tokens' | 'output_tokens' | 'cache_read_tokens' | 'cache_creation_tokens'
+
+// 按字段回填 token 列（只补 NULL 列），返回是否有列被更新
+function fillTokenColumns(
+  db: import('better-sqlite3').Database,
+  requestId: string,
+  sessionId: string,
+  usage: TokenUsage
+): boolean {
+  const current = db.prepare(`
+    SELECT input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+    FROM requests WHERE request_id = ? AND session_id = ?
+  `).get(requestId, sessionId) as Record<TokenColumn, number | null> | undefined
+  if (!current) return false
+
+  const pairs: [TokenColumn, number | undefined][] = [
+    ['input_tokens', usage.input_tokens],
+    ['output_tokens', usage.output_tokens],
+    ['cache_read_tokens', usage.cache_read_input_tokens],
+    ['cache_creation_tokens', usage.cache_creation_input_tokens]
+  ]
+  const updatable = pairs.filter(([col, v]) => current[col] === null && typeof v === 'number')
+  if (updatable.length === 0) return false
+
+  const setSql = updatable.map(([col]) => `${col} = ?`).join(', ')
+  db.prepare(
+    `UPDATE requests SET ${setSql} WHERE request_id = ? AND session_id = ?`
+  ).run(...updatable.map(([, v]) => v as number), requestId, sessionId)
+  return true
 }
 
 interface CompletedRowArgs {
@@ -338,18 +468,26 @@ export function createRequestRecorder(meta: RecordedRequest): RequestRecorder {
       )
     },
 
-    // 流被截断/挂死：保留真实 status_code，通过 closed_at + error 标记中断
+    // 流被截断/挂死：保留真实 status_code，通过 closed_at + error 标记中断；
+    // 同时通过定向 SQL（锚点事件 + 尾部事件）重建 usage 并按字段回填 token
     interrupt({ statusCode, error }): void {
       flushRemaining()
+      const db = getDatabase()
       const responseTime = Date.now() - startTime
       const closedAt = new Date().toISOString()
 
-      getDatabase().prepare(
+      db.prepare(
         'UPDATE requests SET status_code = ?, response_time = ?, closed_at = ?, error = ? WHERE request_id = ? AND session_id = ?'
       ).run(statusCode, responseTime, closedAt, error, meta.localRequestId, meta.sessionId)
 
+      const events = loadTargetedEvents(db, meta.localRequestId, meta.sessionId)
+      const usage = reconstructUsageFromEvents(events)
+      if (usage) {
+        fillTokenColumns(db, meta.localRequestId, meta.sessionId, usage)
+      }
+
       pushNewRequest(
-        buildSummary(meta, meta.localRequestId, statusCode, responseTime, undefined, false, closedAt),
+        buildSummary(meta, meta.localRequestId, statusCode, responseTime, usage, false, closedAt),
         'completed'
       )
     },
@@ -486,7 +624,7 @@ export async function listRequestDB(
     SELECT
       request_id, session_id, timestamp, method, path, status_code, response_time,
       api_key, proxy_api_key, base_url, model, machine_id, user_agent,
-      input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, closed_at
+      input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, closed_at, error
     FROM requests
     ${whereClause}
     ORDER BY timestamp DESC
@@ -518,7 +656,8 @@ export async function listRequestDB(
         cache_read_input_tokens: row.cache_read_tokens,
         cache_creation_input_tokens: row.cache_creation_tokens
       } : undefined,
-      closedAt: row.closed_at || undefined
+      closedAt: row.closed_at || undefined,
+      error: row.error || undefined
     })),
     hasMore
   }
@@ -541,27 +680,106 @@ export async function cleanOldRequestsDB(daysToKeep = 7): Promise<void> {
   db.prepare(`DELETE FROM requests WHERE timestamp < ?`).run(cutoff)
 }
 
-// 启动时回收上次进程遗留的僵尸 SSE 行：未完成、未关闭且超龄，逐行标记为中断
-// （status_code 保持原值不动），返回处理行数
-export function interruptStaleRequestsOnStartup(maxAgeMs = 5 * 60000): number {
+// 启动时回收上次进程遗留的僵尸 SSE 行：未完成、未关闭且超龄，逐行分流
+// （status_code 保持原值不动）——事件流完整（message_stop / OpenAI finish_reason）
+// 的走完成语义：写 completed_at，不写 closed_at/error；不完整的维持
+// closed_at + 'interrupted: proxy restarted'。两条路径都按字段回填 token 列。
+export function interruptStaleRequestsOnStartup(
+  maxAgeMs = 5 * 60000
+): { completed: number; interrupted: number } {
   const db = initDatabase()
   const cutoff = new Date(Date.now() - maxAgeMs).toISOString()
 
   const rows = db.prepare(`
-    SELECT request_id, session_id
+    SELECT request_id, session_id, timestamp, response_time
     FROM requests
     WHERE completed_at IS NULL AND closed_at IS NULL AND timestamp < ?
-  `).all(cutoff) as { request_id: string; session_id: string }[]
+  `).all(cutoff) as {
+    request_id: string
+    session_id: string
+    timestamp: string
+    response_time: number
+  }[]
 
-  const closedAt = new Date().toISOString()
-  const stmt = db.prepare(
-    'UPDATE requests SET closed_at = ?, error = ? WHERE request_id = ? AND session_id = ?'
-  )
+  let completed = 0
+  let interrupted = 0
+  const nowIso = new Date().toISOString()
+
   for (const row of rows) {
-    stmt.run(closedAt, 'interrupted: proxy restarted', row.request_id, row.session_id)
+    const events = loadTargetedEvents(db, row.request_id, row.session_id)
+    const usage = reconstructUsageFromEvents(events)
+
+    if (isStreamCompleteEvents(events)) {
+      // response_time 原值为 0（pending 占位）时，用 timestamp→现在给合理值
+      const responseTime = row.response_time > 0
+        ? row.response_time
+        : Math.max(0, Date.now() - Date.parse(row.timestamp))
+      db.prepare(
+        'UPDATE requests SET completed_at = ?, response_time = ? WHERE request_id = ? AND session_id = ?'
+      ).run(nowIso, responseTime, row.request_id, row.session_id)
+      completed += 1
+    } else {
+      db.prepare(
+        'UPDATE requests SET closed_at = ?, error = ? WHERE request_id = ? AND session_id = ?'
+      ).run(nowIso, 'interrupted: proxy restarted', row.request_id, row.session_id)
+      interrupted += 1
+    }
+
+    if (usage) {
+      fillTokenColumns(db, row.request_id, row.session_id, usage)
+    }
   }
 
-  return rows.length
+  return { completed, interrupted }
+}
+
+// 存量回填（供 CLI repair-requests 使用），幂等可重跑：
+// 扫描 closed_at 非空的行——事件流完整且 completed_at 为空的：清 closed_at/error、
+// 写 completed_at（completed_at 已非空的跳过）；对 token 全 NULL 但事件可恢复
+// usage 的行按字段补 token。同样只走定向 SQL。
+export function repairClosedRequests(): { recovered: number; tokensFilled: number } {
+  const db = initDatabase()
+
+  const rows = db.prepare(`
+    SELECT
+      request_id, session_id, completed_at,
+      input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+    FROM requests
+    WHERE closed_at IS NOT NULL
+  `).all() as ({
+    request_id: string
+    session_id: string
+    completed_at: string | null
+  } & Record<TokenColumn, number | null>)[]
+
+  let recovered = 0
+  let tokensFilled = 0
+  const nowIso = new Date().toISOString()
+
+  for (const row of rows) {
+    const events = loadTargetedEvents(db, row.request_id, row.session_id)
+
+    if (row.completed_at === null && isStreamCompleteEvents(events)) {
+      db.prepare(
+        'UPDATE requests SET closed_at = NULL, error = NULL, completed_at = ? WHERE request_id = ? AND session_id = ?'
+      ).run(nowIso, row.request_id, row.session_id)
+      recovered += 1
+    }
+
+    const allTokensNull =
+      row.input_tokens === null &&
+      row.output_tokens === null &&
+      row.cache_read_tokens === null &&
+      row.cache_creation_tokens === null
+    if (allTokensNull) {
+      const usage = reconstructUsageFromEvents(events)
+      if (usage && fillTokenColumns(db, row.request_id, row.session_id, usage)) {
+        tokensFilled += 1
+      }
+    }
+  }
+
+  return { recovered, tokensFilled }
 }
 
 // Load session history for multi-turn chat resume

@@ -15,7 +15,8 @@ module.exports = {
     exec_mode: 'fork',  // Use fork mode for ESM compatibility
     autorestart: true,
     watch: false,
-    max_memory_restart: '200M',
+    // 进程 baseline ~184MB 贴近 200M 线导致频繁 OOM kill，内存增长另排查
+    max_memory_restart: '600M',
     env: {
       NODE_ENV: 'production',
       CONFIG_PATH: configPath,

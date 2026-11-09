@@ -165,4 +165,11 @@ program.command('clean-requests')
     console.log('清理完成')
   })
 
+program.command('repair-requests')
+  .description('修复被误标为中断的已完成请求（SQLite）')
+  .action(async () => {
+    const { repairCommand } = await import('./commands/repair.js')
+    await repairCommand()
+  })
+
 program.parse()

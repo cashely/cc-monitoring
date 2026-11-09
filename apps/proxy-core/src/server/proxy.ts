@@ -3,7 +3,7 @@ import { Readable, finished } from 'stream'
 import { convertClaudeToOpenAIRequest, convertOpenAIToClaudeResponse, createStreamTransformer, buildOpenAIHeaders } from '../utils/openai-converter.js'
 import { ProxyConfig } from '../types/config.js'
 import { loadConfig } from '../config/index.js'
-import { createRequestRecorder, type RequestRecorder, type RecordedRequest } from '../utils/request-writer.js'
+import { createRequestRecorder, isStreamCompleteEvents, type RequestRecorder, type RecordedRequest } from '../utils/request-writer.js'
 import { cleanOldRequestsDB, interruptStaleRequestsOnStartup } from '../utils/request-writer.js'
 import { pushNewRequest, broadcastToDataClients } from './data-push.js'
 import { initDatabase, closeDatabase, getDatabase } from '../utils/db.js'
@@ -216,8 +216,20 @@ const STREAM_IDLE_TIMEOUT_MS = 120000
 /**
  * 给上游 nodeStream 挂空闲看门狗：data 到达重置定时器；
  * end/close/error 清理定时器；超时且流未销毁时以 idle timeout 销毁。
+ * 返回句柄 finish()：流内容已逻辑终止（message_stop / finish_reason / [DONE]）
+ * 时调用——清定时器并无错销毁流。
  */
-function attachIdleWatchdog(nodeStream: Readable): void {
+interface IdleWatchdogHandle {
+  finish(): void
+}
+
+// 测试 seam：CCM_STREAM_IDLE_TIMEOUT_MS 覆盖超时（仅在 attach 时读一次）
+function getIdleTimeoutMs(): number {
+  const envValue = Number(process.env.CCM_STREAM_IDLE_TIMEOUT_MS)
+  return Number.isFinite(envValue) && envValue > 0 ? envValue : STREAM_IDLE_TIMEOUT_MS
+}
+
+function attachIdleWatchdog(nodeStream: Readable): IdleWatchdogHandle {
   let timer: NodeJS.Timeout | null = null
 
   const clearTimer = (): void => {
@@ -232,7 +244,7 @@ function attachIdleWatchdog(nodeStream: Readable): void {
       if (!nodeStream.destroyed) {
         nodeStream.destroy(new Error('upstream idle timeout'))
       }
-    }, STREAM_IDLE_TIMEOUT_MS)
+    }, getIdleTimeoutMs())
   }
 
   nodeStream.on('data', resetTimer)
@@ -241,6 +253,15 @@ function attachIdleWatchdog(nodeStream: Readable): void {
   nodeStream.on('error', clearTimer)
 
   resetTimer()
+
+  return {
+    finish(): void {
+      clearTimer()
+      if (!nodeStream.destroyed) {
+        nodeStream.destroy()
+      }
+    }
+  }
 }
 
 export async function setupProxy(
@@ -260,11 +281,20 @@ export async function setupProxy(
     console.log(`Recovered ${recoveredTasks} crashed learn task(s) from previous run`)
   }
 
-  // 回收上次进程遗留的僵尸 SSE 请求行（流中断/挂死未回调）
-  const interruptedRequests = interruptStaleRequestsOnStartup()
-  if (interruptedRequests > 0) {
-    console.log(`Interrupted ${interruptedRequests} stale request(s) from previous run`)
+  // 回收上次进程遗留的僵尸 SSE 请求行（流中断/挂死未回调）：逐行分流
+  const { completed: completedAtStartup, interrupted: interruptedAtStartup } = interruptStaleRequestsOnStartup()
+  if (completedAtStartup > 0 || interruptedAtStartup > 0) {
+    console.log(`Recovered ${completedAtStartup} completed / ${interruptedAtStartup} interrupted stale request(s)`)
   }
+
+  // 收割周期化：每 60s 扫 >2min 仍 pending 的行
+  const staleReaperTimer = setInterval(() => {
+    try {
+      interruptStaleRequestsOnStartup(2 * 60000)
+    } catch (err) {
+      console.error('Stale request reaping failed:', err)
+    }
+  }, 60000)
 
   // Initialize MCP connections (after DB is ready)
   try {
@@ -314,6 +344,7 @@ export async function setupProxy(
   fastify.addHook('onClose', async () => {
     clearInterval(statsTimer)
     clearInterval(cleanupTimer)
+    clearInterval(staleReaperTimer)
     await mcpManager.close()
     closeDatabase()
   })
@@ -462,12 +493,29 @@ export async function setupProxy(
           clientSignal.addEventListener('abort', () => {
             if (!nodeStream.destroyed) nodeStream.destroy(new Error('client disconnected'))
           })
-          attachIdleWatchdog(nodeStream)
+          const watchdog = attachIdleWatchdog(nodeStream)
 
           const transformStream = createStreamTransformer(forwardedModel || originalModel)
 
-          // 旁路解码器：只做事件入库，不介入转发管道；[DONE] 走 onDone 留空，天然不入库
-          const tapDecoder = createEventDecoder((e) => rec!.appendEvent(e))
+          // 流是否已逻辑终止（finish_reason / [DONE]）；err 分支据此改走 complete
+          let logicallyEnded = false
+
+          // 旁路解码器：只做事件入库，不介入转发管道；[DONE] 走 onDone 触发逻辑终止
+          const tapDecoder = createEventDecoder(
+            (e) => {
+              rec!.appendEvent(e)
+              if (!logicallyEnded && isStreamCompleteEvents([e])) {
+                logicallyEnded = true
+                watchdog.finish()
+              }
+            },
+            () => {
+              if (!logicallyEnded) {
+                logicallyEnded = true
+                watchdog.finish()
+              }
+            }
+          )
 
           nodeStream.on('data', (chunk: Buffer) => {
             tapDecoder.write(chunk)
@@ -476,7 +524,7 @@ export async function setupProxy(
           // Use finished() for reliable stream completion detection
           finished(nodeStream, async (err) => {
             tapDecoder.end()
-            if (err) {
+            if (err && !logicallyEnded) {
               request.log.error(`openai stream error: ${err.message}`)
               rec!.interrupt({ statusCode: response.status, error: `stream interrupted: ${err.message}` })
               return
@@ -493,6 +541,11 @@ export async function setupProxy(
               request.log.info(`stream completed (openai): ${cloudRequestId} ${response.status} (${elapsed}ms)`)
             } catch (dbErr: any) {
               request.log.error(`openai stream save failed: ${dbErr.message}`)
+            }
+
+            // pipe 在无 'end' 的 destroy 后不会收尾 dest，手动结束客户端连接
+            if (reply.raw.writableEnded === false && !reply.raw.destroyed) {
+              reply.raw.end()
             }
           })
 
@@ -572,10 +625,27 @@ export async function setupProxy(
         clientSignal.addEventListener('abort', () => {
           if (!nodeStream.destroyed) nodeStream.destroy(new Error('client disconnected'))
         })
-        attachIdleWatchdog(nodeStream)
+        const watchdog = attachIdleWatchdog(nodeStream)
 
-        // 旁路解码器：只做事件入库，不介入转发管道；[DONE] 走 onDone 留空，天然不入库
-        const tapDecoder = createEventDecoder((e) => rec!.appendEvent(e))
+        // 流是否已逻辑终止（message_stop）；err 分支据此改走 complete
+        let logicallyEnded = false
+
+        // 旁路解码器：只做事件入库，不介入转发管道
+        const tapDecoder = createEventDecoder(
+          (e) => {
+            rec!.appendEvent(e)
+            if (!logicallyEnded && isStreamCompleteEvents([e])) {
+              logicallyEnded = true
+              watchdog.finish()
+            }
+          },
+          () => {
+            if (!logicallyEnded) {
+              logicallyEnded = true
+              watchdog.finish()
+            }
+          }
+        )
 
         nodeStream.on('data', (chunk: Buffer) => {
           tapDecoder.write(chunk)
@@ -584,7 +654,7 @@ export async function setupProxy(
         // Save request data when stream completes
         finished(nodeStream, async (err) => {
           tapDecoder.end()
-          if (err) {
+          if (err && !logicallyEnded) {
             request.log.error(`claude stream error: ${err.message}`)
             rec!.interrupt({ statusCode: response.status, error: `stream interrupted: ${err.message}` })
             return
@@ -600,6 +670,11 @@ export async function setupProxy(
             request.log.info(`stream completed: ${cloudRequestId} ${response.status} (${elapsed}ms)`)
           } catch (dbErr: any) {
             request.log.error(`stream save failed: ${dbErr.message}`)
+          }
+
+          // pipe 在无 'end' 的 destroy 后不会收尾 dest，手动结束客户端连接
+          if (reply.raw.writableEnded === false && !reply.raw.destroyed) {
+            reply.raw.end()
           }
         })
 

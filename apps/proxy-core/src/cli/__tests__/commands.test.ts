@@ -70,6 +70,11 @@ jest.mock('child_process', () => ({
   execSync: jest.fn()
 }))
 
+const mockRepairClosedRequests = jest.fn()
+jest.mock('@utils/request-writer', () => ({
+  repairClosedRequests: (...args: unknown[]) => mockRepairClosedRequests(...args)
+}))
+
 jest.mock('fs', () => ({
   ...jest.requireActual('fs'),
   existsSync: jest.fn().mockReturnValue(true),
@@ -88,6 +93,7 @@ import { configCommand } from '../commands/config'
 import { reloadCommand } from '../commands/reload'
 import { testCommand } from '../commands/test'
 import { uiCommand } from '../commands/ui'
+import { repairCommand } from '../commands/repair'
 import { loadConfig, saveConfig, resetConfig } from '@config/index'
 import { readLogs } from '@logger/index'
 
@@ -290,6 +296,24 @@ describe('testCommand', () => {
     await testCommand()
     expect(console.log).toHaveBeenCalledWith('Testing connection to target...')
     expect(console.error).toHaveBeenCalledWith('Connection failed:', 'Network error')
+  })
+})
+
+describe('repairCommand', () => {
+  it('prints recovery counts when requests were repaired', async () => {
+    mockRepairClosedRequests.mockReturnValue({ recovered: 2, tokensFilled: 1 })
+    await repairCommand()
+    expect(loadConfig).toHaveBeenCalled()
+    expect(mockRepairClosedRequests).toHaveBeenCalled()
+    expect(console.log).toHaveBeenCalledWith(
+      'Recovered 2 request(s) as completed, filled tokens for 1 request(s)'
+    )
+  })
+
+  it('reports nothing to repair when all counts are zero', async () => {
+    mockRepairClosedRequests.mockReturnValue({ recovered: 0, tokensFilled: 0 })
+    await repairCommand()
+    expect(console.log).toHaveBeenCalledWith('No interrupted requests needed repair.')
   })
 })
 

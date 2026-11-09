@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Table, TableProps, Button, Checkbox, Tag } from 'antd'
+import { Table, TableProps, Button, Checkbox, Tag, Tooltip } from 'antd'
 import { GitCompareArrows, Loader2 } from 'lucide-react'
 import { RequestSummary } from '../types/request'
 import { MethodTag } from './MethodTag'
@@ -276,9 +276,11 @@ export function RequestTable({
           (!!record.closedAt && (value === 0 || (value >= 200 && value < 300)))
         if (interrupted) {
           return (
-            <span className="text-xs font-medium" style={{ color: 'var(--color-warning)' }}>
-              中断
-            </span>
+            <Tooltip title={record.error || '请求中断（原因未知）'}>
+              <span className="text-xs font-medium" style={{ color: 'var(--color-warning)' }}>
+                中断
+              </span>
+            </Tooltip>
           )
         }
         const color = value >= 200 && value < 300 ? 'var(--color-success)' : 'var(--color-error)'

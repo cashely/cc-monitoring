@@ -22,6 +22,7 @@ export interface RequestSummary {
   status?: 'pending' | 'completed'
   pendingId?: string  // compositeId of the pending record to replace
   closedAt?: string   // 流中断时间（ISO），存在表示非正常结束
+  error?: string      // 中断原因原文
 }
 
 export interface RequestDetails {
