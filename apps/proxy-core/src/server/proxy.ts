@@ -5,7 +5,7 @@ import { ProxyConfig } from '../types/config.js'
 import { loadConfig } from '../config/index.js'
 import { createRequestRecorder, type RequestRecorder, type RecordedRequest } from '../utils/request-writer.js'
 import { cleanOldRequestsDB, interruptStaleRequestsOnStartup } from '../utils/request-writer.js'
-import { pushNewRequest } from './data-push.js'
+import { pushNewRequest, broadcastToDataClients } from './data-push.js'
 import { initDatabase, closeDatabase, getDatabase } from '../utils/db.js'
 import { recoverCrashedTasks } from '../utils/learn-tasks-db.js'
 import { getActiveProvider } from '../utils/providers-db.js'
@@ -279,7 +279,8 @@ export async function setupProxy(
   // Start stats aggregation timer (every 5 minutes)
   const statsTimer = setInterval(() => {
     try {
-      aggregateStats()
+      aggregateStats(maxDays)
+      broadcastToDataClients({ type: 'stats', action: 'notify' })
     } catch (err) {
       console.error('Stats aggregation failed:', err)
     }
@@ -296,7 +297,8 @@ export async function setupProxy(
 
   // Initial aggregation on startup
   try {
-    aggregateStats()
+    aggregateStats(maxDays)
+    broadcastToDataClients({ type: 'stats', action: 'notify' })
   } catch (err) {
     console.error('Initial stats aggregation failed:', err)
   }

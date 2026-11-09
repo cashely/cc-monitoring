@@ -21,16 +21,26 @@ export interface TodayStats {
   models: Record<string, number>
 }
 
+// Build the UTC hourly key ('YYYY-MM-DD-HH') used as stats.period_key
+function toHourKey(date: Date): string {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}-${String(date.getUTCHours()).padStart(2, '0')}`
+}
+
 // Aggregate stats from requests table (called periodically)
 // Only stores hourly (UTC) entries — daily aggregation is done on the frontend
 // using the user's local timezone.
-export function aggregateStats(): void {
+// maxDays: hourly retention window in days. A positive integer shrinks the
+// window (capped at 30); undefined / <=0 falls back to the default 30 days.
+export function aggregateStats(maxDays?: number): void {
   const db = initDatabase()
 
   const now = new Date()
   const nowIso = now.toISOString()
-  // 30 days of hourly data = 720 entries
-  const hourlyCutoff = new Date(now.getTime() - 30 * 86400000).toISOString()
+  // windowDays days of hourly data (30 days = 720 entries)
+  const windowDays = Number.isInteger(maxDays) && (maxDays as number) > 0
+    ? Math.min(30, maxDays as number)
+    : 30
+  const hourlyCutoff = new Date(now.getTime() - windowDays * 86400000).toISOString()
 
   // Aggregate hourly stats using SQLite's built-in strftime (UTC)
   const hourlyRows = db.prepare(`
@@ -43,9 +53,17 @@ export function aggregateStats(): void {
       COUNT(*) as request_count
     FROM requests
     WHERE timestamp >= ?
-      AND closed_at IS NULL
     GROUP BY hour
   `).all(hourlyCutoff) as any[]
+
+  // Recompute the whole window atomically: drop every hourly snapshot inside
+  // the window first (source rows may already have been deleted by cleanup, so
+  // an upsert-only pass would leave stale snapshots frozen forever), then
+  // re-insert from the requests table.
+  // Cutoff key uses UTC methods to match the UTC keys stored in the DB.
+  // The two deletes (< key / >= key) together clear every hourly row.
+  const cutoffKey = toHourKey(new Date(hourlyCutoff))
+  const deleteWindow = db.prepare(`DELETE FROM stats WHERE period = 'hourly' AND period_key >= ?`)
 
   // Upsert hourly stats
   const upsertHourly = db.prepare(`
@@ -55,27 +73,30 @@ export function aggregateStats(): void {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
-  for (const row of hourlyRows) {
-    upsertHourly.run(
-      'hourly',
-      row.hour,
-      row.input_tokens || 0,
-      row.output_tokens || 0,
-      row.cache_read_tokens || 0,
-      row.cache_creation_tokens || 0,
-      row.request_count,
-      nowIso
-    )
-  }
-
-  // Clean old hourly entries: compute cutoff key using UTC methods
-  // to match the UTC keys stored in the DB
-  const cutoffDate = new Date(hourlyCutoff)
-  const cutoffKey = `${cutoffDate.getUTCFullYear()}-${String(cutoffDate.getUTCMonth() + 1).padStart(2, '0')}-${String(cutoffDate.getUTCDate()).padStart(2, '0')}-${String(cutoffDate.getUTCHours()).padStart(2, '0')}`
-  db.prepare(`DELETE FROM stats WHERE period = 'hourly' AND period_key < ?`).run(cutoffKey)
+  // Clean hourly entries outside the recomputation window
+  const deleteOldKeys = db.prepare(`DELETE FROM stats WHERE period = 'hourly' AND period_key < ?`)
 
   // Clean ALL daily entries (legacy data from old +8h approach)
-  db.prepare(`DELETE FROM stats WHERE period = 'daily'`).run()
+  const deleteDaily = db.prepare(`DELETE FROM stats WHERE period = 'daily'`)
+
+  const recompute = db.transaction(() => {
+    deleteWindow.run(cutoffKey)
+    for (const row of hourlyRows) {
+      upsertHourly.run(
+        'hourly',
+        row.hour,
+        row.input_tokens || 0,
+        row.output_tokens || 0,
+        row.cache_read_tokens || 0,
+        row.cache_creation_tokens || 0,
+        row.request_count,
+        nowIso
+      )
+    }
+    deleteOldKeys.run(cutoffKey)
+    deleteDaily.run()
+  })
+  recompute()
 
   // WAL checkpoint to keep WAL file size bounded
   db.pragma('wal_checkpoint(TRUNCATE)')
@@ -88,8 +109,7 @@ export function getStatsData(since?: string): StatsData {
   let hourlyRows: any[]
   if (since) {
     // Convert since (ISO UTC) to UTC hourly key format for filtering
-    const sinceDate = new Date(since)
-    const sinceKey = `${sinceDate.getUTCFullYear()}-${String(sinceDate.getUTCMonth() + 1).padStart(2, '0')}-${String(sinceDate.getUTCDate()).padStart(2, '0')}-${String(sinceDate.getUTCHours()).padStart(2, '0')}`
+    const sinceKey = toHourKey(new Date(since))
     hourlyRows = db.prepare(`
       SELECT * FROM stats WHERE period = 'hourly' AND period_key >= ? ORDER BY period_key ASC
     `).all(sinceKey) as any[]
@@ -135,7 +155,6 @@ export function getTodayStats(since: string): TodayStats {
       COUNT(*) as request_count
     FROM requests
     WHERE timestamp >= ?
-      AND closed_at IS NULL
   `).get(since) as any
 
   // Per-model usage count since local midnight
@@ -143,7 +162,6 @@ export function getTodayStats(since: string): TodayStats {
     SELECT model, COUNT(*) as count
     FROM requests
     WHERE timestamp >= ?
-      AND closed_at IS NULL
       AND model IS NOT NULL AND model != ''
     GROUP BY model
     ORDER BY count DESC
