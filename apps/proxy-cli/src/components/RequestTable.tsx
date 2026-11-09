@@ -226,7 +226,7 @@ export function RequestTable({
       title: '模型',
       dataIndex: 'model',
       key: 'model',
-      width: 180,
+      width: 240,
       render: (value: string) => value ? <ModelTag model={value} /> : null,
     },
     {
@@ -347,7 +347,7 @@ export function RequestTable({
         })}
         rowKey="compositeId"
         size="small"
-        scroll={{ x: 1600, y: 'calc(100vh - 200px)' }}
+        scroll={{ x: 1660, y: 'calc(100vh - 200px)' }}
         tableLayout="auto"
         sticky
         footer={() => (
