@@ -86,9 +86,21 @@ export function RequestTable({
         ? prev.filter(r => !pendingIdsToRemove.has(r.compositeId))
         : prev
 
+      // 同一 compositeId：用新行替换旧行（headers 更新 / 无 ID 迁移的完成、中断）
+      const incoming = new Map(initialRequests.map(r => [r.compositeId, r]))
+      let replaced = false
+      base = base.map(r => {
+        const next = incoming.get(r.compositeId)
+        if (next && next !== r) {
+          replaced = true
+          return next
+        }
+        return r
+      })
+
       const existingIds = new Set(base.map(r => r.compositeId))
       const newRequests = initialRequests.filter(r => !existingIds.has(r.compositeId))
-      if (newRequests.length === 0 && pendingIdsToRemove.size === 0) return prev
+      if (newRequests.length === 0 && pendingIdsToRemove.size === 0 && !replaced) return prev
 
       // 新请求 + 保留的旧请求，按 timestamp 倒序
       const merged = [...newRequests, ...base]

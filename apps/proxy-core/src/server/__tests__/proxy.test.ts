@@ -3,6 +3,8 @@ import Fastify from 'fastify'
 import type { FastifyInstance } from 'fastify'
 import http from 'node:http'
 import Database from 'better-sqlite3'
+import { WebSocket } from 'ws'
+import { addDataClient, removeDataClient } from '../data-push'
 
 jest.mock('@utils/db', () => ({
   __esModule: true,
@@ -351,6 +353,19 @@ function mockUpstreamFetch(webStream: ReadableStream<Uint8Array>, requestId: str
   }))
 }
 
+// 挂一个假数据客户端捕获 WS 广播（request new/update 等）
+let mockWs: { readyState: number; send: jest.Mock } | undefined
+
+function attachMockWs(): any[] {
+  const sent: any[] = []
+  mockWs = {
+    readyState: WebSocket.OPEN,
+    send: jest.fn((payload: string) => { sent.push(JSON.parse(payload)) })
+  }
+  addDataClient(mockWs as any)
+  return sent
+}
+
 const proxyConfig = {
   target: 'https://upstream.example.com/apps/anthropic',
   changeOrigin: true
@@ -376,6 +391,10 @@ describe('setupProxy SSE lifecycle (G2)', () => {
 
   afterEach(async () => {
     delete process.env.CCM_STREAM_IDLE_TIMEOUT_MS
+    if (mockWs) {
+      removeDataClient(mockWs as any)
+      mockWs = undefined
+    }
     await fastify.close()
     db.close()
   })
@@ -501,5 +520,91 @@ describe('setupProxy SSE lifecycle (G2)', () => {
 
     expect(row.closed_at).toBeNull()
     expect(row.error).toBeNull()
+  })
+
+  test('上游只返回 request-id 头（无 x-request-id）：completed 行取该值，WS update 的 pendingId 指向 local 行', async () => {
+    await setupProxy(fastify, proxyConfig)
+    const upstreamId = 'req_upstream_abc'
+    jest.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(
+      createUpstreamWebStream(completeClaudeFrames),
+      { status: 200, headers: { 'content-type': 'text/event-stream', 'request-id': upstreamId } }
+    ))
+    const sent = attachMockWs()
+
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      headers: { 'content-type': 'application/json' },
+      payload: requestPayload
+    })
+
+    expect(response.statusCode).toBe(200)
+
+    const row = db.prepare('SELECT * FROM requests WHERE request_id = ?').get(upstreamId) as any
+    expect(row).toBeDefined()
+    expect(row.completed_at).not.toBeNull()
+
+    const localId = sent.find(m => m.type === 'request' && m.action === 'new')!.data.requestId
+    const update = sent.find(m => m.type === 'request' && m.action === 'update' && m.data.requestId === upstreamId)!
+    expect(update).toBeDefined()
+    expect(update.data.pendingId).toBe(`unknown-session:${localId}`)
+  })
+
+  test('Claude 模式上游 204 且 body 为 null：行落终态、WS 收到 completed、不挂起', async () => {
+    await setupProxy(fastify, proxyConfig)
+    jest.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(null, {
+      status: 204,
+      headers: { 'x-request-id': 'cloud-204-1' }
+    }))
+    const sent = attachMockWs()
+
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      headers: { 'content-type': 'application/json' },
+      payload: requestPayload
+    })
+
+    expect(response.statusCode).toBe(204)
+
+    const row = db.prepare('SELECT * FROM requests WHERE request_id = ?').get('cloud-204-1') as any
+    expect(row).toBeDefined()
+    expect(row.completed_at).not.toBeNull()
+    expect(row.closed_at).toBeNull()
+    expect(row.error).toBeNull()
+
+    const update = sent.find(m => m.type === 'request' && m.action === 'update' && m.data.requestId === 'cloud-204-1')
+    expect(update).toBeDefined()
+  })
+
+  test('OpenAI 模式上游 204 且 body 为 null：行落终态、WS 收到 completed、不挂起', async () => {
+    db.prepare(`
+      INSERT INTO providers (name, base_url, api_key, model, provider, is_default, is_openai_compatible, auth_style)
+      VALUES ('openai-test', 'https://openai.example.com/v1', 'k', 'gpt-4o', 'openai', 1, 1, 'bearer')
+    `).run()
+
+    await setupProxy(fastify, proxyConfig)
+    jest.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(null, {
+      status: 204,
+      headers: { 'x-request-id': 'cloud-204-openai' }
+    }))
+    const sent = attachMockWs()
+
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      headers: { 'content-type': 'application/json' },
+      payload: requestPayload
+    })
+
+    expect(response.statusCode).toBe(204)
+
+    const row = db.prepare('SELECT * FROM requests WHERE request_id = ?').get('cloud-204-openai') as any
+    expect(row).toBeDefined()
+    expect(row.completed_at).not.toBeNull()
+    expect(row.closed_at).toBeNull()
+
+    const update = sent.find(m => m.type === 'request' && m.action === 'update' && m.data.requestId === 'cloud-204-openai')
+    expect(update).toBeDefined()
   })
 })

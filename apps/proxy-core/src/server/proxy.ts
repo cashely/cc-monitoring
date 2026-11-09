@@ -442,7 +442,7 @@ export async function setupProxy(
         request.log.info(`response status: ${response.status}`)
 
         // Extract cloud request ID
-        const cloudRequestId = response.headers.get('x-request-id') || request.id
+        const cloudRequestId = response.headers.get('x-request-id') || response.headers.get('request-id') || request.id
 
         // Check response type
         const contentType = response.headers.get('content-type') || ''
@@ -477,6 +477,17 @@ export async function setupProxy(
           const elapsed = Date.now() - startTime
           request.log.info(`json response (openai): ${cloudRequestId} ${response.status} (${elapsed}ms)`)
           reply.code(response.status).headers({ 'Content-Type': 'application/json' }).send(claudeResponseBody)
+          return
+        }
+
+        // JSON 响应但无 body（204/网关空响应）：落终态并回空响应
+        if (isJSON && !isSSE) {
+          await rec.complete({
+            cloudRequestId: cloudRequestId !== request.id ? cloudRequestId : undefined,
+            statusCode: response.status,
+            headers: Object.fromEntries(response.headers)
+          })
+          reply.code(response.status).headers(Object.fromEntries(response.headers)).send('')
           return
         }
 
@@ -556,6 +567,16 @@ export async function setupProxy(
 
           // Pipe: OpenAI SSE → Transform → Claude SSE → Client
           nodeStream.pipe(transformStream).pipe(reply.raw)
+        } else {
+          // 无 body 的响应：落终态并收尾客户端连接
+          await rec.complete({
+            cloudRequestId: cloudRequestId !== request.id ? cloudRequestId : undefined,
+            statusCode: response.status,
+            headers: Object.fromEntries(response.headers)
+          })
+          if (reply.raw.writableEnded === false && !reply.raw.destroyed) {
+            reply.raw.end()
+          }
         }
 
         return
@@ -579,7 +600,7 @@ export async function setupProxy(
       request.log.info(`response status: ${response.status}`)
 
       // Extract cloud request ID from response header
-      const cloudRequestId = response.headers.get('x-request-id') || request.id
+      const cloudRequestId = response.headers.get('x-request-id') || response.headers.get('request-id') || request.id
 
       // Check response type: SSE stream or JSON
       const contentType = response.headers.get('content-type') || ''
@@ -609,6 +630,19 @@ export async function setupProxy(
         reply.code(response.status)
         reply.headers(Object.fromEntries(response.headers))
         reply.send(responseBody)
+        return
+      }
+
+      // JSON 响应但无 body（204/网关空响应）：落终态并回空响应
+      if (isJSON && !isSSE) {
+        await rec.complete({
+          cloudRequestId: cloudRequestId !== request.id ? cloudRequestId : undefined,
+          statusCode: response.status,
+          headers: Object.fromEntries(response.headers)
+        })
+        reply.code(response.status)
+        reply.headers(Object.fromEntries(response.headers))
+        reply.send('')
         return
       }
 
@@ -685,6 +719,16 @@ export async function setupProxy(
 
         // Pipe: Aliyun -> Claude Code
         nodeStream.pipe(reply.raw)
+      } else {
+        // 无 body 的响应：落终态并收尾客户端连接
+        await rec.complete({
+          cloudRequestId: cloudRequestId !== request.id ? cloudRequestId : undefined,
+          statusCode: response.status,
+          headers: Object.fromEntries(response.headers)
+        })
+        if (reply.raw.writableEnded === false && !reply.raw.destroyed) {
+          reply.raw.end()
+        }
       }
 
     } catch (err) {

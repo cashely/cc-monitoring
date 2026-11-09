@@ -151,7 +151,7 @@ export async function setupChatRoute(
     request.log.info(`[chat] response status: ${response.status}`)
 
     // Extract cloud request ID
-    const cloudRequestId = response.headers.get('x-request-id') || request.id
+    const cloudRequestId = response.headers.get('x-request-id') || response.headers.get('request-id') || request.id
 
     // Check response type
     const contentType = response.headers.get('content-type') || ''
@@ -193,7 +193,7 @@ export async function setupChatRoute(
               // Record each loop iteration as a separate request
               await recordIteration({
                 sessionId,
-                localRequestId: r.headers.get('x-request-id') || `loop_${request.id}_${Date.now()}`,
+                localRequestId: r.headers.get('x-request-id') || r.headers.get('request-id') || `loop_${request.id}_${Date.now()}`,
                 timestamp: new Date().toISOString(),
                 apiKey,
                 proxyApiKey,
@@ -290,7 +290,7 @@ export async function setupChatRoute(
                 body: JSON.stringify(b),
                 signal: createTimeoutSignal(300000, clientSignal)
               })
-              const loopRequestId = r.headers.get('x-request-id') || `loop_${request.id}_${Date.now()}`
+              const loopRequestId = r.headers.get('x-request-id') || r.headers.get('request-id') || `loop_${request.id}_${Date.now()}`
               return { response: r, requestId: loopRequestId }
             },
             streamAndParse: async (loopResponse) => {
