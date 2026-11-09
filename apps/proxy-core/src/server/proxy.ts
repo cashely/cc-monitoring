@@ -5,7 +5,7 @@ import { ProxyConfig } from '../types/config.js'
 import { loadConfig } from '../config/index.js'
 import { createRequestRecorder, isStreamCompleteEvents, type RequestRecorder, type RecordedRequest } from '../utils/request-writer.js'
 import { cleanOldRequestsDB, interruptStaleRequestsOnStartup } from '../utils/request-writer.js'
-import { pushNewRequest, broadcastToDataClients } from './data-push.js'
+import { pushNewRequest, broadcastToDataClients, clearStatsNotify, scheduleStatsNotify } from './data-push.js'
 import { initDatabase, closeDatabase, getDatabase } from '../utils/db.js'
 import { recoverCrashedTasks } from '../utils/learn-tasks-db.js'
 import { getActiveProvider } from '../utils/providers-db.js'
@@ -290,7 +290,11 @@ export async function setupProxy(
   // 收割周期化：每 60s 扫 >2min 仍 pending 的行
   const staleReaperTimer = setInterval(() => {
     try {
-      interruptStaleRequestsOnStartup(2 * 60000)
+      const { completed, interrupted } = interruptStaleRequestsOnStartup(2 * 60000)
+      // 收割到终态行时通知前端重取 stats（trailing 合并）
+      if (completed + interrupted > 0) {
+        scheduleStatsNotify()
+      }
     } catch (err) {
       console.error('Stale request reaping failed:', err)
     }
@@ -345,6 +349,7 @@ export async function setupProxy(
     clearInterval(statsTimer)
     clearInterval(cleanupTimer)
     clearInterval(staleReaperTimer)
+    clearStatsNotify()
     await mcpManager.close()
     closeDatabase()
   })

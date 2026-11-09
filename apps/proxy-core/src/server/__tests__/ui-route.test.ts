@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import Fastify from 'fastify'
+import * as statsAggregator from '@utils/stats-aggregator'
 import { setupUiRoutes } from '../ui-route'
 
 // Mock PM2 utils
@@ -432,6 +433,59 @@ describe('setupUiRoutes', () => {
       const body = JSON.parse(response.body)
       expect(body.success).toBe(false)
       expect(body.error).toContain('Disk write failed')
+    })
+  })
+
+  describe('GET /ui/api/stats', () => {
+    let aggregateSpy: jest.SpyInstance
+    let getStatsSpy: jest.SpyInstance
+
+    beforeEach(() => {
+      aggregateSpy = jest.spyOn(statsAggregator, 'aggregateStats').mockImplementation(() => {})
+      getStatsSpy = jest.spyOn(statsAggregator, 'getStatsData').mockReturnValue({ hourly: {}, lastUpdated: null })
+    })
+
+    afterEach(() => {
+      aggregateSpy.mockRestore()
+      getStatsSpy.mockRestore()
+    })
+
+    it('读前触发 aggregateStats 并返回 200', async () => {
+      const response = await server.inject({ method: 'GET', url: '/ui/api/stats' })
+
+      expect(aggregateSpy).toHaveBeenCalledTimes(1)
+      expect(aggregateSpy).toHaveBeenCalledWith(7)
+      expect(getStatsSpy).toHaveBeenCalledTimes(1)
+      // 必须先聚合再读取
+      expect(aggregateSpy.mock.invocationCallOrder[0]).toBeLessThan(
+        getStatsSpy.mock.invocationCallOrder[0]
+      )
+      expect(response.statusCode).toBe(200)
+      expect(JSON.parse(response.body)).toEqual({ hourly: {}, lastUpdated: null })
+    })
+
+    it('聚合失败只记录不阻断读取，仍返回 200', async () => {
+      aggregateSpy.mockImplementation(() => { throw new Error('agg boom') })
+
+      // inject 请求的 request.log 来自 server.log.child()，替换为可观测的 mock
+      const logError = jest.fn()
+      jest.spyOn(server.log, 'child').mockReturnValue({
+        level: 'info',
+        fatal: jest.fn(),
+        error: logError,
+        warn: jest.fn(),
+        info: jest.fn(),
+        debug: jest.fn(),
+        trace: jest.fn(),
+        child: jest.fn()
+      } as any)
+
+      const response = await server.inject({ method: 'GET', url: '/ui/api/stats' })
+
+      expect(response.statusCode).toBe(200)
+      expect(getStatsSpy).toHaveBeenCalledTimes(1)
+      // 聚合异常必须记录日志
+      expect(logError).toHaveBeenCalledTimes(1)
     })
   })
 })

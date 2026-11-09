@@ -21,6 +21,15 @@ export interface TodayStats {
   models: Record<string, number>
 }
 
+// 共用 token 聚合列：小时聚合与今日 totals 同口径，避免列漂移
+const TOKEN_AGG_COLUMNS = `
+  SUM(input_tokens) as input_tokens,
+  SUM(output_tokens) as output_tokens,
+  SUM(cache_read_tokens) as cache_read_tokens,
+  SUM(cache_creation_tokens) as cache_creation_tokens,
+  COUNT(*) as request_count
+`
+
 // Build the UTC hourly key ('YYYY-MM-DD-HH') used as stats.period_key
 function toHourKey(date: Date): string {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}-${String(date.getUTCHours()).padStart(2, '0')}`
@@ -46,11 +55,7 @@ export function aggregateStats(maxDays?: number): void {
   const hourlyRows = db.prepare(`
     SELECT
       strftime('%Y-%m-%d-%H', timestamp) as hour,
-      SUM(input_tokens) as input_tokens,
-      SUM(output_tokens) as output_tokens,
-      SUM(cache_read_tokens) as cache_read_tokens,
-      SUM(cache_creation_tokens) as cache_creation_tokens,
-      COUNT(*) as request_count
+      ${TOKEN_AGG_COLUMNS}
     FROM requests
     WHERE timestamp >= ?
     GROUP BY hour
@@ -147,12 +152,9 @@ export function getTodayStats(since: string): TodayStats {
   const db = initDatabase()
 
   // Totals: SUM tokens + COUNT requests since local midnight
+  // 多选的 cache_creation_tokens 在返回映射时忽略
   const totalRow = db.prepare(`
-    SELECT
-      SUM(input_tokens) as input_tokens,
-      SUM(output_tokens) as output_tokens,
-      SUM(cache_read_tokens) as cache_read_tokens,
-      COUNT(*) as request_count
+    SELECT ${TOKEN_AGG_COLUMNS}
     FROM requests
     WHERE timestamp >= ?
   `).get(since) as any
