@@ -171,6 +171,76 @@ describe('request-writer', () => {
     expect(summary.pendingId).toBe(`${meta.sessionId}:${meta.localRequestId}`)
   })
 
+  it('complete() migration leaves pre-existing events of another session with the same localRequestId untouched', async () => {
+    const meta = makeMeta('residue')
+    counter += 1
+    const cloudId = `cloud_${counter}`
+    const oldSession = 'sess_old_residue'
+
+    // recorder 创建之前：相同 localRequestId、不同 session_id 的历史残留事件
+    const preIns = getDatabase().prepare(
+      'INSERT INTO response_events (request_id, session_id, event_index, event_data) VALUES (?, ?, ?, ?)'
+    )
+    preIns.run(meta.localRequestId, oldSession, 0, '"old0"')
+    preIns.run(meta.localRequestId, oldSession, 1, '"old1"')
+
+    const rec = createRequestRecorder(meta)
+    await rec.pending()
+    for (let i = 0; i < 3; i++) {
+      rec.appendEvent({ type: 'chunk', seq: i })
+    }
+    await rec.complete({ cloudRequestId: cloudId, statusCode: 200 })
+
+    // 预写事件 request_id 不变（未被迁走）
+    const staleRows = getEventRows(meta.localRequestId, oldSession)
+    expect(staleRows).toHaveLength(2)
+    expect(staleRows.map(r => [r.request_id, r.event_index])).toEqual([
+      [meta.localRequestId, 0],
+      [meta.localRequestId, 1]
+    ])
+
+    // 本 recorder 的事件迁到 cloudId，localId 下无事件残留
+    expect(getEventRows(meta.localRequestId, meta.sessionId)).toHaveLength(0)
+    const moved = getEventRows(cloudId, meta.sessionId)
+    expect(moved).toHaveLength(3)
+    expect(moved.map(r => r.event_index)).toEqual([0, 1, 2])
+  })
+
+  it('complete() migration leaves same-session historical events with the same localRequestId untouched', async () => {
+    const meta = makeMeta('sameresidue')
+    counter += 1
+    const cloudId = `cloud_${counter}`
+
+    // recorder 创建之前：相同 localRequestId、相同 session_id 的历史残留
+    // （模拟 req-N 计数器复用后同 session 残留）。用不与新请求重叠的 event_index，
+    // 避免唯一索引 + INSERT OR IGNORE 干扰本用例对迁移行为的验证。
+    const preIns = getDatabase().prepare(
+      'INSERT INTO response_events (request_id, session_id, event_index, event_data) VALUES (?, ?, ?, ?)'
+    )
+    preIns.run(meta.localRequestId, meta.sessionId, 50, '"old0"')
+    preIns.run(meta.localRequestId, meta.sessionId, 51, '"old1"')
+
+    const rec = createRequestRecorder(meta)
+    await rec.pending()
+    for (let i = 0; i < 3; i++) {
+      rec.appendEvent({ type: 'chunk', seq: i })
+    }
+    await rec.complete({ cloudRequestId: cloudId, statusCode: 200 })
+
+    // 预写的 2 行 request_id 仍为 localRequestId（未被迁走）
+    const staleRows = getEventRows(meta.localRequestId, meta.sessionId)
+    expect(staleRows).toHaveLength(2)
+    expect(staleRows.map(r => [r.request_id, r.event_index])).toEqual([
+      [meta.localRequestId, 50],
+      [meta.localRequestId, 51]
+    ])
+
+    // recorder 自己的事件迁到 cloudId
+    const moved = getEventRows(cloudId, meta.sessionId)
+    expect(moved).toHaveLength(3)
+    expect(moved.map(r => r.event_index)).toEqual([0, 1, 2])
+  })
+
   it('fail() updates the pending row status/error/closed_at and pushes completed', async () => {
     const meta = makeMeta('fail')
     const rec = createRequestRecorder(meta)

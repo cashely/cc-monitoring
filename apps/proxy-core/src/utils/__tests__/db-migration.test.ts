@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3'
-import { applySchemaV2, applySchemaV3, applySchemaV9 } from '../db.js'
+import { applySchemaV2, applySchemaV3, applySchemaV9, applySchemaV12 } from '../db.js'
 
 describe('Schema Migration V2', () => {
   let db: Database.Database
@@ -135,5 +135,107 @@ describe('Schema Migration V2', () => {
     const columns = db.prepare("PRAGMA table_info(providers)").all() as { name: string }[]
     const authStyleCols = columns.filter(c => c.name === 'auth_style')
     expect(authStyleCols.length).toBe(1)
+  })
+})
+
+describe('Schema Migration V12', () => {
+  let db: Database.Database
+
+  beforeEach(() => {
+    db = new Database(':memory:')
+    // 最小化构造 V12 所需的两张表（与生产列名一致）
+    db.exec(`
+      CREATE TABLE requests (request_id TEXT PRIMARY KEY)
+    `)
+    db.exec(`
+      CREATE TABLE response_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        request_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        event_index INTEGER NOT NULL,
+        event_type TEXT,
+        event_data TEXT NOT NULL
+      )
+    `)
+    db.exec(`
+      CREATE INDEX idx_response_events_request
+      ON response_events(request_id, session_id, event_index)
+    `)
+  })
+
+  afterEach(() => {
+    db.close()
+  })
+
+  test('dedups repeated triples keeping MIN(id), deletes orphan events, creates unique index', () => {
+    db.prepare('INSERT INTO requests (request_id) VALUES (?)').run('req-ok')
+
+    const ins = db.prepare(
+      'INSERT INTO response_events (request_id, session_id, event_index, event_data) VALUES (?, ?, ?, ?)'
+    )
+    // 三元组 (req-ok, sess-a, 0) 重复 3 行 → id 1,2,3
+    ins.run('req-ok', 'sess-a', 0, 'a1')
+    ins.run('req-ok', 'sess-a', 0, 'a2')
+    ins.run('req-ok', 'sess-a', 0, 'a3')
+    // 三元组 (req-ok, sess-a, 1) 重复 2 行 → id 4,5
+    ins.run('req-ok', 'sess-a', 1, 'b1')
+    ins.run('req-ok', 'sess-a', 1, 'b2')
+    // 不重复组 → id 6
+    ins.run('req-ok', 'sess-a', 2, 'c')
+    // 孤儿事件（requests 无 req-gone）→ id 7,8
+    ins.run('req-gone', 'sess-a', 0, 'o1')
+    ins.run('req-gone', 'sess-a', 0, 'o2')
+
+    applySchemaV12(db)
+
+    // 不存在任何重复三元组
+    const dupGroups = db.prepare(`
+      SELECT COUNT(*) AS c FROM (
+        SELECT 1 FROM response_events
+        GROUP BY request_id, session_id, event_index
+        HAVING COUNT(*) > 1
+      )
+    `).get() as { c: number }
+    expect(dupGroups.c).toBe(0)
+
+    // 只剩三元组 A、B、c 各一行，孤儿删光
+    expect(
+      (db.prepare('SELECT COUNT(*) AS c FROM response_events').get() as { c: number }).c
+    ).toBe(3)
+    expect(
+      (db.prepare("SELECT COUNT(*) AS c FROM response_events WHERE request_id = 'req-gone'").get() as { c: number }).c
+    ).toBe(0)
+
+    // 每组保留 MIN(id)
+    const ids = (db.prepare('SELECT id FROM response_events ORDER BY id').all() as { id: number }[])
+      .map(r => r.id)
+    expect(ids).toEqual([1, 4, 6])
+
+    // 唯一索引存在
+    const indexes = db.prepare('PRAGMA index_list(response_events)').all() as { name: string; unique: number }[]
+    const uq = indexes.find(i => i.name === 'uq_response_events')
+    expect(uq).toBeTruthy()
+    expect(uq?.unique).toBe(1)
+
+    // 唯一约束硬守：再插同三元组必须报错
+    expect(() => ins.run('req-ok', 'sess-a', 0, 'dup')).toThrow()
+  })
+
+  test('applySchemaV12 is idempotent', () => {
+    db.prepare('INSERT INTO requests (request_id) VALUES (?)').run('req-ok')
+    db.prepare(
+      'INSERT INTO response_events (request_id, session_id, event_index, event_data) VALUES (?, ?, ?, ?)'
+    ).run('req-ok', 'sess-a', 0, 'a')
+
+    applySchemaV12(db)
+    // 再跑一次不报错，行数与唯一索引状态保持
+    expect(() => applySchemaV12(db)).not.toThrow()
+    expect(
+      (db.prepare('SELECT COUNT(*) AS c FROM response_events').get() as { c: number }).c
+    ).toBe(1)
+
+    const indexes = db.prepare('PRAGMA index_list(response_events)').all() as { name: string }[]
+    const uqIndexes = indexes.filter(i => i.name === 'uq_response_events')
+    expect(uqIndexes).toHaveLength(1)
   })
 })

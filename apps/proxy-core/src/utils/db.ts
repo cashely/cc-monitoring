@@ -97,6 +97,11 @@ export function initDatabase(): Database.Database {
     db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (11)').run()
   }
 
+  if (currentVersion < 12) {
+    applySchemaV12(db)
+    db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (12)').run()
+  }
+
   return db
 }
 
@@ -341,6 +346,71 @@ export function applySchemaV11(db: Database.Database) {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_learn_tasks_running_slug
       ON learn_tasks(slug) WHERE status = 'running'
   `)
+}
+
+export function applySchemaV12(db: Database.Database) {
+  // response_events 历史上存在 (request_id, session_id, event_index) 三元组重复行
+  // （request_id 计数器重启复用所致）和 requests 表无对应行的孤儿事件；清理后加
+  // 唯一索引硬守。生产库约 800 万行：先一次性把待删行号收集进临时表，再按主键
+  // 分批删除（每批 5000 行、独立事务），避免单个巨型事务长时间锁库。
+  //
+  // 注意：不能用 `GROUP BY ... HAVING COUNT(*) > 1 AND id != MIN(id)` 直接选行——
+  // SQLite 裸列 id 在该计划下取 MIN(id) 所在行，HAVING 恒假，实测删除 0 行。
+  const batchSize = 5000
+
+  db.exec('DROP TABLE IF EXISTS temp.ids_to_purge')
+  db.exec('CREATE TEMP TABLE ids_to_purge (id INTEGER PRIMARY KEY)')
+
+  // a) 去重：每组 (request_id, session_id, event_index) 保留 MIN(id)，其余入临时表
+  db.prepare(`
+    INSERT INTO ids_to_purge
+    SELECT id FROM response_events
+    WHERE id NOT IN (
+      SELECT MIN(id) FROM response_events
+      GROUP BY request_id, session_id, event_index
+    )
+  `).run()
+  purgeResponseEventsBatched(db, batchSize)
+
+  // b) 孤儿事件：requests 表中无对应 request_id
+  db.prepare(`
+    INSERT INTO ids_to_purge
+    SELECT re.id FROM response_events re
+    WHERE NOT EXISTS (
+      SELECT 1 FROM requests r WHERE r.request_id = re.request_id
+    )
+  `).run()
+  purgeResponseEventsBatched(db, batchSize)
+
+  db.exec('DROP TABLE IF EXISTS temp.ids_to_purge')
+
+  // c) 唯一索引（IF NOT EXISTS，幂等）
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_response_events
+      ON response_events(request_id, session_id, event_index)
+  `)
+}
+
+// 按临时表 ids_to_purge 收集的行号分批删除 response_events；每批同时剪除临时表中
+// 已处理的行号，整批包在一个事务里，循环直到没有可删行。
+function purgeResponseEventsBatched(db: Database.Database, batchSize: number): void {
+  const deleteEvents = db.prepare(`
+    DELETE FROM response_events
+    WHERE id IN (SELECT id FROM ids_to_purge ORDER BY id LIMIT ?)
+  `)
+  const pruneTemp = db.prepare(`
+    DELETE FROM ids_to_purge
+    WHERE id IN (SELECT id FROM ids_to_purge ORDER BY id LIMIT ?)
+  `)
+  const runBatch = db.transaction((): number => {
+    const info = deleteEvents.run(batchSize)
+    pruneTemp.run(batchSize)
+    return info.changes
+  })
+
+  while (true) {
+    if (runBatch() === 0) break
+  }
 }
 
 export function closeDatabase() {

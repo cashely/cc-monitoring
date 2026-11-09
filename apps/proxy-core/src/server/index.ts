@@ -1,5 +1,6 @@
 import Fastify from 'fastify'
 import type { FastifyInstance, FastifyBaseLogger } from 'fastify'
+import { nanoid } from 'nanoid'
 import { loadConfig } from '../config/index.js'
 import { createLogger } from '../logger/index.js'
 import { configureDbPath } from '../utils/db.js'
@@ -8,7 +9,6 @@ import { setupProxy } from './proxy.js'
 import { setupUiRoutes } from './ui-route.js'
 import { setupChatRoute } from './chat-route.js'
 import { setupDocsRoutes } from './docs-route.js'
-import { requestIdMiddleware } from './middleware/request-id.js'
 
 export async function createServer(): Promise<FastifyInstance> {
   const config = await loadConfig()
@@ -20,10 +20,11 @@ export async function createServer(): Promise<FastifyInstance> {
   const fastify = Fastify({
     logger: logger as unknown as FastifyBaseLogger,
     trustProxy: true,
-    requestTimeout: 310000
+    requestTimeout: 310000,
+    genReqId: () => nanoid(16),
+    requestIdHeader: 'x-request-id'
   })
 
-  fastify.register(requestIdMiddleware)
   await setupUiRoutes(fastify)  // UI routes registered BEFORE proxy to avoid being proxied
   await setupProxy(fastify, config.proxy)
   await setupChatRoute(fastify, config.proxy)  // MCP-enhanced chat endpoint

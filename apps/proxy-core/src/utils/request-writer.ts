@@ -115,7 +115,7 @@ function flushEventBatch(
   ensureStmtCacheValid(db)
   if (!insertEventStmt) {
     insertEventStmt = db.prepare(
-      'INSERT INTO response_events (request_id, session_id, event_index, event_type, event_data) VALUES (?, ?, ?, ?, ?)'
+      'INSERT OR IGNORE INTO response_events (request_id, session_id, event_index, event_type, event_data) VALUES (?, ?, ?, ?, ?)'
     )
   }
   for (let i = 0; i < batch.length; i++) {
@@ -358,6 +358,14 @@ export function createRequestRecorder(meta: RecordedRequest): RequestRecorder {
   const startTime = Date.now()
   let pendingCalled = false
 
+  // recorder 生命周期开始前的事件行下界。complete() 把事件从 localRequestId 迁到
+  // cloudRequestId 时只允许迁移 id 大于它的行：request_id（req-N 计数器）在进程
+  // 重启后可能复用，同 localRequestId 的历史残留事件属于别的请求，不能被一起迁走。
+  const startRow = getDatabase()
+    .prepare('SELECT MAX(id) AS m FROM response_events')
+    .get() as { m: number | null }
+  const startEventRowId = startRow.m ?? 0
+
   function flushRemaining(): void {
     if (eventBatch.length > 0) {
       flushEventBatch(meta.sessionId, meta.localRequestId, eventBatch, eventIndex - eventBatch.length)
@@ -445,9 +453,11 @@ export function createRequestRecorder(meta: RecordedRequest): RequestRecorder {
 
       if (finalId !== meta.localRequestId) {
         const replace = db.transaction(() => {
+          // id > startEventRowId：只迁本 recorder 创建后写入的事件，
+          // 不迁同 localRequestId 的历史残留事件
           db.prepare(
-            'UPDATE response_events SET request_id = ? WHERE request_id = ? AND session_id = ?'
-          ).run(finalId, meta.localRequestId, meta.sessionId)
+            'UPDATE response_events SET request_id = ? WHERE request_id = ? AND session_id = ? AND id > ?'
+          ).run(finalId, meta.localRequestId, meta.sessionId, startEventRowId)
           writeCompletedRow({
             meta, requestId: finalId, statusCode, responseTime, headers, usage, completedAt
           })

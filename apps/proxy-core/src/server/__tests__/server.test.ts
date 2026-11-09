@@ -122,23 +122,28 @@ describe('createServer', () => {
     expect(typeof response.statusCode).toBe('number')
   })
 
-  it('propagates request ID from x-request-id header', async () => {
+  it('uses x-request-id header value as request id when header present', async () => {
     server = await createServer()
+    server.get('/request-id-echo', async (request) => ({ id: request.id }))
     const response = await server.inject({
       method: 'GET',
-      url: '/test',
-      headers: { 'x-request-id': 'custom-id-123' }
+      url: '/request-id-echo',
+      headers: { 'x-request-id': 'my-trace-123' }
     })
-    expect(response).toBeDefined()
+    expect(JSON.parse(response.body).id).toBe('my-trace-123')
   })
 
-  it('handles request without x-request-id header', async () => {
+  it('generates non-default nanoid request id without header, unique per request', async () => {
     server = await createServer()
-    const response = await server.inject({
-      method: 'GET',
-      url: '/test'
-    })
-    expect(response).toBeDefined()
+    server.get('/request-id-echo', async (request) => ({ id: request.id }))
+    const response1 = await server.inject({ method: 'GET', url: '/request-id-echo' })
+    const response2 = await server.inject({ method: 'GET', url: '/request-id-echo' })
+    const id1 = JSON.parse(response1.body).id
+    const id2 = JSON.parse(response2.body).id
+    expect(id1).not.toMatch(/^req-\d+$/)
+    expect(id2).not.toMatch(/^req-\d+$/)
+    expect(id1).toHaveLength(16)
+    expect(id1).not.toBe(id2)
   })
 
   it('server closes cleanly', async () => {
