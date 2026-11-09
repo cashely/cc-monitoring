@@ -688,6 +688,10 @@ export async function cleanOldRequestsDB(daysToKeep = 7): Promise<void> {
   // Delete response_events first (foreign data), then requests
   db.prepare(`DELETE FROM response_events WHERE request_id IN (SELECT request_id FROM requests WHERE timestamp < ?)`).run(cutoff)
   db.prepare(`DELETE FROM requests WHERE timestamp < ?`).run(cutoff)
+
+  // 例行还页：auto_vacuum 未开启时为 no-op；经 ccm vacuum 开启
+  // INCREMENTAL 后，删除产生的空闲页在此廉价归还文件系统。
+  db.pragma('incremental_vacuum')
 }
 
 // 启动时回收上次进程遗留的僵尸 SSE 行：未完成、未关闭且超龄，逐行分流

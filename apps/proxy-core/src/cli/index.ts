@@ -172,4 +172,28 @@ program.command('repair-requests')
     await repairCommand()
   })
 
+program.command('vacuum')
+  .description('回收 SQLite 空闲磁盘空间（首次执行将全库重写，耗时较长）')
+  .action(async () => {
+    const { loadConfig } = await import('../config/index.js')
+    const { configureDbPath, initDatabase } = await import('../utils/db.js')
+    const { vacuumDatabase } = await import('../utils/db-maintenance.js')
+    const config = await loadConfig()
+    if (config.storage?.path) {
+      configureDbPath(config.storage.path)
+    }
+    console.log('正在回收 SQLite 空闲磁盘空间，若数据库较大请耐心等待...')
+    const db = initDatabase()
+    const result = vacuumDatabase(db)
+    const mbBefore = (result.pagesBefore * result.pageSize) / 1048576
+    const mbAfter = (result.pagesAfter * result.pageSize) / 1048576
+    if (result.autoVacuumBefore !== 2) {
+      console.log('已开启 auto_vacuum=INCREMENTAL 并完成全库重写')
+    } else {
+      console.log('incremental 回收完成')
+    }
+    console.log(`回收前：${mbBefore.toFixed(1)} MB`)
+    console.log(`回收后：${mbAfter.toFixed(1)} MB`)
+  })
+
 program.parse()
