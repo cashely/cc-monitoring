@@ -55,6 +55,13 @@ function truncateSessionId(sessionId: string, length: number): string {
   return sessionId.length > length ? `${sessionId.slice(0, length)}...` : sessionId
 }
 
+type RequestRow = RequestSummary & {
+  sequence?: number
+  children?: RequestRow[]
+  __isSessionParent?: boolean
+  __sessionCount?: number
+}
+
 export function RequestTable({
   initialRequests,
   onCompare,
@@ -67,6 +74,8 @@ export function RequestTable({
   const [displayedCount, setDisplayedCount] = useState(PAGE_SIZE)
   const [loadingMore, setLoadingMore] = useState(false)
   const [hasMore, setHasMore] = useState(true)
+  // 树形表格受控展开，默认全折叠
+  const [expandedRowKeys, setExpandedRowKeys] = useState<string[]>([])
   // stale 判定依赖当前时间，30s 驱动一次重渲染
   const [, setTick] = useState(0)
   useEffect(() => {
@@ -135,6 +144,37 @@ export function RequestTable({
 
   const displayedRequests = requestsWithSequence.slice(0, displayedCount)
 
+  // 按 sessionId 聚合为树形 dataSource。输入已按 timestamp 倒序，
+  // Map 保持 session 首次出现顺序（即最新请求所在位置），组内不重新排序
+  const { treeData, childIds } = useMemo(() => {
+    const groups = new Map<string, RequestRow[]>()
+    for (const req of displayedRequests) {
+      const group = groups.get(req.sessionId)
+      if (group) {
+        group.push(req)
+      } else {
+        groups.set(req.sessionId, [req])
+      }
+    }
+
+    const rows: RequestRow[] = []
+    const childIds = new Set<string>()
+    groups.forEach(group => {
+      if (group.length >= 2) {
+        group.forEach(r => childIds.add(r.compositeId))
+        rows.push({
+          ...group[0],
+          __isSessionParent: true,
+          __sessionCount: group.length,
+          children: group,
+        })
+      } else {
+        rows.push(group[0])
+      }
+    })
+    return { treeData: rows, childIds }
+  }, [displayedRequests])
+
   const handleLoadMore = useCallback(async () => {
     if (loadingMore || !hasMore) return
 
@@ -163,10 +203,11 @@ export function RequestTable({
     {
       title: '',
       key: 'checkbox',
-      width: 40,
+      width: 56,
       fixed: 'left',
       align: 'center',
-      render: (_, record) => (
+      render: (_, record) =>
+        record.__isSessionParent ? null : (
         <Checkbox
           checked={selectedRowKeys.includes(record.compositeId)}
           onClick={(e) => e.stopPropagation()}
@@ -179,7 +220,7 @@ export function RequestTable({
             }
           }}
         />
-      ),
+        ),
     },
     {
       title: 'Session ID',
@@ -187,6 +228,10 @@ export function RequestTable({
       key: 'sessionId',
       width: 200,
       render: (value: string, record: any) => {
+        // 父行优先判定（父行 spread 了最新子请求，compositeId 与之相同）；
+        // 其余 compositeId 命中 childIds 的才是子行 → 留空
+        const isParent = !!record.__isSessionParent
+        if (!isParent && childIds.has(record.compositeId)) return null
         const sessionColor = getSessionColor(value)
         return (
           <div className="flex items-center gap-2" style={{ minWidth: 0 }}>
@@ -211,6 +256,11 @@ export function RequestTable({
             >
               {truncateSessionId(value, 16)}
             </span>
+            {isParent && (
+              <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+                ×{record.__sessionCount}
+              </span>
+            )}
           </div>
         )
       },
@@ -349,15 +399,30 @@ export function RequestTable({
   return (
     <div className="flex flex-col">
       <Table
-        dataSource={displayedRequests}
+        dataSource={treeData}
         columns={columns}
         pagination={false}
         loading={externalLoading}
-        onRow={(record) => ({
-          onClick: () => onRowClick(record),
+        expandable={{
+          expandedRowKeys,
+          onExpandedRowsChange: (keys) => setExpandedRowKeys(keys.map(k => String(k))),
+        }}
+        onRow={(record: RequestRow) => ({
+          onClick: () => {
+            if (record.__isSessionParent) {
+              const key = `session::${record.sessionId}`
+              setExpandedRowKeys(prev =>
+                prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]
+              )
+            } else {
+              onRowClick(record)
+            }
+          },
           className: 'cursor-pointer',
         })}
-        rowKey="compositeId"
+        rowKey={(record: RequestRow) =>
+          record.__isSessionParent ? `session::${record.sessionId}` : record.compositeId
+        }
         size="small"
         scroll={{ x: 1660, y: 'calc(100vh - 200px)' }}
         tableLayout="auto"

@@ -14,7 +14,8 @@ vi.mock('./RequestCompareModal', () => ({
 function makeSummary(id: string): RequestSummary {
   return {
     requestId: id,
-    sessionId: 's',
+    // 默认每条一个 session → 扁平行，供 compare/勾选类测试直接访问 checkbox
+    sessionId: `sess-${id}`,
     compositeId: id,
     timestamp: '2026-06-29T10:00:00Z',
     method: 'POST',
@@ -28,7 +29,7 @@ function makeSummaryInSession(id: string, sessionId: string): RequestSummary {
   return { ...makeSummary(id), sessionId }
 }
 
-// RequestTable 为扁平表格，每行 checkbox 在对应 data-row-key 的 tr 内
+// checkbox 在对应 data-row-key 的 tr 内（扁平行 / 展开后的子行）
 function rowCheckbox(id: string): HTMLInputElement {
   const row = document.querySelector(`tr[data-row-key="${id}"]`)
   return row!.querySelector('input[type="checkbox"]') as HTMLInputElement
@@ -100,7 +101,7 @@ describe('RequestHistory compare', () => {
 })
 
 describe('RequestHistory session grouping', () => {
-  it('shows sessionId on each of its rows', () => {
+  it('shows sessionId on parent and flat row; child session cells stay empty', () => {
     render(
       <RequestHistory
         requests={[
@@ -110,22 +111,38 @@ describe('RequestHistory session grouping', () => {
         ]}
       />
     )
-    // s1 关联两行，s2 关联一行
-    expect(screen.getAllByText('s1').length).toBe(2)
+    // 默认折叠：s1 只出现在父行一次（带 ×2 计数），s2 为扁平行
+    expect(screen.getAllByText('s1')).toHaveLength(1)
     expect(screen.getByText('s2')).toBeInTheDocument()
+    expect(
+      document.querySelector('tr[data-row-key="session::s1"]')
+    ).toHaveTextContent('×2')
+
+    // 展开后子行 Session ID 列留空，s1 仍只出现一次
+    fireEvent.click(document.querySelector('tr[data-row-key="session::s1"]')!)
+    expect(screen.getAllByText('s1')).toHaveLength(1)
   })
 
-  it('renders all rows directly (flat table, no collapse)', () => {
+  it('groups same-session rows under a collapsed parent; children render after expand', () => {
     render(
       <RequestHistory
         requests={[makeSummaryInSession('a', 's1'), makeSummaryInSession('b', 's1')]}
       />
     )
+    // 默认折叠：子行不渲染，父行存在且无 checkbox
+    expect(document.querySelector('tr[data-row-key="a"]')).toBeNull()
+    expect(document.querySelector('tr[data-row-key="b"]')).toBeNull()
+    const parent = document.querySelector('tr[data-row-key="session::s1"]')
+    expect(parent).toBeTruthy()
+    expect(parent!.querySelector('input[type="checkbox"]')).toBeNull()
+
+    // 展开后子行出现
+    fireEvent.click(parent!)
     expect(document.querySelector('tr[data-row-key="a"]')).toBeTruthy()
     expect(document.querySelector('tr[data-row-key="b"]')).toBeTruthy()
   })
 
-  it('preserves order: equal-timestamp rows keep input order', () => {
+  it('preserves order: parent/flat rows keep first-occurrence order, children keep input order', () => {
     render(
       <RequestHistory
         requests={[
@@ -135,6 +152,11 @@ describe('RequestHistory session grouping', () => {
         ]}
       />
     )
-    expect(dataRowKeys()).toEqual(['a', 'c', 'b'])
+    // 折叠时顶层按首次出现顺序：s1 父行 → s2 扁平行
+    expect(dataRowKeys()).toEqual(['session::s1', 'c'])
+
+    // 展开 s1：子行 a、b 保持输入顺序，整体为 父行 → a → b → c
+    fireEvent.click(document.querySelector('tr[data-row-key="session::s1"]')!)
+    expect(dataRowKeys()).toEqual(['session::s1', 'a', 'b', 'c'])
   })
 })
