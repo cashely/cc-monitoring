@@ -102,6 +102,11 @@ export function initDatabase(): Database.Database {
     db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (12)').run()
   }
 
+  if (currentVersion < 13) {
+    applySchemaV13(db)
+    db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (13)').run()
+  }
+
   return db
 }
 
@@ -388,6 +393,18 @@ export function applySchemaV12(db: Database.Database) {
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS uq_response_events
       ON response_events(request_id, session_id, event_index)
+  `)
+}
+
+export function applySchemaV13(db: Database.Database) {
+  // 服务启动/定时收割无主请求行（interruptStaleRequestsOnStartup）按
+  // completed_at IS NULL AND closed_at IS NULL 过滤、timestamp 比较定龄。十几 GB
+  // 大表上无匹配索引会对全表逐行回表，启动阻塞数分钟；partial index 只覆盖待收割
+  // 行，让查询走索引。
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_requests_recover
+      ON requests(timestamp)
+      WHERE completed_at IS NULL AND closed_at IS NULL
   `)
 }
 

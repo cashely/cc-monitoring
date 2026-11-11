@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3'
-import { applySchemaV2, applySchemaV3, applySchemaV9, applySchemaV12 } from '../db.js'
+import { applySchemaV2, applySchemaV3, applySchemaV9, applySchemaV12, applySchemaV13 } from '../db.js'
 
 describe('Schema Migration V2', () => {
   let db: Database.Database
@@ -237,5 +237,52 @@ describe('Schema Migration V12', () => {
     const indexes = db.prepare('PRAGMA index_list(response_events)').all() as { name: string }[]
     const uqIndexes = indexes.filter(i => i.name === 'uq_response_events')
     expect(uqIndexes).toHaveLength(1)
+  })
+})
+
+describe('Schema Migration V13', () => {
+  let db: Database.Database
+
+  beforeEach(() => {
+    db = new Database(':memory:')
+    // 最小化构造 V13 索引所需的 requests 表（与生产列名一致）
+    db.exec(`
+      CREATE TABLE requests (
+        request_id TEXT PRIMARY KEY,
+        timestamp TEXT NOT NULL,
+        completed_at TEXT,
+        closed_at TEXT
+      )
+    `)
+  })
+
+  afterEach(() => {
+    db.close()
+  })
+
+  test('creates partial index idx_requests_recover on timestamp', () => {
+    applySchemaV13(db)
+
+    const indexes = db.prepare('PRAGMA index_list(requests)').all() as { name: string }[]
+    const idx = indexes.find(i => i.name === 'idx_requests_recover')
+    expect(idx).toBeTruthy()
+
+    // 索引键列为 timestamp
+    const cols = db.prepare('PRAGMA index_info(idx_requests_recover)').all() as { name: string }[]
+    expect(cols.map(c => c.name)).toEqual(['timestamp'])
+
+    // partial 谓词与定义一致
+    const row = db.prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_requests_recover'"
+    ).get() as { sql: string }
+    expect(row.sql).toContain('WHERE completed_at IS NULL AND closed_at IS NULL')
+  })
+
+  test('applySchemaV13 is idempotent', () => {
+    applySchemaV13(db)
+    expect(() => applySchemaV13(db)).not.toThrow()
+
+    const indexes = db.prepare('PRAGMA index_list(requests)').all() as { name: string }[]
+    expect(indexes.filter(i => i.name === 'idx_requests_recover')).toHaveLength(1)
   })
 })

@@ -6,6 +6,7 @@ import {
   createRequestRecorder,
   recordIteration,
   listRequestDB,
+  cleanOldRequestsDB,
   interruptStaleRequestsOnStartup,
   repairClosedRequests,
   isStreamCompleteEvents,
@@ -51,6 +52,21 @@ function getEventRows(requestId: string, sessionId: string): any[] {
   return getDatabase()
     .prepare('SELECT * FROM response_events WHERE request_id = ? AND session_id = ? ORDER BY event_index ASC')
     .all(requestId, sessionId)
+}
+
+// 直接插入一条 requests 行 + 指定数量的 response_events（cleanOldRequestsDB 测试用）
+function insertRequestWithEvents(requestId: string, timestamp: string, eventCount: number): void {
+  const db = getDatabase()
+  db.prepare(`
+    INSERT INTO requests (request_id, session_id, timestamp, method, path, status_code, response_time)
+    VALUES (?, 'sess_clean', ?, 'POST', '/v1/messages', 200, 10)
+  `).run(requestId, timestamp)
+  const insEvent = db.prepare(
+    'INSERT INTO response_events (request_id, session_id, event_index, event_data) VALUES (?, ?, ?, ?)'
+  )
+  for (let i = 0; i < eventCount; i++) {
+    insEvent.run(requestId, 'sess_clean', i, `"e${i}"`)
+  }
 }
 
 describe('request-writer', () => {
@@ -650,5 +666,41 @@ describe('request-writer', () => {
     expect(rerunRecovered.completed_at).toBe(recoveredRow.completed_at)
     const rerunBroken = getRequestRow(brokenMeta.localRequestId, brokenMeta.sessionId)
     expect(rerunBroken.closed_at).toBe(brokenRow.closed_at)
+  })
+
+  it('cleanOldRequestsDB() deletes old requests/events in batches and keeps recent ones', async () => {
+    // 旧请求 req-old-1 带 5003 个事件：response_events 分批循环（每批 5000）至少跑 2 批
+    const insertAll = getDatabase().transaction(() => {
+      insertRequestWithEvents('req-old-1', new Date(Date.now() - 30 * 86400000).toISOString(), 5003)
+      insertRequestWithEvents('req-old-2', new Date(Date.now() - 30 * 86400000).toISOString(), 2)
+      insertRequestWithEvents('req-new', new Date().toISOString(), 3)
+    })
+    insertAll()
+
+    await cleanOldRequestsDB(7)
+
+    // 旧 requests 删除，新 requests 保留
+    expect(getRequestRow('req-old-1', 'sess_clean')).toBeFalsy()
+    expect(getRequestRow('req-old-2', 'sess_clean')).toBeFalsy()
+    expect(getRequestRow('req-new', 'sess_clean')).toBeTruthy()
+
+    // 旧 events 删除，新 events 保留且 event_index 连续
+    expect(getEventRows('req-old-1', 'sess_clean')).toHaveLength(0)
+    expect(getEventRows('req-old-2', 'sess_clean')).toHaveLength(0)
+    const newEvents = getEventRows('req-new', 'sess_clean')
+    expect(newEvents).toHaveLength(3)
+    expect(newEvents.map(r => r.event_index)).toEqual([0, 1, 2])
+  })
+
+  it('cleanOldRequestsDB(0) keeps all requests and events', async () => {
+    insertRequestWithEvents('req-old', new Date(Date.now() - 30 * 86400000).toISOString(), 2)
+    insertRequestWithEvents('req-new', new Date().toISOString(), 1)
+
+    await cleanOldRequestsDB(0)
+
+    expect(getRequestRow('req-old', 'sess_clean')).toBeTruthy()
+    expect(getRequestRow('req-new', 'sess_clean')).toBeTruthy()
+    expect(getEventRows('req-old', 'sess_clean')).toHaveLength(2)
+    expect(getEventRows('req-new', 'sess_clean')).toHaveLength(1)
   })
 })

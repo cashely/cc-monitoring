@@ -330,20 +330,18 @@ export async function setupProxy(
     }
   }, 1800000) // 30 minutes
 
-  // Initial aggregation on startup
-  try {
-    aggregateStats(maxDays)
-    broadcastToDataClients({ type: 'stats', action: 'notify' })
-  } catch (err) {
-    console.error('Initial stats aggregation failed:', err)
-  }
-
-  // Initial cleanup on startup
-  try {
-    cleanOldRequestsDB(maxDays)
-  } catch (err) {
-    console.error('Initial cleanup failed:', err)
-  }
+  // Initial aggregation + cleanup on startup
+  // 大库上 aggregate/cleanup 耗时数分钟，放 listen 之前会阻塞端口就绪；延迟到
+  // setImmediate 执行，setupProxy 立即返回，端口先 listen。
+  setImmediate(() => {
+    try {
+      aggregateStats(maxDays)
+      broadcastToDataClients({ type: 'stats', action: 'notify' })
+    } catch (err) {
+      console.error('Initial stats aggregation failed:', err)
+    }
+    void cleanOldRequestsDB(maxDays).catch(err => console.error('Initial cleanup failed:', err))
+  })
 
   // Cleanup database, MCP connections, and timer on server close
   fastify.addHook('onClose', async () => {

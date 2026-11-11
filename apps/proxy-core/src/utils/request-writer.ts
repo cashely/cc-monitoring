@@ -685,9 +685,51 @@ export async function cleanOldRequestsDB(daysToKeep = 7): Promise<void> {
 
   const cutoff = new Date(Date.now() - daysToKeep * 86400000).toISOString()
 
-  // Delete response_events first (foreign data), then requests
-  db.prepare(`DELETE FROM response_events WHERE request_id IN (SELECT request_id FROM requests WHERE timestamp < ?)`).run(cutoff)
-  db.prepare(`DELETE FROM requests WHERE timestamp < ?`).run(cutoff)
+  // 大表（实测十几 GB）单事务巨量 DELETE 会长时间锁库并撑大 WAL：先一次性把待删
+  // request_id 收集进临时表，再分批删除 response_events / requests（每批 5000 行、
+  // 独立事务），避免单个巨型事务。
+  const batchSize = 5000
+
+  db.exec('DROP TABLE IF EXISTS temp.old_request_ids')
+  db.exec('CREATE TEMP TABLE old_request_ids (request_id TEXT PRIMARY KEY)')
+  db.prepare(`
+    INSERT INTO old_request_ids
+    SELECT request_id FROM requests WHERE timestamp < ?
+  `).run(cutoff)
+
+  // a) 分批删 response_events（子事件先行），无可删行时停止
+  const deleteEventsBatch = db.prepare(`
+    DELETE FROM response_events
+    WHERE id IN (
+      SELECT re.id FROM response_events re
+      JOIN old_request_ids o ON re.request_id = o.request_id
+      LIMIT ?
+    )
+  `)
+  const runEventsBatch = db.transaction((): number => deleteEventsBatch.run(batchSize).changes)
+  while (true) {
+    if (runEventsBatch() === 0) break
+  }
+
+  // b) 分批删 requests，同事务剪除临时表中已处理的 request_id
+  const deleteRequestsBatch = db.prepare(`
+    DELETE FROM requests
+    WHERE request_id IN (SELECT request_id FROM old_request_ids ORDER BY request_id LIMIT ?)
+  `)
+  const pruneOldIds = db.prepare(`
+    DELETE FROM old_request_ids
+    WHERE request_id IN (SELECT request_id FROM old_request_ids ORDER BY request_id LIMIT ?)
+  `)
+  const runRequestsBatch = db.transaction((): number => {
+    const info = deleteRequestsBatch.run(batchSize)
+    pruneOldIds.run(batchSize)
+    return info.changes
+  })
+  while (true) {
+    if (runRequestsBatch() === 0) break
+  }
+
+  db.exec('DROP TABLE IF EXISTS temp.old_request_ids')
 
   // 例行还页：auto_vacuum 未开启时为 no-op；经 ccm vacuum 开启
   // INCREMENTAL 后，删除产生的空闲页在此廉价归还文件系统。
