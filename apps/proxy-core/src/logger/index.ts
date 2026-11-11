@@ -41,7 +41,9 @@ export function createLogger(config: LogConfig): pino.Logger {
     frequency: 'daily',
     date_format: 'YYYY-MM-DD',
     size: config.maxSize || '10m',
-    verbose: false
+    verbose: false,
+    // 轮转时优雅 end 旧流而非 destroy，避免进行中的写入回调触发 ERR_STREAM_DESTROYED
+    end_stream: true
   })
 
   // Dual-output: file (rotating) + console (pretty)

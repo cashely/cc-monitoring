@@ -1,5 +1,12 @@
 import fs from 'fs/promises'
+import os from 'os'
 import path from 'path'
+
+jest.mock('file-stream-rotator', () => ({
+  getStream: jest.fn(() => ({ write: jest.fn() }))
+}))
+
+import * as rotator from 'file-stream-rotator'
 import { createLogger, readLogs } from '../index'
 import type { LogConfig } from '../../types/config'
 
@@ -28,6 +35,17 @@ describe('createLogger', () => {
     const errorConfig: LogConfig = { level: 'error', file: 'logs/test-error.log' }
     const logger = createLogger(errorConfig)
     expect(logger.level).toBe('error')
+  })
+
+  it('轮转时以 end_stream: true 优雅关闭旧流，避免 ERR_STREAM_DESTROYED', () => {
+    const config: LogConfig = {
+      level: 'info',
+      file: path.join(os.tmpdir(), 'ccm-logger-test', 'test-rotator.log')
+    }
+    createLogger(config)
+    expect(rotator.getStream as jest.Mock).toHaveBeenCalledWith(
+      expect.objectContaining({ end_stream: true })
+    )
   })
 })
 

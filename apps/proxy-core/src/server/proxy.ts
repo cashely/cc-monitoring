@@ -9,6 +9,7 @@ import { pushNewRequest, broadcastToDataClients, clearStatsNotify, scheduleStats
 import { initDatabase, closeDatabase, getDatabase } from '../utils/db.js'
 import { recoverCrashedTasks } from '../utils/learn-tasks-db.js'
 import { getActiveProvider } from '../utils/providers-db.js'
+import { disconnectPm2 } from '../utils/pm2.js'
 import { aggregateStats } from '../utils/stats-aggregator.js'
 import { mcpManager } from '../utils/mcp-manager.js'
 import { getMachineId, getMachineIdSync, preloadMachineId } from '../utils/machine-id.js'
@@ -352,6 +353,7 @@ export async function setupProxy(
     clearStatsNotify()
     await mcpManager.close()
     closeDatabase()
+    await disconnectPm2()
   })
 
   // Application-layer forwarding (Controller + Fetch + SSE Pipe)

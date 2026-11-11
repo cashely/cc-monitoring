@@ -14,11 +14,15 @@ import {
   startProcess,
   stopProcess,
   reloadProcess,
-  getProcessStatus
+  getProcessStatus,
+  disconnectPm2
 } from '../pm2'
 
-beforeEach(() => {
+beforeEach(async () => {
+  // 重置模块级连接单例，保证每个测试都重新 connect
+  await disconnectPm2()
   resetMockState()
+  jest.restoreAllMocks()
 })
 
 describe('startProcess', () => {
@@ -137,5 +141,42 @@ describe('getProcessStatus', () => {
     const result = await getProcessStatus('error-process')
     expect(result!.status).toBe('errored')
     expect(result!.restarts).toBe(5)
+  })
+})
+
+describe('shared pm2 connection', () => {
+  it('calls pm2.connect only once across consecutive exported calls', async () => {
+    const connectSpy = jest.spyOn(jest.requireMock('pm2'), 'connect')
+
+    await getProcessStatus('non-existent')
+    await getProcessStatus('non-existent')
+
+    expect(connectSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries connect on the next call after a connect rejection', async () => {
+    const pm2Mock = jest.requireMock('pm2')
+    const connectSpy = jest.spyOn(pm2Mock, 'connect')
+    connectSpy.mockImplementationOnce((...args: any[]) => {
+      const cb = args[0] as ((err: Error | null) => void) | undefined
+      cb?.(new Error('connect failed'))
+    })
+
+    await expect(getProcessStatus('non-existent')).rejects.toThrow('connect failed')
+    expect(connectSpy).toHaveBeenCalledTimes(1)
+
+    await getProcessStatus('non-existent')
+    expect(connectSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it('disconnectPm2 closes the shared connection so the next call reconnects', async () => {
+    const connectSpy = jest.spyOn(jest.requireMock('pm2'), 'connect')
+
+    await getProcessStatus('non-existent')
+    expect(connectSpy).toHaveBeenCalledTimes(1)
+
+    await disconnectPm2()
+    await getProcessStatus('non-existent')
+    expect(connectSpy).toHaveBeenCalledTimes(2)
   })
 })

@@ -86,6 +86,7 @@ jest.mock('fs', () => ({
 // esm-dirname is mocked via moduleNameMapper in jest.config.cjs (uses import.meta.url)
 
 import { startCommand } from '../commands/start'
+import { disconnectPm2 } from '@utils/pm2'
 import { stopCommand } from '../commands/stop'
 import { statusCommand } from '../commands/status'
 import { logsCommand } from '../commands/logs'
@@ -100,7 +101,9 @@ import { readLogs } from '@logger/index'
 jest.spyOn(console, 'log').mockImplementation(() => {})
 jest.spyOn(console, 'error').mockImplementation(() => {})
 
-beforeEach(() => {
+beforeEach(async () => {
+  // 重置 pm2.ts 的模块级连接单例，否则会复用旧 Promise 跳过 connect
+  await disconnectPm2()
   resetMockState()
   jest.clearAllMocks()
 })

@@ -23,6 +23,22 @@ async function pm2Connect(): Promise<void> {
   })
 }
 
+// 模块级懒加载单例：复用同一条 pm2 RPC 连接，避免每个操作都
+// connect/disconnect 触发 pm2 竞态（disconnect 后 axon connect 事件
+// 才到达时 self.client 已为 null）。
+let connectPromise: Promise<void> | null = null
+
+function getConnection(): Promise<void> {
+  if (!connectPromise) {
+    connectPromise = pm2Connect().catch((err) => {
+      // 连接失败时允许下次调用重新尝试，同时不吞掉 reject
+      connectPromise = null
+      throw err
+    })
+  }
+  return connectPromise
+}
+
 async function pm2Disconnect(): Promise<void> {
   return new Promise((resolve) => {
     pm2.disconnect()
@@ -81,50 +97,48 @@ async function pm2List(): Promise<any[]> {
 }
 
 export async function startProcess(ecosystemPath: string): Promise<void> {
-  await pm2Connect()
+  await getConnection()
   await pm2Start(ecosystemPath)
-  await pm2Disconnect()
 }
 
 export async function stopProcess(name: string): Promise<void> {
-  await pm2Connect()
+  await getConnection()
   await pm2Stop(name)
-  await pm2Disconnect()
 }
 
 export async function killProcess(name: string): Promise<void> {
-  await pm2Connect()
+  await getConnection()
   await pm2Delete(name)
-  await pm2Disconnect()
 }
 
 export async function reloadProcess(name: string): Promise<void> {
-  await pm2Connect()
+  await getConnection()
   await pm2Reload(name)
+}
+
+// 服务器关闭时断开共享的 pm2 连接
+export async function disconnectPm2(): Promise<void> {
+  if (!connectPromise) return
   await pm2Disconnect()
+  connectPromise = null
 }
 
 // 轮询 pm2 list，直到目标进程状态为 online 或超时
 export async function waitForOnline(name: string, timeoutMs = 8000, intervalMs = 300): Promise<boolean> {
-  await pm2Connect()
-  try {
-    const deadline = Date.now() + timeoutMs
-    while (Date.now() < deadline) {
-      const list = await pm2List()
-      const proc = list.find(p => p.name === name)
-      if (proc?.pm2_env?.status === 'online') return true
-      await new Promise((resolve) => setTimeout(resolve, intervalMs))
-    }
-    return false
-  } finally {
-    await pm2Disconnect()
+  await getConnection()
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const list = await pm2List()
+    const proc = list.find(p => p.name === name)
+    if (proc?.pm2_env?.status === 'online') return true
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
   }
+  return false
 }
 
 export async function getProcessStatus(name: string): Promise<Pm2ProcessStatus | null> {
-  await pm2Connect()
+  await getConnection()
   const list = await pm2List()
-  await pm2Disconnect()
 
   const proc = list.find(p => p.name === name)
   if (!proc) return null

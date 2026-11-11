@@ -51,6 +51,11 @@ program
       setConfigPathOverride(path.resolve(opts.config))
     }
   })
+  // 一次性命令执行完后断开 pm2 共享连接，否则 axon socket 会挂住 event loop 导致进程不退出
+  .hook('postAction', async () => {
+    const { disconnectPm2 } = await import('../utils/pm2.js')
+    await disconnectPm2()
+  })
 
 program.command('prompt')
   .alias('p')
