@@ -319,7 +319,8 @@ pnpm preview:proxy-admin  # 预览 Admin UI 生产构建
   "storage": {
     "type": "sqlite",
     "path": "logs/proxy.db",
-    "maxDays": 7
+    "maxDays": 3,
+    "statsMaxDays": 90
   }
 }
 ```
@@ -334,9 +335,18 @@ pnpm preview:proxy-admin  # 预览 Admin UI 生产构建
 | `proxy.rewritePrefix` | `string` | 否 | `""` | 转发时重写的路径前缀 |
 | `logging.level` | `enum` (debug/info/warn/error) | 是 | `info` | 日志级别 |
 | `logging.file` | `string` | 是 | `logs/proxy.log` | 日志文件路径 |
+| `storage.path` | `string` | 否 | `logs/proxy.db` | SQLite 数据库路径（相对路径以 config 所在目录解析） |
+| `storage.maxDays` | `number` (>=0) | 否 | `3` | 原始数据（requests + response_events）保留天数；`0` = 不清理 |
+| `storage.statsMaxDays` | `number` (>=0) | 否 | `90` | 小时统计账本保留天数；`0` = 永久保留 |
 | `auth.token` | `string` | 否 | -- | Web UI 配置修改 API 的认证 Token |
 
 `auth.token` 为空时，配置修改 API 不需要认证（开发模式）。生产环境务必设置 Token 或通过环境变量 `UI_AUTH_TOKEN` 提供。
+
+### 数据存储与统计
+- 所有运行数据存于同一个 SQLite 库（默认 `~/.cc-monitoring/logs/proxy.db`，WAL 模式）。
+- `requests` / `response_events` / `stats` 三表的读写全部在独立的 **worker 线程**内顺序执行，主事件循环不被数据库 IO 阻塞；`providers` / `mcp_servers` / `learn_tasks` 等表留主线程，同库另一连接与 worker 连接在 WAL 下共存。
+- `stats` 是**持久账本**：按 UTC 小时桶增量聚合（每 5 分钟定时器 + 启动时，只重算当前小时与前 3 个关门小时，共 4 桶），更早的桶冻结保留。删除原始请求不影响历史统计。
+- 保留期：原始请求与事件默认保留 **3 天**（`maxDays`），小时统计默认保留 **90 天**（`statsMaxDays`）。
 
 ### 错误处理
 代理服务器针对常见网络错误返回标准 HTTP 状态码：

@@ -21,8 +21,9 @@ export const AppConfigSchema = z.object({
   storage: z.object({
     type: z.enum(['sqlite']).default('sqlite'),
     path: z.string().min(1).default('logs/proxy.db'),
-    maxDays: z.number().int().min(0).default(7) // 0 or negative = no cleanup (keep all)
-  }).optional().default({ type: 'sqlite', path: 'logs/proxy.db', maxDays: 7 }),
+    maxDays: z.number().int().min(0).default(3), // 0 or negative = no cleanup (keep all)
+    statsMaxDays: z.number().int().min(0).default(90) // 0 = keep hourly stats forever
+  }).optional().default({ type: 'sqlite', path: 'logs/proxy.db', maxDays: 3, statsMaxDays: 90 }),
   auth: z.object({
     token: z.string().min(1)
   }).optional(),

@@ -1,4 +1,5 @@
 import { initDatabase, getDatabase } from './db.js'
+import { dbCall } from './db-worker-client.js'
 import { parseUpstreamEvents } from './inject-loop.js'
 import { pushNewRequest } from '../server/data-push.js'
 
@@ -51,8 +52,8 @@ export interface RequestRecorder {
   appendEvent(event: any): void
   headers(args: { statusCode: number; headers?: Record<string, string> }): void
   complete(args: { cloudRequestId?: string; statusCode: number; headers?: Record<string, string> }): Promise<void>
-  interrupt(args: { statusCode: number; error: string }): void
-  fail(args: { statusCode: number; error: string }): void
+  interrupt(args: { statusCode: number; error: string }): Promise<void>
+  fail(args: { statusCode: number; error: string }): Promise<void>
 }
 
 interface LoadedRequest {
@@ -90,20 +91,77 @@ interface EventEntry {
   data: unknown
 }
 
-// Cached prepared statement for batch writes
-let insertEventStmt: import('better-sqlite3').Statement | null = null
-let cachedDbInstance: import('better-sqlite3').Database | null = null
+// 送到 worker 的 requests 行载荷（snake_case 列名转 camelCase）
+interface RequestRowPayload {
+  requestId: string
+  sessionId: string
+  timestamp: string
+  method: string
+  path: string
+  statusCode: number
+  responseTime: number
+  apiKey?: string
+  proxyApiKey?: string
+  baseUrl?: string
+  model?: string
+  machineId?: string
+  userAgent?: string
+  inputTokens?: number
+  outputTokens?: number
+  cacheReadTokens?: number
+  cacheCreationTokens?: number
+  requestHeaders: Record<string, string>
+  requestBody?: any
+  responseHeaders?: Record<string, string>
+  completedAt?: string
+  closedAt?: string
+  error?: string
+}
 
-// Invalidate cached stmt when DB instance changes (tests create fresh DB per suite)
-function ensureStmtCacheValid(db: import('better-sqlite3').Database): void {
-  if (db !== cachedDbInstance) {
-    insertEventStmt = null
-    cachedDbInstance = db
+interface RowArgs {
+  meta: RecordedRequest
+  requestId: string
+  statusCode: number
+  responseTime: number
+  headers?: Record<string, string>
+  usage?: TokenUsage
+  completedAt?: string
+  closedAt?: string
+  error?: string
+}
+
+function buildRowPayload(args: RowArgs): RequestRowPayload {
+  const { meta } = args
+  return {
+    requestId: args.requestId,
+    sessionId: meta.sessionId,
+    timestamp: meta.timestamp,
+    method: meta.request.method,
+    path: meta.request.path,
+    statusCode: args.statusCode,
+    responseTime: args.responseTime,
+    apiKey: meta.apiKey,
+    proxyApiKey: meta.proxyApiKey,
+    baseUrl: meta.baseUrl,
+    model: meta.model,
+    machineId: meta.machineId,
+    userAgent: meta.request.headers['user-agent'],
+    inputTokens: args.usage?.input_tokens,
+    outputTokens: args.usage?.output_tokens,
+    cacheReadTokens: args.usage?.cache_read_input_tokens,
+    cacheCreationTokens: args.usage?.cache_creation_input_tokens,
+    requestHeaders: meta.request.headers,
+    requestBody: meta.request.body,
+    responseHeaders: args.headers,
+    completedAt: args.completedAt,
+    closedAt: args.closedAt,
+    error: args.error
   }
 }
 
 /**
- * Flush a batch of SSE events to the response_events table.
+ * 把一批 SSE 事件送到 worker 落库。fire-and-forget：同一通道严格按入队顺序
+ * 处理，先入队的批次不会乱序。
  */
 function flushEventBatch(
   sessionId: string,
@@ -111,23 +169,13 @@ function flushEventBatch(
   batch: EventEntry[],
   startIndex: number
 ): void {
-  const db = getDatabase()
-  ensureStmtCacheValid(db)
-  if (!insertEventStmt) {
-    insertEventStmt = db.prepare(
-      'INSERT OR IGNORE INTO response_events (request_id, session_id, event_index, event_type, event_data) VALUES (?, ?, ?, ?, ?)'
-    )
-  }
-  for (let i = 0; i < batch.length; i++) {
-    const event = batch[i]
-    insertEventStmt.run(
-      requestId,
-      sessionId,
-      startIndex + i,
-      event.type ?? null,
-      JSON.stringify(event.data)
-    )
-  }
+  void dbCall('events.insertBatch', batch.map((event, i) => ({
+    requestId,
+    sessionId,
+    index: startIndex + i,
+    type: event.type ?? null,
+    data: event.data
+  })))
 }
 
 function extractUsage(events: any[] | undefined): TokenUsage | undefined {
@@ -198,6 +246,12 @@ export function reconstructUsageFromEvents(events: any[] | undefined): TokenUsag
   return found ? usage : undefined
 }
 
+type TokenColumn = 'input_tokens' | 'output_tokens' | 'cache_read_tokens' | 'cache_creation_tokens'
+
+// 以下两个主线程版本仅供 interruptStaleRequestsOnStartup / repairClosedRequests /
+// loadSessionHistory 使用（这些函数走主线程连接，与 worker 连接 WAL 共存）。
+// recorder 的运行时事件读写全部走 worker，见 createRequestRecorder。
+
 // 定向加载重建所需事件，禁止全量加载事件流（实测有 8000+ 行）：
 // 1) Claude 锚点事件（message_start/message_delta/message_stop，通常仅数行）
 // 2) 尾部 10 条事件（覆盖 OpenAI 的 finish_reason / usage，其 event_type 可能为 NULL）
@@ -234,8 +288,6 @@ function loadTargetedEvents(
   return events
 }
 
-type TokenColumn = 'input_tokens' | 'output_tokens' | 'cache_read_tokens' | 'cache_creation_tokens'
-
 // 按字段回填 token 列（只补 NULL 列），返回是否有列被更新
 function fillTokenColumns(
   db: import('better-sqlite3').Database,
@@ -255,70 +307,14 @@ function fillTokenColumns(
     ['cache_read_tokens', usage.cache_read_input_tokens],
     ['cache_creation_tokens', usage.cache_creation_input_tokens]
   ]
-  const updatable = pairs.filter(([col, v]) => current[col] === null && typeof v === 'number')
+  const updatable = pairs.filter(([col, v]) => current[col] === null && typeof v === 'number') as [TokenColumn, number][]
   if (updatable.length === 0) return false
 
   const setSql = updatable.map(([col]) => `${col} = ?`).join(', ')
   db.prepare(
     `UPDATE requests SET ${setSql} WHERE request_id = ? AND session_id = ?`
-  ).run(...updatable.map(([, v]) => v as number), requestId, sessionId)
+  ).run(...updatable.map(([, v]) => v), requestId, sessionId)
   return true
-}
-
-interface CompletedRowArgs {
-  meta: RecordedRequest
-  requestId: string
-  statusCode: number
-  responseTime: number
-  headers?: Record<string, string>
-  usage?: TokenUsage
-  completedAt?: string
-  closedAt?: string
-  error?: string
-}
-
-function writeCompletedRow(args: CompletedRowArgs): void {
-  const db = getDatabase()
-  const { meta } = args
-
-  const stmt = db.prepare(`
-    INSERT OR REPLACE INTO requests (
-      request_id, session_id, timestamp, method, path, status_code, response_time,
-      api_key, proxy_api_key, base_url, model, machine_id, user_agent,
-      input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-      request_headers, request_body, response_headers, response_events,
-      completed_at, closed_at, error
-    ) VALUES (
-      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-    )
-  `)
-
-  stmt.run(
-    args.requestId,
-    meta.sessionId,
-    meta.timestamp,
-    meta.request.method,
-    meta.request.path,
-    args.statusCode,
-    args.responseTime,
-    meta.apiKey || null,
-    meta.proxyApiKey || null,
-    meta.baseUrl || null,
-    meta.model || null,
-    meta.machineId || null,
-    meta.request.headers['user-agent'] || null,
-    args.usage?.input_tokens || null,
-    args.usage?.output_tokens || null,
-    args.usage?.cache_read_input_tokens || null,
-    args.usage?.cache_creation_input_tokens || null,
-    JSON.stringify(meta.request.headers),
-    meta.request.body ? JSON.stringify(meta.request.body) : null,
-    args.headers ? JSON.stringify(args.headers) : null,
-    null,  // response_events now stored in separate table
-    args.completedAt || null,
-    args.closedAt || null,
-    args.error || null
-  )
 }
 
 function buildSummary(
@@ -358,13 +354,11 @@ export function createRequestRecorder(meta: RecordedRequest): RequestRecorder {
   const startTime = Date.now()
   let pendingCalled = false
 
-  // recorder 生命周期开始前的事件行下界。complete() 把事件从 localRequestId 迁到
-  // cloudRequestId 时只允许迁移 id 大于它的行：request_id（req-N 计数器）在进程
-  // 重启后可能复用，同 localRequestId 的历史残留事件属于别的请求，不能被一起迁走。
-  const startRow = getDatabase()
-    .prepare('SELECT MAX(id) AS m FROM response_events')
-    .get() as { m: number | null }
-  const startEventRowId = startRow.m ?? 0
+  // recorder 生命周期开始前的事件行下界，由 pending() 时向 worker 取。
+  // complete() 把事件从 localRequestId 迁到 cloudRequestId 时只允许迁移 id 大于
+  // 它的行：request_id（req-N 计数器）在进程重启后可能复用，同 localRequestId
+  // 的历史残留事件属于别的请求，不能被一起迁走。
+  let startEventRowId: number | null = null
 
   function flushRemaining(): void {
     if (eventBatch.length > 0) {
@@ -397,12 +391,18 @@ export function createRequestRecorder(meta: RecordedRequest): RequestRecorder {
       if (pendingCalled) return
       pendingCalled = true
 
-      writeCompletedRow({
+      // 先取迁移守卫下界，再写 pending 占位行（worker 严格按顺序执行）
+      const res = await dbCall<{ startEventRowId: number }>(
+        'recorder.start',
+        { sessionId: meta.sessionId, localRequestId: meta.localRequestId }
+      )
+      startEventRowId = res.startEventRowId
+      await dbCall('requests.insertPending', buildRowPayload({
         meta,
         requestId: meta.localRequestId,
         statusCode: 0,
         responseTime: 0
-      })
+      }))
       pushNewRequest(buildSummary(meta, meta.localRequestId, 0, 0, undefined, false), 'pending')
     },
 
@@ -410,14 +410,12 @@ export function createRequestRecorder(meta: RecordedRequest): RequestRecorder {
 
     // 上游响应头到达：回写真实 status_code，状态仍 pending（UI 保留 spinner）
     headers({ statusCode, headers }): void {
-      getDatabase().prepare(
-        'UPDATE requests SET status_code = ?, response_headers = ? WHERE request_id = ? AND session_id = ?'
-      ).run(
+      void dbCall('requests.updateHeaders', {
+        requestId: meta.localRequestId,
+        sessionId: meta.sessionId,
         statusCode,
-        headers ? JSON.stringify(headers) : null,
-        meta.localRequestId,
-        meta.sessionId
-      )
+        headers
+      })
 
       pushNewRequest(
         buildSummary(meta, meta.localRequestId, statusCode, 0, undefined, false, undefined),
@@ -449,28 +447,24 @@ export function createRequestRecorder(meta: RecordedRequest): RequestRecorder {
       const completedAt = new Date().toISOString()
       const finalId = cloudRequestId ?? meta.localRequestId
       const responseTime = Date.now() - startTime
-      const db = getDatabase()
 
-      if (finalId !== meta.localRequestId) {
-        const replace = db.transaction(() => {
-          // id > startEventRowId：只迁本 recorder 创建后写入的事件，
-          // 不迁同 localRequestId 的历史残留事件
-          db.prepare(
-            'UPDATE response_events SET request_id = ? WHERE request_id = ? AND session_id = ? AND id > ?'
-          ).run(finalId, meta.localRequestId, meta.sessionId, startEventRowId)
-          writeCompletedRow({
-            meta, requestId: finalId, statusCode, responseTime, headers, usage, completedAt
-          })
-          db.prepare(
-            'DELETE FROM requests WHERE request_id = ? AND session_id = ?'
-          ).run(meta.localRequestId, meta.sessionId)
-        })
-        replace()
-      } else {
-        writeCompletedRow({
-          meta, requestId: finalId, statusCode, responseTime, headers, usage, completedAt
-        })
+      // 防御：未经过 pending() 直接 complete（如纯事件测试），补取迁移下界
+      if (startEventRowId === null) {
+        const res = await dbCall<{ startEventRowId: number }>(
+          'recorder.start',
+          { sessionId: meta.sessionId, localRequestId: meta.localRequestId }
+        )
+        startEventRowId = res.startEventRowId
       }
+
+      await dbCall('requests.complete', {
+        row: buildRowPayload({
+          meta, requestId: finalId, statusCode, responseTime, headers, usage, completedAt
+        }),
+        localId: meta.localRequestId,
+        sessionId: meta.sessionId,
+        startEventRowId
+      })
 
       pushNewRequest(
         buildSummary(meta, finalId, statusCode, responseTime, usage, finalId !== meta.localRequestId),
@@ -479,36 +473,40 @@ export function createRequestRecorder(meta: RecordedRequest): RequestRecorder {
     },
 
     // 流被截断/挂死：保留真实 status_code，通过 closed_at + error 标记中断；
-    // 同时通过定向 SQL（锚点事件 + 尾部事件）重建 usage 并按字段回填 token
-    interrupt({ statusCode, error }): void {
+    // worker 内同时做定向 SQL（锚点事件 + 尾部事件）usage 重建与 token 回填，
+    // 返回 usage 供 UI 推送使用。
+    async interrupt({ statusCode, error }): Promise<void> {
       flushRemaining()
-      const db = getDatabase()
       const responseTime = Date.now() - startTime
       const closedAt = new Date().toISOString()
 
-      db.prepare(
-        'UPDATE requests SET status_code = ?, response_time = ?, closed_at = ?, error = ? WHERE request_id = ? AND session_id = ?'
-      ).run(statusCode, responseTime, closedAt, error, meta.localRequestId, meta.sessionId)
-
-      const events = loadTargetedEvents(db, meta.localRequestId, meta.sessionId)
-      const usage = reconstructUsageFromEvents(events)
-      if (usage) {
-        fillTokenColumns(db, meta.localRequestId, meta.sessionId, usage)
-      }
+      const res = await dbCall<{ usage?: TokenUsage }>('requests.interrupt', {
+        requestId: meta.localRequestId,
+        sessionId: meta.sessionId,
+        statusCode,
+        responseTime,
+        closedAt,
+        error
+      })
 
       pushNewRequest(
-        buildSummary(meta, meta.localRequestId, statusCode, responseTime, usage, false, closedAt),
+        buildSummary(meta, meta.localRequestId, statusCode, responseTime, res.usage, false, closedAt),
         'completed'
       )
     },
 
-    fail({ statusCode, error }): void {
+    async fail({ statusCode, error }): Promise<void> {
       const responseTime = Date.now() - startTime
       const closedAt = new Date().toISOString()
 
-      getDatabase().prepare(
-        'UPDATE requests SET status_code = ?, response_time = ?, closed_at = ?, error = ? WHERE request_id = ? AND session_id = ?'
-      ).run(statusCode, responseTime, closedAt, error, meta.localRequestId, meta.sessionId)
+      await dbCall('requests.fail', {
+        requestId: meta.localRequestId,
+        sessionId: meta.sessionId,
+        statusCode,
+        responseTime,
+        closedAt,
+        error
+      })
 
       pushNewRequest(
         buildSummary(meta, meta.localRequestId, statusCode, responseTime, undefined, false, closedAt),
@@ -528,25 +526,32 @@ export async function recordIteration(
 
   const events = meta.response.events ?? []
   if (events.length > 0) {
-    const batch: EventEntry[] = events.map((e: any, i: number) => ({
+    await dbCall('events.insertBatch', events.map((e: any, i: number) => ({
+      requestId: meta.localRequestId,
+      sessionId: meta.sessionId,
       index: i,
-      type: e?.type,
+      type: e?.type ?? null,
       data: e
-    }))
-    flushEventBatch(meta.sessionId, meta.localRequestId, batch, 0)
+    })))
   }
 
   const usage = extractUsage(events)
   const completedAt = new Date().toISOString()
 
-  writeCompletedRow({
-    meta,
-    requestId: meta.localRequestId,
-    statusCode: meta.response.statusCode,
-    responseTime: 0,
-    headers: meta.response.headers,
-    usage,
-    completedAt
+  // 无 pending 占位：终态行直接写入（finalId==localId 路径）
+  await dbCall('requests.complete', {
+    row: buildRowPayload({
+      meta,
+      requestId: meta.localRequestId,
+      statusCode: meta.response.statusCode,
+      responseTime: 0,
+      headers: meta.response.headers,
+      usage,
+      completedAt
+    }),
+    localId: meta.localRequestId,
+    sessionId: meta.sessionId,
+    startEventRowId: 0
   })
 
   pushNewRequest(
@@ -557,67 +562,7 @@ export async function recordIteration(
 
 // Load single request by compositeId (sessionId:requestId)
 export async function loadRequestDB(compositeId: string): Promise<LoadedRequest> {
-  const db = initDatabase()
-
-  const colonIndex = compositeId.indexOf(':')
-  if (colonIndex === -1) {
-    throw new Error(`Invalid compositeId format: ${compositeId}`)
-  }
-
-  const sessionId = compositeId.slice(0, colonIndex)
-  const requestId = compositeId.slice(colonIndex + 1)
-
-  const row = db.prepare(`
-    SELECT * FROM requests WHERE request_id = ? AND session_id = ?
-  `).get(requestId, sessionId) as any
-
-  if (!row) {
-    throw new Error(`Request not found: ${compositeId}`)
-  }
-
-  // Load events from separate table; fallback to old JSON column for historical data
-  const eventRows = db.prepare(`
-    SELECT event_index, event_type, event_data FROM response_events
-    WHERE request_id = ? AND session_id = ?
-    ORDER BY event_index ASC
-  `).all(requestId, sessionId) as any[]
-
-  let events: any[]
-  if (eventRows.length > 0) {
-    events = eventRows.map(r => {
-      try { return JSON.parse(r.event_data) } catch { return { raw: r.event_data } }
-    })
-  } else if (row.response_events) {
-    // Fallback: historical data stored events in the requests.response_events JSON column
-    try { events = JSON.parse(row.response_events) } catch { events = [] }
-  } else {
-    events = []
-  }
-
-  return {
-    requestId: row.request_id,
-    sessionId: row.session_id,
-    timestamp: row.timestamp,
-    apiKey: row.api_key,
-    proxyApiKey: row.proxy_api_key,
-    baseUrl: row.base_url,
-    model: row.model,
-    machineId: row.machine_id,
-    request: {
-      method: row.method,
-      path: row.path,
-      headers: row.request_headers ? JSON.parse(row.request_headers) : {},
-      body: row.request_body ? JSON.parse(row.request_body) : undefined
-    },
-    response: {
-      statusCode: row.status_code,
-      headers: row.response_headers ? JSON.parse(row.response_headers) : undefined,
-      events: events.length > 0 ? events : undefined,
-      completedAt: row.completed_at,
-      closedAt: row.closed_at,
-      error: row.error
-    }
-  }
+  return dbCall('requests.get', { compositeId })
 }
 
 // List requests with cursor pagination (summary, sorted by timestamp desc)
@@ -625,52 +570,7 @@ export async function listRequestDB(
   limit: number = 1000,
   before?: string
 ): Promise<{ requests: RequestSummary[]; hasMore: boolean }> {
-  const db = initDatabase()
-
-  const whereClause = before ? 'WHERE timestamp < ?' : ''
-  const params = before ? [before, limit + 1] : [limit + 1]
-
-  const rows = db.prepare(`
-    SELECT
-      request_id, session_id, timestamp, method, path, status_code, response_time,
-      api_key, proxy_api_key, base_url, model, machine_id, user_agent,
-      input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, closed_at, error
-    FROM requests
-    ${whereClause}
-    ORDER BY timestamp DESC
-    LIMIT ?
-  `).all(...params) as any[]
-
-  const hasMore = rows.length > limit
-  const actualRows = hasMore ? rows.slice(0, -1) : rows
-
-  return {
-    requests: actualRows.map(row => ({
-      requestId: row.request_id,
-      sessionId: row.session_id,
-      compositeId: `${row.session_id}:${row.request_id}`,
-      timestamp: row.timestamp,
-      method: row.method,
-      path: row.path,
-      statusCode: row.status_code,
-      responseTime: row.response_time,
-      apiKey: row.api_key,
-      proxyApiKey: row.proxy_api_key,
-      baseUrl: row.base_url,
-      model: row.model,
-      machineId: row.machine_id,
-      userAgent: row.user_agent,
-      usage: row.input_tokens || row.output_tokens ? {
-        input_tokens: row.input_tokens,
-        output_tokens: row.output_tokens,
-        cache_read_input_tokens: row.cache_read_tokens,
-        cache_creation_input_tokens: row.cache_creation_tokens
-      } : undefined,
-      closedAt: row.closed_at || undefined,
-      error: row.error || undefined
-    })),
-    hasMore
-  }
+  return dbCall('requests.list', { limit, before })
 }
 
 // Clean old requests (time window based, configurable)
@@ -681,59 +581,8 @@ export async function cleanOldRequestsDB(daysToKeep = 7): Promise<void> {
     return
   }
 
-  const db = initDatabase()
-
-  const cutoff = new Date(Date.now() - daysToKeep * 86400000).toISOString()
-
-  // 大表（实测十几 GB）单事务巨量 DELETE 会长时间锁库并撑大 WAL：先一次性把待删
-  // request_id 收集进临时表，再分批删除 response_events / requests（每批 5000 行、
-  // 独立事务），避免单个巨型事务。
-  const batchSize = 5000
-
-  db.exec('DROP TABLE IF EXISTS temp.old_request_ids')
-  db.exec('CREATE TEMP TABLE old_request_ids (request_id TEXT PRIMARY KEY)')
-  db.prepare(`
-    INSERT INTO old_request_ids
-    SELECT request_id FROM requests WHERE timestamp < ?
-  `).run(cutoff)
-
-  // a) 分批删 response_events（子事件先行），无可删行时停止
-  const deleteEventsBatch = db.prepare(`
-    DELETE FROM response_events
-    WHERE id IN (
-      SELECT re.id FROM response_events re
-      JOIN old_request_ids o ON re.request_id = o.request_id
-      LIMIT ?
-    )
-  `)
-  const runEventsBatch = db.transaction((): number => deleteEventsBatch.run(batchSize).changes)
-  while (true) {
-    if (runEventsBatch() === 0) break
-  }
-
-  // b) 分批删 requests，同事务剪除临时表中已处理的 request_id
-  const deleteRequestsBatch = db.prepare(`
-    DELETE FROM requests
-    WHERE request_id IN (SELECT request_id FROM old_request_ids ORDER BY request_id LIMIT ?)
-  `)
-  const pruneOldIds = db.prepare(`
-    DELETE FROM old_request_ids
-    WHERE request_id IN (SELECT request_id FROM old_request_ids ORDER BY request_id LIMIT ?)
-  `)
-  const runRequestsBatch = db.transaction((): number => {
-    const info = deleteRequestsBatch.run(batchSize)
-    pruneOldIds.run(batchSize)
-    return info.changes
-  })
-  while (true) {
-    if (runRequestsBatch() === 0) break
-  }
-
-  db.exec('DROP TABLE IF EXISTS temp.old_request_ids')
-
-  // 例行还页：auto_vacuum 未开启时为 no-op；经 ccm vacuum 开启
-  // INCREMENTAL 后，删除产生的空闲页在此廉价归还文件系统。
-  db.pragma('incremental_vacuum')
+  const cutoffIso = new Date(Date.now() - daysToKeep * 86400000).toISOString()
+  await dbCall('requests.cleanup', { cutoffIso })
 }
 
 // 启动时回收上次进程遗留的僵尸 SSE 行：未完成、未关闭且超龄，逐行分流

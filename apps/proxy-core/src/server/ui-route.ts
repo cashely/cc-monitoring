@@ -15,7 +15,7 @@ import type { AgentSession } from '@earendil-works/pi-coding-agent'
 import { statusHistory } from '../utils/status-history.js'
 import { addDataClient, removeDataClient, broadcastToDataClients, getDataClientCount } from './data-push.js'
 import { getVersionInfo } from '../utils/version.js'
-import { aggregateStats, getStatsData, getTodayStats } from '../utils/stats-aggregator.js'
+import { getStatsData, getTodayStats } from '../utils/stats-aggregator.js'
 import { setupProvidersRoutes } from './providers-route.js'
 import { setupMcpRoutes } from './mcp-route.js'
 import { setupClaudeSettingsRoutes } from './claude-settings-route.js'
@@ -194,15 +194,10 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
   // REST endpoint for token aggregation stats (SQLite).
   // Optional `since` query param: ISO UTC string, limits hourly entries returned.
   fastify.get<{ Querystring: { since?: string } }>('/ui/api/stats', async (request, reply) => {
-    // 读前先聚合，保证快照与实时口径一致；聚合失败只记录，不阻断读取旧快照
-    try {
-      aggregateStats(config.storage?.maxDays ?? 7)
-    } catch (err: any) {
-      request.log.error({ err }, 'Failed to aggregate stats before read')
-    }
+    // 只读持久账本：聚合由 5 分钟定时器 + 启动时增量维护，读前不再重算
     try {
       const since = request.query.since
-      return getStatsData(since)
+      return await getStatsData(since)
     } catch (err: any) {
       request.log.error({ err }, 'Failed to load stats from database')
       return reply.code(500).send({
@@ -223,7 +218,7 @@ export async function setupUiRoutes(fastify: FastifyInstance): Promise<void> {
         midnight.setHours(0, 0, 0, 0)
         since = midnight.toISOString()
       }
-      return getTodayStats(since)
+      return await getTodayStats(since)
     } catch (err: any) {
       request.log.error({ err }, 'Failed to load today stats from database')
       return reply.code(500).send({

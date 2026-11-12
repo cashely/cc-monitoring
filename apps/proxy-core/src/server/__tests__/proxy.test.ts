@@ -2,6 +2,9 @@ import { getErrorStatusCode, getErrorMessage, resolveProxyTarget, filterForwardH
 import Fastify from 'fastify'
 import type { FastifyInstance } from 'fastify'
 import http from 'node:http'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import path from 'path'
 import Database from 'better-sqlite3'
 import { WebSocket } from 'ws'
 import { addDataClient, removeDataClient } from '../data-push'
@@ -31,7 +34,7 @@ jest.mock('../../utils/machine-id', () => ({
 }))
 
 jest.mock('../../utils/stats-aggregator', () => ({
-  aggregateStats: jest.fn()
+  aggregateStats: jest.fn().mockResolvedValue(undefined)
 }))
 
 const { getDatabase, initDatabase } = jest.requireMock('@utils/db') as {
@@ -214,9 +217,10 @@ describe('filterForwardHeaders with authStyle', () => {
 
 // --- G2: 逻辑终止识别 + 收割接入（setupProxy 集成测试）---
 
-// 构造集成测试用内存库：仅建 proxy.ts 运行路径触及的表
-function createIntegrationDb(): Database.Database {
-  const db = new Database(':memory:')
+// 构造集成测试用文件库（worker 线程需同库开独立连接，:memory: 无法跨连接共享）：
+// 仅建 proxy.ts 运行路径触及的表
+function createIntegrationDb(dbPath: string): Database.Database {
+  const db = new Database(dbPath)
   db.exec(`
     CREATE TABLE requests (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -380,10 +384,12 @@ const requestPayload = JSON.stringify({
 describe('setupProxy SSE lifecycle (G2)', () => {
   let db: Database.Database
   let fastify: FastifyInstance
+  let tempDir: string
 
   beforeEach(() => {
     jest.clearAllMocks()
-    db = createIntegrationDb()
+    tempDir = mkdtempSync(path.join(tmpdir(), 'ccm-proxy-'))
+    db = createIntegrationDb(path.join(tempDir, 'test.db'))
     getDatabase.mockReturnValue(db)
     initDatabase.mockReturnValue(db)
     fastify = Fastify()
@@ -395,8 +401,9 @@ describe('setupProxy SSE lifecycle (G2)', () => {
       removeDataClient(mockWs as any)
       mockWs = undefined
     }
-    await fastify.close()
+    await fastify.close() // onClose hook stops the db worker
     db.close()
+    rmSync(tempDir, { recursive: true, force: true })
   })
 
   test('message_stop 已发出后上游悬挂：行落 completed_at，不标中断，客户端不悬挂', async () => {

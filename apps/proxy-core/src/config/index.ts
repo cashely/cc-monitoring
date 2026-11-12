@@ -57,7 +57,8 @@ export async function resetConfig(configPath: string = getConfigPath()): Promise
     storage: {
       type: 'sqlite',
       path: 'logs/proxy.db',
-      maxDays: 7
+      maxDays: 3,
+      statsMaxDays: 90
     },
     mcpServers: []
   }

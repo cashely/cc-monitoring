@@ -7,6 +7,7 @@ import { createRequestRecorder, isStreamCompleteEvents, type RequestRecorder, ty
 import { cleanOldRequestsDB, interruptStaleRequestsOnStartup } from '../utils/request-writer.js'
 import { pushNewRequest, broadcastToDataClients, clearStatsNotify, scheduleStatsNotify } from './data-push.js'
 import { initDatabase, closeDatabase, getDatabase } from '../utils/db.js'
+import { startDbWorker, stopDbWorker } from '../utils/db-worker-client.js'
 import { recoverCrashedTasks } from '../utils/learn-tasks-db.js'
 import { getActiveProvider } from '../utils/providers-db.js'
 import { disconnectPm2 } from '../utils/pm2.js'
@@ -269,12 +270,17 @@ export async function setupProxy(
   fastify: FastifyInstance,
   proxyConfig: ProxyConfig
 ): Promise<void> {
-  // Load full config to get storage.maxDays
+  // Load full config to get storage retention settings
   const fullConfig = await loadConfig()
-  const maxDays = fullConfig.storage?.maxDays ?? 7
+  const maxDays = fullConfig.storage?.maxDays ?? 3
+  const statsMaxDays = fullConfig.storage?.statsMaxDays ?? 90
 
-  // Initialize SQLite database
+  // Initialize SQLite database (runs migrations, incl. stats ledger backfill)
   const db = initDatabase()
+
+  // migration 完成后启动 worker：requests / response_events / stats 的读写在
+  // worker 线程执行；absPath 与主线程连接为同一个库文件
+  startDbWorker(db.name)
 
   // 回收上次进程遗留的无主 running learn 任务（进程崩溃/被 kill）
   const recoveredTasks = recoverCrashedTasks(db)
@@ -313,33 +319,23 @@ export async function setupProxy(
 
   // Start stats aggregation timer (every 5 minutes)
   const statsTimer = setInterval(() => {
-    try {
-      aggregateStats(maxDays)
-      broadcastToDataClients({ type: 'stats', action: 'notify' })
-    } catch (err) {
-      console.error('Stats aggregation failed:', err)
-    }
+    aggregateStats(maxDays, statsMaxDays)
+      .then(() => broadcastToDataClients({ type: 'stats', action: 'notify' }))
+      .catch(err => console.error('Stats aggregation failed:', err))
   }, 300000) // 5 minutes
 
   // Periodic cleanup timer (every 30 minutes, not per-request)
   const cleanupTimer = setInterval(() => {
-    try {
-      cleanOldRequestsDB(maxDays)
-    } catch (err) {
-      console.error('Cleanup failed:', err)
-    }
+    void cleanOldRequestsDB(maxDays).catch(err => console.error('Cleanup failed:', err))
   }, 1800000) // 30 minutes
 
   // Initial aggregation + cleanup on startup
   // 大库上 aggregate/cleanup 耗时数分钟，放 listen 之前会阻塞端口就绪；延迟到
   // setImmediate 执行，setupProxy 立即返回，端口先 listen。
   setImmediate(() => {
-    try {
-      aggregateStats(maxDays)
-      broadcastToDataClients({ type: 'stats', action: 'notify' })
-    } catch (err) {
-      console.error('Initial stats aggregation failed:', err)
-    }
+    aggregateStats(maxDays, statsMaxDays)
+      .then(() => broadcastToDataClients({ type: 'stats', action: 'notify' }))
+      .catch(err => console.error('Initial stats aggregation failed:', err))
     void cleanOldRequestsDB(maxDays).catch(err => console.error('Initial cleanup failed:', err))
   })
 
@@ -350,6 +346,7 @@ export async function setupProxy(
     clearInterval(staleReaperTimer)
     clearStatsNotify()
     await mcpManager.close()
+    await stopDbWorker()
     closeDatabase()
     await disconnectPm2()
   })
@@ -542,7 +539,9 @@ export async function setupProxy(
             tapDecoder.end()
             if (err && !logicallyEnded) {
               request.log.error(`openai stream error: ${err.message}`)
-              rec!.interrupt({ statusCode: response.status, error: `stream interrupted: ${err.message}` })
+              // interrupt 接口声明为 void、实现为 Promise：Promise.resolve 包一层以便兜底
+              void Promise.resolve(rec!.interrupt({ statusCode: response.status, error: `stream interrupted: ${err.message}` }))
+                .catch(dbErr => request.log.error(`openai stream interrupt failed: ${dbErr.message}`))
               return
             }
 
@@ -695,7 +694,9 @@ export async function setupProxy(
           tapDecoder.end()
           if (err && !logicallyEnded) {
             request.log.error(`claude stream error: ${err.message}`)
-            rec!.interrupt({ statusCode: response.status, error: `stream interrupted: ${err.message}` })
+            // interrupt 接口声明为 void、实现为 Promise：Promise.resolve 包一层以便兜底
+            void Promise.resolve(rec!.interrupt({ statusCode: response.status, error: `stream interrupted: ${err.message}` }))
+              .catch(dbErr => request.log.error(`claude stream interrupt failed: ${dbErr.message}`))
             return
           }
 
@@ -741,7 +742,9 @@ export async function setupProxy(
 
       const statusCode = getErrorStatusCode(error)
       if (rec) {
-        rec.fail({ statusCode, error: getErrorMessage(error) })
+        // fail 接口声明为 void、实现为 Promise：Promise.resolve 包一层以便兜底
+        void Promise.resolve(rec.fail({ statusCode, error: getErrorMessage(error) }))
+          .catch(err => request.log.error(`failed to record request failure: ${err.message}`))
       } else {
         // pending() 之前就抛错（header/meta 准备阶段），无 DB 行可更新，仅推送
         pushNewRequest({

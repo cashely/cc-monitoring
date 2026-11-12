@@ -107,6 +107,11 @@ export function initDatabase(): Database.Database {
     db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (13)').run()
   }
 
+  if (currentVersion < 14) {
+    applySchemaV14(db)
+    db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (14)').run()
+  }
+
   return db
 }
 
@@ -406,6 +411,20 @@ export function applySchemaV13(db: Database.Database) {
       ON requests(timestamp)
       WHERE completed_at IS NULL AND closed_at IS NULL
   `)
+}
+
+export function applySchemaV14(db: Database.Database) {
+  // stats 从可重算缓存变持久账本：先从现存 requests 一次性回填小时桶（已删历史
+  // 无法恢复）。INSERT OR IGNORE 配合 stats 的 UNIQUE(period, period_key) 保证
+  // 重复执行幂等，不覆盖已有账本。
+  db.prepare(`
+    INSERT OR IGNORE INTO stats (period, period_key, input_tokens, output_tokens,
+      cache_read_tokens, cache_creation_tokens, request_count, updated_at)
+    SELECT 'hourly', strftime('%Y-%m-%d-%H', timestamp),
+      SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
+      SUM(cache_creation_tokens), COUNT(*), CURRENT_TIMESTAMP
+    FROM requests GROUP BY strftime('%Y-%m-%d-%H', timestamp)
+  `).run()
 }
 
 // 按临时表 ids_to_purge 收集的行号分批删除 response_events；每批同时剪除临时表中

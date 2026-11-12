@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3'
-import { applySchemaV2, applySchemaV3, applySchemaV9, applySchemaV12, applySchemaV13 } from '../db.js'
+import { applySchemaV2, applySchemaV3, applySchemaV9, applySchemaV12, applySchemaV13, applySchemaV14 } from '../db.js'
 
 describe('Schema Migration V2', () => {
   let db: Database.Database
@@ -284,5 +284,114 @@ describe('Schema Migration V13', () => {
 
     const indexes = db.prepare('PRAGMA index_list(requests)').all() as { name: string }[]
     expect(indexes.filter(i => i.name === 'idx_requests_recover')).toHaveLength(1)
+  })
+})
+
+describe('Schema Migration V14', () => {
+  let db: Database.Database
+
+  beforeEach(() => {
+    db = new Database(':memory:')
+    // 最小化构造 V14 回填所需的 requests / stats 表（与生产列名一致）
+    db.exec(`
+      CREATE TABLE requests (
+        request_id TEXT PRIMARY KEY,
+        timestamp TEXT NOT NULL,
+        input_tokens INTEGER,
+        output_tokens INTEGER,
+        cache_read_tokens INTEGER,
+        cache_creation_tokens INTEGER
+      )
+    `)
+    db.exec(`
+      CREATE TABLE stats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        period TEXT NOT NULL,
+        period_key TEXT NOT NULL,
+        input_tokens INTEGER DEFAULT 0,
+        output_tokens INTEGER DEFAULT 0,
+        cache_read_tokens INTEGER DEFAULT 0,
+        cache_creation_tokens INTEGER DEFAULT 0,
+        request_count INTEGER DEFAULT 0,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(period, period_key)
+      )
+    `)
+  })
+
+  afterEach(() => {
+    db.close()
+  })
+
+  test('backfills hourly stats buckets from requests across two UTC hours', () => {
+    const ins = db.prepare(`
+      INSERT INTO requests (request_id, timestamp, input_tokens, output_tokens,
+        cache_read_tokens, cache_creation_tokens)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `)
+    // Hour 10: two rows (UTC, parsed by strftime)
+    ins.run('r1', '2024-01-01T10:15:00', 100, 50, 10, 2)
+    ins.run('r2', '2024-01-01T10:45:00', 200, 70, 20, 4)
+    // Hour 11: one row
+    ins.run('r3', '2024-01-01T11:05:00', 50, 25, 5, 1)
+
+    applySchemaV14(db)
+
+    const rows = db.prepare(`
+      SELECT period, period_key, input_tokens, output_tokens, cache_read_tokens,
+        cache_creation_tokens, request_count
+      FROM stats ORDER BY period_key ASC
+    `).all() as {
+      period: string
+      period_key: string
+      input_tokens: number
+      output_tokens: number
+      cache_read_tokens: number
+      cache_creation_tokens: number
+      request_count: number
+    }[]
+
+    expect(rows).toHaveLength(2)
+
+    expect(rows[0]).toMatchObject({
+      period: 'hourly',
+      period_key: '2024-01-01-10',
+      input_tokens: 300,
+      output_tokens: 120,
+      cache_read_tokens: 30,
+      cache_creation_tokens: 6,
+      request_count: 2
+    })
+    expect(rows[1]).toMatchObject({
+      period: 'hourly',
+      period_key: '2024-01-01-11',
+      input_tokens: 50,
+      output_tokens: 25,
+      cache_read_tokens: 5,
+      cache_creation_tokens: 1,
+      request_count: 1
+    })
+  })
+
+  test('applySchemaV14 is idempotent — re-running does not duplicate or change rows', () => {
+    const ins = db.prepare(`
+      INSERT INTO requests (request_id, timestamp, input_tokens, output_tokens,
+        cache_read_tokens, cache_creation_tokens)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `)
+    ins.run('r1', '2024-01-01T10:15:00', 100, 50, 10, 2)
+    ins.run('r2', '2024-01-01T11:05:00', 50, 25, 5, 1)
+
+    applySchemaV14(db)
+    applySchemaV14(db)
+
+    // Still exactly two buckets, values unchanged
+    const rows = db.prepare(`
+      SELECT period_key, input_tokens, output_tokens, request_count
+      FROM stats ORDER BY period_key ASC
+    `).all() as { period_key: string; input_tokens: number; output_tokens: number; request_count: number }[]
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toMatchObject({ period_key: '2024-01-01-10', input_tokens: 100, output_tokens: 50, request_count: 1 })
+    expect(rows[1]).toMatchObject({ period_key: '2024-01-01-11', input_tokens: 50, output_tokens: 25, request_count: 1 })
   })
 })
